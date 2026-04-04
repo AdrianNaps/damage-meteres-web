@@ -9,7 +9,9 @@ type Mode = 'idle' | 'in_key' | 'in_boss'
 export class EncounterStateMachine extends EventEmitter {
   private store: SegmentStore
   private mode: Mode = 'idle'
-  private keySegment: Segment | null = null  // current key's trash segment
+  private keySegment: Segment | null = null  // current active trash segment
+  private dungeonName: string | null = null
+  private trashCount = 0
   currentSegment: Segment | null = null      // segment receiving events right now
 
   constructor(store: SegmentStore) {
@@ -22,7 +24,9 @@ export class EncounterStateMachine extends EventEmitter {
       case 'CHALLENGE_MODE_START': {
         if (this.mode !== 'idle') break
         const p = event.payload as ChallengeModePayload
-        const segment = this._makeSegment(`${p.dungeonName} — Trash`, event.timestamp)
+        this.dungeonName = p.dungeonName
+        this.trashCount = 1
+        const segment = this._makeSegment(`${p.dungeonName} — Trash 1`, event.timestamp)
         this.store.push(segment)
         this.keySegment = segment
         this.currentSegment = segment
@@ -48,6 +52,8 @@ export class EncounterStateMachine extends EventEmitter {
           this.emit('challenge_end', this.keySegment)
         }
         this.keySegment = null
+        this.dungeonName = null
+        this.trashCount = 0
         this.currentSegment = null
         this.mode = 'idle'
         break
@@ -80,8 +86,17 @@ export class EncounterStateMachine extends EventEmitter {
           this.emit('encounter_end', this.currentSegment)
         }
         // Return to key trash if we're in a key, otherwise go idle (standalone raid boss)
-        if (this.keySegment) {
-          this.currentSegment = this.keySegment
+        if (this.dungeonName) {
+          this.trashCount++
+          const trashSegment = this._makeSegment(`${this.dungeonName} — Trash ${this.trashCount}`, event.timestamp)
+          // Carry over spec/name info accumulated so far
+          if (this.currentSegment) {
+            trashSegment.guidToSpec = { ...this.currentSegment.guidToSpec }
+            trashSegment.guidToName = { ...this.currentSegment.guidToName }
+          }
+          this.store.push(trashSegment)
+          this.keySegment = trashSegment
+          this.currentSegment = trashSegment
           this.mode = 'in_key'
         } else {
           this.currentSegment = null
