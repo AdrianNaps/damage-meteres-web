@@ -1,4 +1,6 @@
-import type { ParsedEvent, DamagePayload, HealPayload, CombatantInfoPayload, SummonPayload } from './types.js'
+import type { ParsedEvent, DamagePayload, HealPayload, CombatantInfoPayload } from './types.js'
+import { PET_FLAG, GUARDIAN_FLAG } from './types.js'
+
 import type { Segment, PlayerData, SpellDamageStats, SpellHealStats } from './store.js'
 
 export function applyEvent(segment: Segment, event: ParsedEvent) {
@@ -16,9 +18,9 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
   }
 
   if (payload.type === 'summon') {
-    const p = payload as SummonPayload
-    segment.petToOwner[event.dest.guid] = p.ownerGuid
-    segment.guidToName[p.ownerGuid] = p.ownerName
+    // source is the summoning player — record pet→owner and ensure owner name is in guidToName
+    segment.petToOwner[event.dest.guid] = event.source.guid
+    segment.guidToName[event.source.guid] = event.source.name
     return
   }
 
@@ -27,15 +29,20 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
     let sourceName = event.source.name
     let sourceGuid = event.source.guid
 
-    const isPet = !!(event.source.flags & (0x1000 | 0x2000))
+    const isPet = !!(event.source.flags & (PET_FLAG | GUARDIAN_FLAG))
     if (isPet) {
-      // Bootstrap petToOwner from SWING_DAMAGE advanced-log owner field when available
+      // Bootstrap petToOwner from the source-side advanced-log owner GUID embedded in SWING_DAMAGE
+      // events (fields[10]). The advanced-log does not carry the owner's name, so this path only
+      // succeeds if guidToName already has the owner (via SPELL_SUMMON, carry-over, or a prior
+      // player event). If the owner name is still unknown, drop the event rather than create a
+      // phantom player entry — this only affects persistent pets (e.g. Felhunter) in raids where
+      // no SPELL_SUMMON was logged and the owner has not yet appeared in the segment.
       if (dmg.swingOwnerGuid && dmg.swingOwnerGuid !== '0000000000000000') {
         segment.petToOwner[event.source.guid] = dmg.swingOwnerGuid
       }
       const ownerGuid = segment.petToOwner[event.source.guid]
       const ownerName = ownerGuid ? segment.guidToName[ownerGuid] : undefined
-      if (!ownerName) return  // unknown pet — skip rather than create a phantom entry
+      if (!ownerName) return
       sourceName = ownerName
       sourceGuid = ownerGuid!
     }

@@ -1,9 +1,8 @@
 import type { ParsedEvent, DamagePayload, HealPayload, UnitRef } from './types.js'
+import { PET_FLAG, GUARDIAN_FLAG } from './types.js'
 
-const PLAYER_FLAG      = 0x400
-const PET_FLAG         = 0x1000
-const GUARDIAN_FLAG    = 0x2000
-const PET_OWNER_FLAG   = PLAYER_FLAG | PET_FLAG | GUARDIAN_FLAG
+const PLAYER_FLAG             = 0x400
+const ATTRIBUTABLE_SOURCE_FLAGS = PLAYER_FLAG | PET_FLAG | GUARDIAN_FLAG
 
 // Placeholder used for events that have no source/dest (ENCOUNTER_*, CHALLENGE_MODE_*)
 const NULL_UNIT: UnitRef = Object.freeze({ guid: '', name: '', flags: 0 })
@@ -108,13 +107,13 @@ export function parseLine(raw: string): ParsedEvent | null {
       if (!(source.flags & PLAYER_FLAG)) return null
       return {
         timestamp, type: eventType, source, dest,
-        payload: { type: 'summon', ownerGuid: source.guid, ownerName: source.name }
+        payload: { type: 'summon' }
       }
     }
 
     case 'SPELL_DAMAGE':
     case 'SPELL_PERIODIC_DAMAGE': {
-      if (!(source.flags & PET_OWNER_FLAG)) return null
+      if (!(source.flags & ATTRIBUTABLE_SOURCE_FLAGS)) return null
       if (source.guid === dest.guid) return null
       const damage = parseDamageSuffix(fields)
       if (!damage) return null
@@ -125,7 +124,7 @@ export function parseLine(raw: string): ParsedEvent | null {
     }
 
     case 'SWING_DAMAGE': {
-      if (!(source.flags & PET_OWNER_FLAG)) return null
+      if (!(source.flags & ATTRIBUTABLE_SOURCE_FLAGS)) return null
       if (source.guid === dest.guid) return null
       const damage = parseDamageSuffix(fields)
       if (!damage) return null

@@ -1,3 +1,6 @@
+export const PET_FLAG      = 0x1000  // WoW unit flag: TYPE_PET (persistent player-owned pet)
+export const GUARDIAN_FLAG = 0x2000  // WoW unit flag: TYPE_GUARDIAN (temporary summoned guardian)
+
 export type EventType =
   | 'ENCOUNTER_START'
   | 'ENCOUNTER_END'
@@ -79,8 +82,6 @@ export interface ChallengeModePayload {
 
 export interface SummonPayload {
   type: 'summon'
-  ownerGuid: string
-  ownerName: string
 }
 
 export type EventPayload = DamagePayload | HealPayload | EncounterPayload | DeathPayload | CombatantInfoPayload | ChallengeModePayload | SummonPayload
