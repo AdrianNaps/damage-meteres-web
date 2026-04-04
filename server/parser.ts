@@ -123,6 +123,36 @@ export function parseLine(raw: string): ParsedEvent | null {
       }
     }
 
+    case 'SPELL_ABSORBED': {
+      // Format (no advanced-log block):
+      // [9]=spellId [10]=spellName [11]=school
+      // [12-15]=absorb caster (guid/name/flags/raidflags)
+      // [16]=absorbSpellId [17]=absorbSpellName [18]=absorbSchool
+      // [19]=amount (full hit incl. crit multiplier)  [20]=partial absorb  [21]=critical
+      if (!(source.flags & ATTRIBUTABLE_SOURCE_FLAGS)) return null
+      if (source.guid === dest.guid) return null
+      const amount = parseInt(fields[19]) || 0
+      const critical = fields[21] === '1'
+      return {
+        timestamp, type: eventType, source, dest,
+        payload: {
+          type: 'damage',
+          spellId: fields[9],
+          spellName: stripQuotes(fields[10]),
+          amount,
+          baseAmount: amount,
+          overkill: -1,
+          school: parseInt(fields[11], 16),
+          resisted: 0,
+          blocked: 0,
+          absorbed: amount, // entire hit went into absorb shield
+          critical,
+          glancing: false,
+          crushing: false,
+        }
+      }
+    }
+
     case 'SWING_DAMAGE': {
       if (!(source.flags & ATTRIBUTABLE_SOURCE_FLAGS)) return null
       if (source.guid === dest.guid) return null

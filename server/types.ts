@@ -10,6 +10,7 @@ export type EventType =
   | 'SPELL_SUMMON'
   | 'SPELL_DAMAGE'
   | 'SPELL_PERIODIC_DAMAGE'
+  | 'SPELL_ABSORBED'
   | 'SWING_DAMAGE'
   | 'SPELL_HEAL'
   | 'SPELL_PERIODIC_HEAL'
