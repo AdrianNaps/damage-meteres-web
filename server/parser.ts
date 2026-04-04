@@ -79,7 +79,7 @@ export function parseLine(raw: string): ParsedEvent | null {
     case 'COMBATANT_INFO': {
       // Field layout is stats/gear, not source/dest — must be handled before standard parsing
       const playerGuid = fields[1]
-      const specId = parseInt(fields[24])
+      const specId = parseInt(fields[25])
       if (!playerGuid || isNaN(specId)) return null
       return {
         timestamp, type: eventType, source: NULL_UNIT, dest: NULL_UNIT,
