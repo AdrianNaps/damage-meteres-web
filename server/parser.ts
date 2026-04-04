@@ -128,10 +128,11 @@ export function parseLine(raw: string): ParsedEvent | null {
       // [9]=spellId [10]=spellName [11]=school
       // [12-15]=absorb caster (guid/name/flags/raidflags)
       // [16]=absorbSpellId [17]=absorbSpellName [18]=absorbSchool
-      // [19]=amount (full hit incl. crit multiplier)  [20]=partial absorb  [21]=critical
+      // [19]=amount (full hit incl. crit multiplier)  [20]=base (non-crit) amount  [21]=critical
       if (!(source.flags & ATTRIBUTABLE_SOURCE_FLAGS)) return null
       if (source.guid === dest.guid) return null
-      const amount = parseInt(fields[19]) || 0
+      const amount = parseInt(fields[19])
+      if (!amount || amount <= 0) return null
       const critical = fields[21] === '1'
       return {
         timestamp, type: eventType, source, dest,
