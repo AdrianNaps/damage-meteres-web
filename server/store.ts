@@ -38,6 +38,7 @@ export interface HealData {
 
 export interface PlayerData {
   name: string
+  specId?: number
   damage: DamageData
   healing: HealData
 }
@@ -51,6 +52,8 @@ export interface Segment {
   lastEventTime: number | null   // timestamp of last damage/heal event
   success: boolean | null
   players: Record<string, PlayerData>
+  guidToSpec: Record<string, number>   // playerGuid → specId, populated by COMBATANT_INFO
+  guidToName: Record<string, string>   // playerGuid → playerName
 }
 
 // Derived values computed at read time, not stored

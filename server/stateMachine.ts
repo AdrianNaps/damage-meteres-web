@@ -35,6 +35,12 @@ export class EncounterStateMachine extends EventEmitter {
       case 'CHALLENGE_MODE_END': {
         if (this.mode === 'idle') break  // orphaned END from a previous aborted key — ignore
         const p = event.payload as ChallengeModePayload
+        // Key ended mid-boss (timer expired or force-restart) — close the boss segment first
+        if (this.mode === 'in_boss' && this.currentSegment) {
+          this.currentSegment.endTime = event.timestamp
+          this.currentSegment.success = false
+          this.emit('encounter_end', this.currentSegment)
+        }
         if (this.keySegment) {
           this.keySegment.endTime = event.timestamp
           this.keySegment.success = p.success ?? false

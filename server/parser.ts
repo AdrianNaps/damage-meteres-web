@@ -3,7 +3,7 @@ import type { ParsedEvent, DamagePayload, HealPayload, UnitRef } from './types.j
 const PLAYER_FLAG = 0x400
 
 // Placeholder used for events that have no source/dest (ENCOUNTER_*, CHALLENGE_MODE_*)
-const NULL_UNIT: UnitRef = { guid: '', name: '', flags: 0 }
+const NULL_UNIT: UnitRef = Object.freeze({ guid: '', name: '', flags: 0 })
 
 export function parseLine(raw: string): ParsedEvent | null {
   // Format: "M/D/YYYY H:MM:SS.mmm±TZ  EVENT_TYPE,p1,p2,..."
@@ -75,6 +75,17 @@ export function parseLine(raw: string): ParsedEvent | null {
           durationMs:    parseInt(fields[4]),
         }
       }
+
+    case 'COMBATANT_INFO': {
+      // Field layout is stats/gear, not source/dest — must be handled before standard parsing
+      const playerGuid = fields[1]
+      const specId = parseInt(fields[24])
+      if (!playerGuid || isNaN(specId)) return null
+      return {
+        timestamp, type: eventType, source: NULL_UNIT, dest: NULL_UNIT,
+        payload: { type: 'combatantInfo', playerGuid, specId }
+      }
+    }
   }
 
   // Standard events: source at fields[1-3], dest at fields[5-7]
@@ -130,16 +141,6 @@ export function parseLine(raw: string): ParsedEvent | null {
         timestamp, type: eventType, source, dest,
         payload: { type: 'death', unconsciousOnDeath: fields[9] === '1' }
       }
-
-    case 'COMBATANT_INFO': {
-      const playerGuid = fields[1]
-      const specId = parseInt(fields[24])
-      if (!playerGuid || isNaN(specId)) return null
-      return {
-        timestamp, type: eventType, source, dest,
-        payload: { type: 'combatantInfo', playerGuid, specId }
-      }
-    }
 
     default:
       return null
