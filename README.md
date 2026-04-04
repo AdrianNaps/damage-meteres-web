@@ -96,5 +96,6 @@ WoWCombatLog.txt → File Watcher → Parser → State Machine → Aggregator
 │           ├── PlayerRow.tsx
 │           ├── BreakdownPanel.tsx
 │           └── SpellTable.tsx
-└── config.json
+├── .env.example
+└── package.json
 ```
