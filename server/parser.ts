@@ -2,6 +2,9 @@ import type { ParsedEvent, DamagePayload, HealPayload, UnitRef } from './types.j
 
 const PLAYER_FLAG = 0x400
 
+// Placeholder used for events that have no source/dest (ENCOUNTER_*, CHALLENGE_MODE_*)
+const NULL_UNIT: UnitRef = { guid: '', name: '', flags: 0 }
+
 export function parseLine(raw: string): ParsedEvent | null {
   // Format: "M/D/YYYY H:MM:SS.mmm±TZ  EVENT_TYPE,p1,p2,..."
   // Timestamp and event type are separated by TWO spaces
@@ -19,21 +22,11 @@ export function parseLine(raw: string): ParsedEvent | null {
 
   const eventType = fields[0]
 
-  const source: UnitRef = {
-    guid:  fields[1],
-    name:  stripQuotes(fields[2]),
-    flags: parseInt(fields[3], 16),
-  }
-  const dest: UnitRef = {
-    guid:  fields[5],
-    name:  stripQuotes(fields[6]),
-    flags: parseInt(fields[7], 16),
-  }
-
+  // These events have a completely different field layout — handle before building source/dest
   switch (eventType) {
     case 'ENCOUNTER_START':
       return {
-        timestamp, type: eventType, source, dest,
+        timestamp, type: eventType, source: NULL_UNIT, dest: NULL_UNIT,
         payload: {
           type:          'encounter',
           encounterID:   parseInt(fields[1]),
@@ -46,18 +39,57 @@ export function parseLine(raw: string): ParsedEvent | null {
 
     case 'ENCOUNTER_END':
       return {
-        timestamp, type: eventType, source, dest,
+        timestamp, type: eventType, source: NULL_UNIT, dest: NULL_UNIT,
         payload: {
-          type:           'encounter',
-          encounterID:    parseInt(fields[1]),
-          encounterName:  stripQuotes(fields[2]),
-          difficultyID:   parseInt(fields[3]),
-          groupSize:      parseInt(fields[4]),
-          success:        fields[5] === '1',
+          type:            'encounter',
+          encounterID:     parseInt(fields[1]),
+          encounterName:   stripQuotes(fields[2]),
+          difficultyID:    parseInt(fields[3]),
+          groupSize:       parseInt(fields[4]),
+          success:         fields[5] === '1',
           fightDurationMs: parseInt(fields[6]),
         }
       }
 
+    case 'CHALLENGE_MODE_START':
+      // CHALLENGE_MODE_START,"DungeonName",instanceID,timerSeconds,keystoneLevel,[affixes]
+      return {
+        timestamp, type: eventType, source: NULL_UNIT, dest: NULL_UNIT,
+        payload: {
+          type:          'challengeMode',
+          dungeonName:   stripQuotes(fields[1]),
+          instanceID:    parseInt(fields[2]),
+          keystoneLevel: parseInt(fields[4]),
+        }
+      }
+
+    case 'CHALLENGE_MODE_END':
+      // CHALLENGE_MODE_END,instanceID,success,keystoneLevel,durationMs,...
+      return {
+        timestamp, type: eventType, source: NULL_UNIT, dest: NULL_UNIT,
+        payload: {
+          type:          'challengeMode',
+          instanceID:    parseInt(fields[1]),
+          success:       fields[2] === '1',
+          keystoneLevel: parseInt(fields[3]),
+          durationMs:    parseInt(fields[4]),
+        }
+      }
+  }
+
+  // Standard events: source at fields[1-3], dest at fields[5-7]
+  const source: UnitRef = {
+    guid:  fields[1],
+    name:  stripQuotes(fields[2]),
+    flags: parseInt(fields[3], 16),
+  }
+  const dest: UnitRef = {
+    guid:  fields[5],
+    name:  stripQuotes(fields[6]),
+    flags: parseInt(fields[7], 16),
+  }
+
+  switch (eventType) {
     case 'SPELL_DAMAGE':
     case 'SPELL_PERIODIC_DAMAGE': {
       if (!(source.flags & PLAYER_FLAG)) return null
@@ -98,6 +130,16 @@ export function parseLine(raw: string): ParsedEvent | null {
         timestamp, type: eventType, source, dest,
         payload: { type: 'death', unconsciousOnDeath: fields[9] === '1' }
       }
+
+    case 'COMBATANT_INFO': {
+      const playerGuid = fields[1]
+      const specId = parseInt(fields[24])
+      if (!playerGuid || isNaN(specId)) return null
+      return {
+        timestamp, type: eventType, source, dest,
+        payload: { type: 'combatantInfo', playerGuid, specId }
+      }
+    }
 
     default:
       return null

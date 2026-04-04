@@ -1,6 +1,9 @@
 export type EventType =
   | 'ENCOUNTER_START'
   | 'ENCOUNTER_END'
+  | 'CHALLENGE_MODE_START'
+  | 'CHALLENGE_MODE_END'
+  | 'COMBATANT_INFO'
   | 'SPELL_DAMAGE'
   | 'SPELL_PERIODIC_DAMAGE'
   | 'SWING_DAMAGE'
@@ -57,7 +60,22 @@ export interface DeathPayload {
   unconsciousOnDeath: boolean
 }
 
-export type EventPayload = DamagePayload | HealPayload | EncounterPayload | DeathPayload
+export interface CombatantInfoPayload {
+  type: 'combatantInfo'
+  playerGuid: string
+  specId: number
+}
+
+export interface ChallengeModePayload {
+  type: 'challengeMode'
+  dungeonName?: string  // present on START only
+  instanceID: number
+  keystoneLevel?: number
+  success?: boolean     // present on END only
+  durationMs?: number   // present on END only
+}
+
+export type EventPayload = DamagePayload | HealPayload | EncounterPayload | DeathPayload | CombatantInfoPayload | ChallengeModePayload
 
 export interface ParsedEvent {
   timestamp: number
