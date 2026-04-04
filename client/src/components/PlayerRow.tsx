@@ -40,11 +40,7 @@ const CLASS_COLORS: Record<number, string> = {
   13: '#33937F', // Evoker
 }
 
-const RANK_COLORS = [
-  '#C69B3A', '#69CCEF', '#00FF96', '#F48CBA',
-  '#FF7C0A', '#AAD372', '#3FC7EB', '#FFF468',
-  '#0070DD', '#8788EE', '#A330C9',
-]
+const UNKNOWN_CLASS_COLOR = '#64748B' // slate-500, visible but clearly "unknown"
 
 function formatNum(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`
@@ -57,9 +53,7 @@ export function PlayerRow({ player, rank, topValue, metric, onClick }: Props) {
   const total = metric === 'damage' ? player.damage.total : player.healing.total
   const fillPct = topValue > 0 ? (value / topValue) * 100 : 0
   const classId = player.specId !== undefined ? SPEC_TO_CLASS[player.specId] : undefined
-  const color = classId !== undefined
-    ? CLASS_COLORS[classId]
-    : RANK_COLORS[(rank - 1) % RANK_COLORS.length]
+  const color = classId !== undefined ? CLASS_COLORS[classId] : UNKNOWN_CLASS_COLOR
 
   return (
     <div
