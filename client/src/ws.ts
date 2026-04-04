@@ -5,7 +5,7 @@ const WS_URL = 'ws://localhost:3001'
 let ws: WebSocket | null = null
 
 export function connectWs() {
-  const { setWsStatus, setCurrentSegment, setSegmentHistory } = useStore.getState()
+  const { setWsStatus, setLiveSegment, setSelectedSegment, setSegmentHistory } = useStore.getState()
 
   function connect() {
     setWsStatus('connecting')
@@ -30,13 +30,13 @@ export function connectWs() {
 
       switch (msg.type) {
         case 'state_update':
-          setCurrentSegment(msg.segment)
+          setLiveSegment(msg.segment)
           break
         case 'segment_list':
           setSegmentHistory(msg.segments)
           break
         case 'segment_detail':
-          setCurrentSegment(msg.segment)
+          setSelectedSegment(msg.segment)
           break
         case 'encounter_start':
         case 'encounter_end':

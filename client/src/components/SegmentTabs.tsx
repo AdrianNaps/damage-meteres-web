@@ -4,16 +4,16 @@ import { send } from '../ws'
 export function SegmentTabs() {
   const history = useStore(s => s.segmentHistory)
   const selectedId = useStore(s => s.selectedSegmentId)
-  const currentSegment = useStore(s => s.currentSegment)
-  const setSelectedSegment = useStore(s => s.setSelectedSegment)
+  const liveSegment = useStore(s => s.liveSegment)
+  const setSelectedSegmentId = useStore(s => s.setSelectedSegmentId)
 
   if (history.length === 0) return null
 
   function selectSegment(id: string | null) {
     if (id === null) {
-      setSelectedSegment(null)
+      setSelectedSegmentId(null)
     } else {
-      setSelectedSegment(id)
+      setSelectedSegmentId(id)
       send({ type: 'get_segment', segmentId: id })
     }
   }
@@ -22,7 +22,7 @@ export function SegmentTabs() {
 
   return (
     <div className="flex gap-1 px-4 pt-3 overflow-x-auto">
-      {currentSegment && (
+      {liveSegment && (
         <button
           onClick={() => selectSegment(null)}
           className={`px-3 py-1.5 rounded text-xs whitespace-nowrap transition-colors ${

@@ -10,7 +10,10 @@ function formatNum(n: number): string {
 
 export function BreakdownPanel() {
   const selectedPlayer = useStore(s => s.selectedPlayer)
-  const currentSegment = useStore(s => s.currentSegment)
+  const selectedId = useStore(s => s.selectedSegmentId)
+  const liveSegment = useStore(s => s.liveSegment)
+  const selectedSegment = useStore(s => s.selectedSegment)
+  const currentSegment = selectedId === null ? liveSegment : selectedSegment
   const metric = useStore(s => s.metric)
   const setSelectedPlayer = useStore(s => s.setSelectedPlayer)
 
