@@ -71,7 +71,7 @@ export function startWsServer(
       } else if (msg.type === 'get_segment') {
         const seg = store.getById(msg.segmentId)
         if (seg) {
-          ws.send(JSON.stringify({ type: 'segment_detail', segment: store.toSnapshot(seg) }))
+          ws.send(JSON.stringify({ type: 'segment_detail', segmentId: seg.id, segment: store.toSnapshot(seg) }))
         }
       }
     })

@@ -1,11 +1,8 @@
 import { useEffect, useState } from 'react'
-import { useStore } from '../store'
+import { useStore, selectCurrentSegment } from '../store'
 
 export function EncounterHeader() {
-  const selectedId = useStore(s => s.selectedSegmentId)
-  const liveSegment = useStore(s => s.liveSegment)
-  const selectedSegment = useStore(s => s.selectedSegment)
-  const currentSegment = selectedId === null ? liveSegment : selectedSegment
+  const currentSegment = useStore(selectCurrentSegment)
   const wsStatus = useStore(s => s.wsStatus)
   const [elapsed, setElapsed] = useState(0)
 

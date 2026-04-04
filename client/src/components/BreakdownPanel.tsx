@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { useStore } from '../store'
+import { useStore, selectCurrentSegment } from '../store'
 import { DamageSpellTable, HealSpellTable } from './SpellTable'
 
 function formatNum(n: number): string {
@@ -10,10 +10,7 @@ function formatNum(n: number): string {
 
 export function BreakdownPanel() {
   const selectedPlayer = useStore(s => s.selectedPlayer)
-  const selectedId = useStore(s => s.selectedSegmentId)
-  const liveSegment = useStore(s => s.liveSegment)
-  const selectedSegment = useStore(s => s.selectedSegment)
-  const currentSegment = selectedId === null ? liveSegment : selectedSegment
+  const currentSegment = useStore(selectCurrentSegment)
   const metric = useStore(s => s.metric)
   const setSelectedPlayer = useStore(s => s.setSelectedPlayer)
 

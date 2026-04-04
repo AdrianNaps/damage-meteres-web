@@ -13,7 +13,7 @@ interface AppState {
   setLiveSegment: (s: SegmentSnapshot) => void
   setSelectedSegment: (s: SegmentSnapshot | null) => void
   setSegmentHistory: (list: SegmentSummary[]) => void
-  setSelectedSegmentId: (id: string | null) => void
+  setSelectedSegmentId: (id: string | null) => void  // also clears selectedPlayer and (when null) selectedSegment
   setSelectedPlayer: (name: string | null) => void
   setMetric: (m: 'damage' | 'healing') => void
   setWsStatus: (s: AppState['wsStatus']) => void
@@ -31,8 +31,11 @@ export const useStore = create<AppState>((set) => ({
   setLiveSegment: (s) => set({ liveSegment: s }),
   setSelectedSegment: (s) => set({ selectedSegment: s }),
   setSegmentHistory: (list) => set({ segmentHistory: list }),
-  setSelectedSegmentId: (id) => set({ selectedSegmentId: id, selectedPlayer: null }),
+  setSelectedSegmentId: (id) => set({ selectedSegmentId: id, selectedPlayer: null, ...(id === null ? { selectedSegment: null } : {}) }),
   setSelectedPlayer: (name) => set({ selectedPlayer: name }),
   setMetric: (m) => set({ metric: m }),
   setWsStatus: (s) => set({ wsStatus: s }),
 }))
+
+export const selectCurrentSegment = (s: AppState) =>
+  s.selectedSegmentId === null ? s.liveSegment : s.selectedSegment

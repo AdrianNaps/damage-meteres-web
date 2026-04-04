@@ -36,7 +36,9 @@ export function connectWs() {
           setSegmentHistory(msg.segments)
           break
         case 'segment_detail':
-          setSelectedSegment(msg.segment)
+          if (msg.segmentId === useStore.getState().selectedSegmentId) {
+            setSelectedSegment(msg.segment)
+          }
           break
         case 'encounter_start':
         case 'encounter_end':
