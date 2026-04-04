@@ -25,6 +25,7 @@ export interface SpellHealStats {
 
 export interface PlayerSnapshot {
   name: string
+  specId?: number
   dps: number
   hps: number
   damage: { total: number; spells: Record<string, SpellDamageStats> }

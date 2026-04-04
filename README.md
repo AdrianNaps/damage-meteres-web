@@ -27,14 +27,16 @@ This is the **#1 setup failure point** — the path must point to the `Logs/` fo
 
 **3. Install dependencies**
 
+From the project root:
+
 ```bash
 npm install
-cd client && npm install
+npm install --prefix client
 ```
 
 ## Running
 
-Open two terminals:
+Both servers can be started from the project root. Open two terminals:
 
 ```bash
 # Terminal 1 — backend
