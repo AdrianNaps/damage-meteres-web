@@ -5,7 +5,8 @@
   "scripts": {
     "start": "tsx server/index.ts",
     "dev:server": "tsx server/index.ts",
-    "dev:client": "cd client && npm run dev"
+    "dev:client": "cd client && npm run dev",
+    "test": "tsx --test server/stateMachine.test.ts"
   },
   "dependencies": {
     "chokidar": "^3.6.0",

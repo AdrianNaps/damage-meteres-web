@@ -9,10 +9,10 @@ type Mode = 'idle' | 'in_key' | 'in_boss'
 export class EncounterStateMachine extends EventEmitter {
   private store: SegmentStore
   private mode: Mode = 'idle'
-  private keySegment: Segment | null = null  // current active trash segment
+  private activeTrashSegment: Segment | null = null  // trash segment currently receiving events
   private dungeonName: string | null = null
   private trashCount = 0
-  currentSegment: Segment | null = null      // segment receiving events right now
+  currentSegment: Segment | null = null              // segment receiving events right now
 
   constructor(store: SegmentStore) {
     super()
@@ -24,11 +24,11 @@ export class EncounterStateMachine extends EventEmitter {
       case 'CHALLENGE_MODE_START': {
         if (this.mode !== 'idle') break
         const p = event.payload as ChallengeModePayload
-        this.dungeonName = p.dungeonName
+        this.dungeonName = p.dungeonName ?? null
         this.trashCount = 1
         const segment = this._makeSegment(`${p.dungeonName} — Trash 1`, event.timestamp)
         this.store.push(segment)
-        this.keySegment = segment
+        this.activeTrashSegment = segment
         this.currentSegment = segment
         this.mode = 'in_key'
         console.log(`[key] START — ${p.dungeonName} +${p.keystoneLevel}`)
@@ -45,13 +45,14 @@ export class EncounterStateMachine extends EventEmitter {
           this.currentSegment.success = false
           this.emit('encounter_end', this.currentSegment)
         }
-        if (this.keySegment) {
-          this.keySegment.endTime = event.timestamp
-          this.keySegment.success = p.success ?? false
+        if (this.activeTrashSegment) {
+          this.activeTrashSegment.endTime = event.timestamp
+          this.activeTrashSegment.success = p.success ?? false
           console.log(`[key] END (${p.success ? 'timed' : 'depleted'}, ${((p.durationMs ?? 0) / 60000).toFixed(1)}m)`)
-          this.emit('challenge_end', this.keySegment)
+          // Emits the last (most recent) trash segment for the key, not the original Trash 1
+          this.emit('challenge_end', this.activeTrashSegment)
         }
-        this.keySegment = null
+        this.activeTrashSegment = null
         this.dungeonName = null
         this.trashCount = 0
         this.currentSegment = null
@@ -64,9 +65,9 @@ export class EncounterStateMachine extends EventEmitter {
         const p = event.payload as EncounterPayload
         const segment = this._makeSegment(p.encounterName, event.timestamp)
         // Carry over spec info gathered from COMBATANT_INFO during trash
-        if (this.keySegment) {
-          segment.guidToSpec = { ...this.keySegment.guidToSpec }
-          segment.guidToName = { ...this.keySegment.guidToName }
+        if (this.activeTrashSegment) {
+          segment.guidToSpec = { ...this.activeTrashSegment.guidToSpec }
+          segment.guidToName = { ...this.activeTrashSegment.guidToName }
         }
         this.store.push(segment)
         this.currentSegment = segment
@@ -95,7 +96,7 @@ export class EncounterStateMachine extends EventEmitter {
             trashSegment.guidToName = { ...this.currentSegment.guidToName }
           }
           this.store.push(trashSegment)
-          this.keySegment = trashSegment
+          this.activeTrashSegment = trashSegment
           this.currentSegment = trashSegment
           this.mode = 'in_key'
         } else {
