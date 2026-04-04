@@ -54,6 +54,7 @@ export interface Segment {
   players: Record<string, PlayerData>
   guidToSpec: Record<string, number>   // playerGuid → specId, populated by COMBATANT_INFO
   guidToName: Record<string, string>   // playerGuid → playerName
+  petToOwner: Record<string, string>   // petGuid → ownerGuid, populated by SPELL_SUMMON and SWING_DAMAGE advanced-log
 }
 
 // Derived values computed at read time, not stored

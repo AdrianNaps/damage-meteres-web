@@ -64,10 +64,11 @@ export class EncounterStateMachine extends EventEmitter {
         if (this.mode === 'in_boss') break  // shouldn't happen, but guard against nested events
         const p = event.payload as EncounterPayload
         const segment = this._makeSegment(p.encounterName, event.timestamp)
-        // Carry over spec info gathered from COMBATANT_INFO during trash
+        // Carry over spec/name/pet info gathered during trash
         if (this.activeTrashSegment) {
           segment.guidToSpec = { ...this.activeTrashSegment.guidToSpec }
           segment.guidToName = { ...this.activeTrashSegment.guidToName }
+          segment.petToOwner = { ...this.activeTrashSegment.petToOwner }
         }
         this.store.push(segment)
         this.currentSegment = segment
@@ -90,10 +91,11 @@ export class EncounterStateMachine extends EventEmitter {
         if (this.dungeonName) {
           this.trashCount++
           const trashSegment = this._makeSegment(`${this.dungeonName} — Trash ${this.trashCount}`, event.timestamp)
-          // Carry over spec/name info accumulated so far
+          // Carry over spec/name/pet info accumulated so far
           if (this.currentSegment) {
             trashSegment.guidToSpec = { ...this.currentSegment.guidToSpec }
             trashSegment.guidToName = { ...this.currentSegment.guidToName }
+            trashSegment.petToOwner = { ...this.currentSegment.petToOwner }
           }
           this.store.push(trashSegment)
           this.activeTrashSegment = trashSegment
@@ -127,6 +129,7 @@ export class EncounterStateMachine extends EventEmitter {
       players: {},
       guidToSpec: {},
       guidToName: {},
+      petToOwner: {},
     }
   }
 }

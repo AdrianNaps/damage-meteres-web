@@ -1,4 +1,4 @@
-import type { ParsedEvent, DamagePayload, HealPayload, CombatantInfoPayload } from './types.js'
+import type { ParsedEvent, DamagePayload, HealPayload, CombatantInfoPayload, SummonPayload } from './types.js'
 import type { Segment, PlayerData, SpellDamageStats, SpellHealStats } from './store.js'
 
 export function applyEvent(segment: Segment, event: ParsedEvent) {
@@ -15,8 +15,32 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
     return
   }
 
+  if (payload.type === 'summon') {
+    const p = payload as SummonPayload
+    segment.petToOwner[event.dest.guid] = p.ownerGuid
+    segment.guidToName[p.ownerGuid] = p.ownerName
+    return
+  }
+
   if (payload.type === 'damage') {
-    applyDamage(segment, event.source.name, event.source.guid, payload as DamagePayload)
+    const dmg = payload as DamagePayload
+    let sourceName = event.source.name
+    let sourceGuid = event.source.guid
+
+    const isPet = !!(event.source.flags & (0x1000 | 0x2000))
+    if (isPet) {
+      // Bootstrap petToOwner from SWING_DAMAGE advanced-log owner field when available
+      if (dmg.swingOwnerGuid && dmg.swingOwnerGuid !== '0000000000000000') {
+        segment.petToOwner[event.source.guid] = dmg.swingOwnerGuid
+      }
+      const ownerGuid = segment.petToOwner[event.source.guid]
+      const ownerName = ownerGuid ? segment.guidToName[ownerGuid] : undefined
+      if (!ownerName) return  // unknown pet — skip rather than create a phantom entry
+      sourceName = ownerName
+      sourceGuid = ownerGuid!
+    }
+
+    applyDamage(segment, sourceName, sourceGuid, dmg)
   } else if (payload.type === 'heal') {
     applyHeal(segment, event.source.name, event.source.guid, payload as HealPayload)
   }

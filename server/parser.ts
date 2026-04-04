@@ -1,6 +1,9 @@
 import type { ParsedEvent, DamagePayload, HealPayload, UnitRef } from './types.js'
 
-const PLAYER_FLAG = 0x400
+const PLAYER_FLAG      = 0x400
+const PET_FLAG         = 0x1000
+const GUARDIAN_FLAG    = 0x2000
+const PET_OWNER_FLAG   = PLAYER_FLAG | PET_FLAG | GUARDIAN_FLAG
 
 // Placeholder used for events that have no source/dest (ENCOUNTER_*, CHALLENGE_MODE_*)
 const NULL_UNIT: UnitRef = Object.freeze({ guid: '', name: '', flags: 0 })
@@ -101,9 +104,18 @@ export function parseLine(raw: string): ParsedEvent | null {
   }
 
   switch (eventType) {
+    case 'SPELL_SUMMON': {
+      if (!(source.flags & PLAYER_FLAG)) return null
+      return {
+        timestamp, type: eventType, source, dest,
+        payload: { type: 'summon', ownerGuid: source.guid, ownerName: source.name }
+      }
+    }
+
     case 'SPELL_DAMAGE':
     case 'SPELL_PERIODIC_DAMAGE': {
-      if (!(source.flags & PLAYER_FLAG)) return null
+      if (!(source.flags & PET_OWNER_FLAG)) return null
+      if (source.guid === dest.guid) return null
       const damage = parseDamageSuffix(fields)
       if (!damage) return null
       return {
@@ -113,12 +125,15 @@ export function parseLine(raw: string): ParsedEvent | null {
     }
 
     case 'SWING_DAMAGE': {
-      if (!(source.flags & PLAYER_FLAG)) return null
+      if (!(source.flags & PET_OWNER_FLAG)) return null
+      if (source.guid === dest.guid) return null
       const damage = parseDamageSuffix(fields)
       if (!damage) return null
+      // For pet/guardian swings, the advanced-log block is source-side: fields[9]=unitGuid, fields[10]=ownerGuid
+      const swingOwnerGuid = (source.flags & (PET_FLAG | GUARDIAN_FLAG)) ? fields[10] : null
       return {
         timestamp, type: eventType, source, dest,
-        payload: { type: 'damage', spellId: 'swing', spellName: 'Melee', ...damage }
+        payload: { type: 'damage', spellId: 'swing', spellName: 'Melee', swingOwnerGuid, ...damage }
       }
     }
 

@@ -4,6 +4,7 @@ export type EventType =
   | 'CHALLENGE_MODE_START'
   | 'CHALLENGE_MODE_END'
   | 'COMBATANT_INFO'
+  | 'SPELL_SUMMON'
   | 'SPELL_DAMAGE'
   | 'SPELL_PERIODIC_DAMAGE'
   | 'SWING_DAMAGE'
@@ -31,6 +32,7 @@ export interface DamagePayload {
   critical: boolean
   glancing: boolean
   crushing: boolean
+  swingOwnerGuid?: string | null  // set on SWING_DAMAGE from pets/guardians; owner GUID from advanced-log fields
 }
 
 export interface HealPayload {
@@ -75,7 +77,13 @@ export interface ChallengeModePayload {
   durationMs?: number   // present on END only
 }
 
-export type EventPayload = DamagePayload | HealPayload | EncounterPayload | DeathPayload | CombatantInfoPayload | ChallengeModePayload
+export interface SummonPayload {
+  type: 'summon'
+  ownerGuid: string
+  ownerName: string
+}
+
+export type EventPayload = DamagePayload | HealPayload | EncounterPayload | DeathPayload | CombatantInfoPayload | ChallengeModePayload | SummonPayload
 
 export interface ParsedEvent {
   timestamp: number
