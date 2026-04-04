@@ -36,17 +36,30 @@ npm install --prefix client
 
 ## Running
 
-Both servers can be started from the project root. Open two terminals:
+### Local development
+
+Two terminals, hot-reload on both:
 
 ```bash
-# Terminal 1 — backend
+# Terminal 1 — backend (port 3001)
 npm run dev:server
 
-# Terminal 2 — frontend
+# Terminal 2 — frontend (port 5173)
 npm run dev:client
 ```
 
-Then open `http://localhost:5173`.
+Open `http://localhost:5173`.
+
+### Production / tunneling
+
+Everything runs on a single port, so you only need to expose one URL:
+
+```bash
+npm run build   # builds the client into client/dist/
+npm start       # serves client + WebSocket on port 3001
+```
+
+Open `http://localhost:3001`, or tunnel port 3001 with any service (e.g. justtunnel) and share that URL. The WebSocket automatically connects back through the same host — no hardcoded addresses.
 
 The server will auto-detect the most recent `WoWCombatLog-*.txt` in your `Logs/` directory (if it's less than 24 hours old) and begin tailing it. When WoW creates a new log file (e.g. on dungeon entry), the server switches to it automatically.
 

@@ -1,6 +1,9 @@
 import { useStore } from './store'
 
-const WS_URL = 'ws://localhost:3001'
+// In dev (Vite), VITE_WS_URL points to the local server.
+// In production (served from Node), derive from the current page's host.
+const WS_URL = import.meta.env.VITE_WS_URL
+  ?? `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`
 
 let ws: WebSocket | null = null
 

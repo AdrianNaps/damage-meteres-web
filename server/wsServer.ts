@@ -1,15 +1,14 @@
+import http from 'http'
 import { WebSocketServer, WebSocket } from 'ws'
 import type { SegmentStore, Segment } from './store.js'
 import type { EncounterStateMachine } from './stateMachine.js'
 
 export function startWsServer(
-  port: number,
+  server: http.Server,
   store: SegmentStore,
   machine: EncounterStateMachine,
 ) {
-  const wss = new WebSocketServer({ port })
-
-  console.log(`[ws] Listening on ws://localhost:${port}`)
+  const wss = new WebSocketServer({ server })
 
   function broadcast(msg: object) {
     const data = JSON.stringify(msg)
