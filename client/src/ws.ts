@@ -8,7 +8,7 @@ const WS_URL = import.meta.env.VITE_WS_URL
 let ws: WebSocket | null = null
 
 export function connectWs() {
-  const { setWsStatus, setLiveSegment, setSelectedSegment, setSegmentHistory } = useStore.getState()
+  const { setWsStatus, setLiveSegment, setSelectedSegment, setSegmentHistory, setTargetDetail } = useStore.getState()
 
   function connect() {
     setWsStatus('connecting')
@@ -48,6 +48,9 @@ export function connectWs() {
           // state_update will follow; request fresh segment list
           send({ type: 'get_segment_list' })
           break
+        case 'target_detail':
+          setTargetDetail(msg)
+          break
       }
     }
   }
@@ -59,4 +62,8 @@ export function send(msg: object) {
   if (ws?.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(msg))
   }
+}
+
+export function requestTargetDetail(segmentId: string, targetName: string) {
+  send({ type: 'get_target_detail', segmentId, targetName })
 }

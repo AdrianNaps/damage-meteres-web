@@ -130,6 +130,7 @@ export class EncounterStateMachine extends EventEmitter {
       guidToSpec: {},
       guidToName: {},
       petToOwner: {},
+      targetDamageTaken: {},
     }
   }
 }

@@ -25,9 +25,25 @@ export interface SpellHealStats {
   critCount: number
 }
 
+export interface TargetDamageStats {
+  targetName: string
+  total: number
+}
+
+export interface SourceDamageStats {
+  sourceName: string
+  total: number
+}
+
+export interface TargetDamageTaken {
+  total: number
+  sources: Record<string, SourceDamageStats>
+}
+
 export interface DamageData {
   total: number
   spells: Record<string, SpellDamageStats>
+  targets: Record<string, TargetDamageStats>
 }
 
 export interface HealData {
@@ -55,6 +71,7 @@ export interface Segment {
   guidToSpec: Record<string, number>   // playerGuid → specId, populated by COMBATANT_INFO
   guidToName: Record<string, string>   // playerGuid → playerName
   petToOwner: Record<string, string>   // petGuid → ownerGuid, populated by SPELL_SUMMON and SWING_DAMAGE advanced-log
+  targetDamageTaken: Record<string, TargetDamageTaken>
 }
 
 // Derived values computed at read time, not stored

@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { SegmentSnapshot, SegmentSummary } from './types'
+import type { SegmentSnapshot, SegmentSummary, TargetDetail } from './types'
 
 interface AppState {
   liveSegment: SegmentSnapshot | null
@@ -9,6 +9,7 @@ interface AppState {
   selectedPlayer: string | null
   metric: 'damage' | 'healing'
   wsStatus: 'connecting' | 'connected' | 'disconnected'
+  targetDetail: TargetDetail | null
 
   setLiveSegment: (s: SegmentSnapshot) => void
   setSelectedSegment: (s: SegmentSnapshot | null) => void
@@ -17,6 +18,7 @@ interface AppState {
   setSelectedPlayer: (name: string | null) => void
   setMetric: (m: 'damage' | 'healing') => void
   setWsStatus: (s: AppState['wsStatus']) => void
+  setTargetDetail: (d: TargetDetail | null) => void
 }
 
 export const useStore = create<AppState>((set) => ({
@@ -27,6 +29,7 @@ export const useStore = create<AppState>((set) => ({
   selectedPlayer: null,
   metric: 'damage',
   wsStatus: 'connecting',
+  targetDetail: null,
 
   setLiveSegment: (s) => set({ liveSegment: s }),
   setSelectedSegment: (s) => set({ selectedSegment: s }),
@@ -35,6 +38,7 @@ export const useStore = create<AppState>((set) => ({
   setSelectedPlayer: (name) => set({ selectedPlayer: name }),
   setMetric: (m) => set({ metric: m }),
   setWsStatus: (s) => set({ wsStatus: s }),
+  setTargetDetail: (d) => set({ targetDetail: d }),
 }))
 
 export const selectCurrentSegment = (s: AppState) =>

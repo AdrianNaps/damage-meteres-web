@@ -23,12 +23,23 @@ export interface SpellHealStats {
   critCount: number
 }
 
+export interface TargetDamageStats {
+  targetName: string
+  total: number
+}
+
+export interface TargetDetail {
+  targetName: string
+  total: number
+  sources: { sourceName: string; total: number }[]
+}
+
 export interface PlayerSnapshot {
   name: string
   specId?: number
   dps: number
   hps: number
-  damage: { total: number; spells: Record<string, SpellDamageStats> }
+  damage: { total: number; spells: Record<string, SpellDamageStats>; targets: Record<string, TargetDamageStats> }
   healing: { total: number; overheal: number; spells: Record<string, SpellHealStats> }
 }
 

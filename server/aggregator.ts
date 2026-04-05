@@ -1,7 +1,7 @@
 import type { ParsedEvent, DamagePayload, HealPayload, CombatantInfoPayload } from './types.js'
 import { PET_FLAG, GUARDIAN_FLAG } from './types.js'
 
-import type { Segment, PlayerData, SpellDamageStats, SpellHealStats } from './store.js'
+import type { Segment, PlayerData, SpellDamageStats, SpellHealStats, TargetDamageStats } from './store.js'
 
 export function applyEvent(segment: Segment, event: ParsedEvent) {
   const { payload } = event
@@ -47,7 +47,7 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
       sourceGuid = ownerGuid!
     }
 
-    applyDamage(segment, sourceName, sourceGuid, dmg)
+    applyDamage(segment, sourceName, sourceGuid, event.dest.name, dmg)
   } else if (payload.type === 'heal') {
     applyHeal(segment, event.source.name, event.source.guid, payload as HealPayload)
   }
@@ -62,7 +62,7 @@ function getOrCreatePlayer(segment: Segment, name: string, guid: string): Player
     segment.players[name] = {
       name,
       specId: segment.guidToSpec[guid],
-      damage: { total: 0, spells: {} },
+      damage: { total: 0, spells: {}, targets: {} },
       healing: { total: 0, overheal: 0, spells: {} },
     }
   } else if (segment.players[name].specId === undefined && segment.guidToSpec[guid] !== undefined) {
@@ -71,7 +71,7 @@ function getOrCreatePlayer(segment: Segment, name: string, guid: string): Player
   return segment.players[name]
 }
 
-function applyDamage(segment: Segment, sourceName: string, sourceGuid: string, payload: DamagePayload) {
+function applyDamage(segment: Segment, sourceName: string, sourceGuid: string, destName: string, payload: DamagePayload) {
   const player = getOrCreatePlayer(segment, sourceName, sourceGuid)
   const { spellId, spellName, amount, absorbed, resisted, blocked, critical } = payload
 
@@ -95,6 +95,21 @@ function applyDamage(segment: Segment, sourceName: string, sourceGuid: string, p
       blocked: 0,
     }
   }
+
+  if (!player.damage.targets[destName]) {
+    player.damage.targets[destName] = { targetName: destName, total: 0 }
+  }
+  player.damage.targets[destName].total += amount
+
+  if (!segment.targetDamageTaken[destName]) {
+    segment.targetDamageTaken[destName] = { total: 0, sources: {} }
+  }
+  const taken = segment.targetDamageTaken[destName]
+  taken.total += amount
+  if (!taken.sources[sourceName]) {
+    taken.sources[sourceName] = { sourceName, total: 0 }
+  }
+  taken.sources[sourceName].total += amount
 
   const spell = player.damage.spells[spellId]
   spell.total += amount

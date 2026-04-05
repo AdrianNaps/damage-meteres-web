@@ -72,6 +72,19 @@ export function startWsServer(
         if (seg) {
           ws.send(JSON.stringify({ type: 'segment_detail', segmentId: seg.id, segment: store.toSnapshot(seg) }))
         }
+      } else if (msg.type === 'get_target_detail') {
+        const seg = store.getById(msg.segmentId)
+        if (seg) {
+          const entry = seg.targetDamageTaken[msg.targetName]
+          if (entry) {
+            ws.send(JSON.stringify({
+              type: 'target_detail',
+              targetName: msg.targetName,
+              total: entry.total,
+              sources: Object.values(entry.sources).sort((a, b) => b.total - a.total),
+            }))
+          }
+        }
       }
     })
 
