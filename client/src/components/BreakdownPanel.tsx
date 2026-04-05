@@ -55,6 +55,7 @@ export function BreakdownPanel() {
   }
 
   function renderContent() {
+    if (!currentSegment) return null
     if (metric === 'healing') {
       return <HealSpellTable spells={player.healing.spells} />
     }
