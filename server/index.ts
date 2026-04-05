@@ -63,15 +63,11 @@ httpServer.listen(port, () => {
 
 const watcher = new LogWatcher(logsDir)
 
-watcher.on('file_switched', (filePath: string) => {
-  console.log(`[watcher] Active log → ${path.basename(filePath)}`)
-})
 
 watcher.on('lines', (lines: string[]) => {
   for (const line of lines) {
     const event = parseLine(line)
     if (!event) continue
-    console.log(`[${event.type}] ${event.source.name} → ${event.dest.name}`, JSON.stringify(event.payload))
     machine.handle(event)
   }
 })
