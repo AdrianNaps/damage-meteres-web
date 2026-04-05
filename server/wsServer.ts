@@ -74,16 +74,16 @@ export function startWsServer(
         }
       } else if (msg.type === 'get_target_detail') {
         const seg = store.getById(msg.segmentId)
-        if (seg) {
-          const entry = seg.targetDamageTaken[msg.targetName]
-          if (entry) {
-            ws.send(JSON.stringify({
-              type: 'target_detail',
-              targetName: msg.targetName,
-              total: entry.total,
-              sources: Object.values(entry.sources).sort((a, b) => b.total - a.total),
-            }))
-          }
+        const entry = seg?.targetDamageTaken[msg.targetName]
+        if (entry) {
+          ws.send(JSON.stringify({
+            type: 'target_detail',
+            targetName: msg.targetName,
+            total: entry.total,
+            sources: Object.values(entry.sources).sort((a, b) => b.total - a.total),
+          }))
+        } else {
+          ws.send(JSON.stringify({ type: 'target_detail_not_found', targetName: msg.targetName }))
         }
       }
     })

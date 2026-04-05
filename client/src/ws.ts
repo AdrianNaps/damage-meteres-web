@@ -49,7 +49,10 @@ export function connectWs() {
           send({ type: 'get_segment_list' })
           break
         case 'target_detail':
-          setTargetDetail(msg)
+          setTargetDetail({ targetName: msg.targetName, total: msg.total, sources: msg.sources })
+          break
+        case 'target_detail_not_found':
+          setTargetDetail(null)
           break
       }
     }

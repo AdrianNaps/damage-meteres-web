@@ -4,12 +4,7 @@ import { DamageSpellTable, HealSpellTable } from './SpellTable'
 import { TargetTable } from './TargetTable'
 import { TargetDrillDown } from './TargetDrillDown'
 import { requestTargetDetail } from '../ws'
-
-function formatNum(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
-  return String(Math.round(n))
-}
+import { formatNum } from '../utils/format'
 
 export function BreakdownPanel() {
   const selectedPlayer = useStore(s => s.selectedPlayer)
@@ -20,6 +15,12 @@ export function BreakdownPanel() {
   const [drillTarget, setDrillTarget] = useState<string | null>(null)
   const targetDetail = useStore(s => s.targetDetail)
   const setTargetDetail = useStore(s => s.setTargetDetail)
+
+  // Clear drill state when the panel closes or a different player is selected (F1)
+  useEffect(() => {
+    setDrillTarget(null)
+    setTargetDetail(null)
+  }, [selectedPlayer, setTargetDetail])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -43,6 +44,43 @@ export function BreakdownPanel() {
 
   const value = metric === 'damage' ? player.dps : player.hps
   const total = metric === 'damage' ? player.damage.total : player.healing.total
+
+  // Clear drill state when switching away from targets tab (F2)
+  function handleModeChange(mode: 'spells' | 'targets') {
+    setViewMode(mode)
+    if (mode !== 'targets') {
+      setDrillTarget(null)
+      setTargetDetail(null)
+    }
+  }
+
+  function renderContent() {
+    if (metric === 'healing') {
+      return <HealSpellTable spells={player.healing.spells} />
+    }
+    if (drillTarget && targetDetail?.targetName === drillTarget) {
+      return (
+        <TargetDrillDown
+          detail={targetDetail}
+          onBack={() => { setDrillTarget(null); setTargetDetail(null) }}
+        />
+      )
+    }
+    if (viewMode === 'targets') {
+      return (
+        <TargetTable
+          targets={player.damage.targets}
+          totalDamage={player.damage.total}
+          duration={currentSegment.duration}
+          onSelect={(name) => {
+            setDrillTarget(name)
+            requestTargetDetail(currentSegment.id, name)
+          }}
+        />
+      )
+    }
+    return <DamageSpellTable spells={player.damage.spells} />
+  }
 
   return (
     <>
@@ -74,7 +112,7 @@ export function BreakdownPanel() {
             {(['spells', 'targets'] as const).map(mode => (
               <button
                 key={mode}
-                onClick={() => setViewMode(mode)}
+                onClick={() => handleModeChange(mode)}
                 className={`text-xs px-3 py-1 rounded capitalize transition-colors ${
                   viewMode === mode
                     ? 'bg-white/10 text-white'
@@ -88,25 +126,7 @@ export function BreakdownPanel() {
         )}
 
         <div className="flex-1 overflow-y-auto px-4 py-3">
-          {metric === 'damage' && drillTarget && targetDetail?.targetName === drillTarget
-            ? <TargetDrillDown
-                detail={targetDetail}
-                onBack={() => { setDrillTarget(null); setTargetDetail(null) }}
-              />
-            : metric === 'damage' && viewMode === 'targets'
-              ? <TargetTable
-                  targets={player.damage.targets}
-                  totalDamage={player.damage.total}
-                  duration={currentSegment.duration}
-                  onSelect={(name) => {
-                    setDrillTarget(name)
-                    requestTargetDetail(currentSegment.id, name)
-                  }}
-                />
-              : metric === 'damage'
-                ? <DamageSpellTable spells={player.damage.spells} />
-                : <HealSpellTable spells={player.healing.spells} />
-          }
+          {renderContent()}
         </div>
       </div>
     </>
