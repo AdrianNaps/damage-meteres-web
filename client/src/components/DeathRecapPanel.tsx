@@ -54,7 +54,7 @@ function computeHpFractions(recap: DeathRecapEvent[]): number[] {
   // Events after the killing blow (shouldn't exist, but cap them at 0)
   for (let i = kbIdx + 1; i < n; i++) hp[i] = 0
 
-  const maxHp = Math.max(...hp, 1)
+  const maxHp = hp.reduce((a, b) => Math.max(a, b), 1)
   return hp.map(v => Math.min(1, Math.max(0, v / maxHp)))
 }
 
@@ -133,7 +133,7 @@ export function DeathRecapPanel() {
           ) : (
             events.map((e, i) => (
               <RecapRow
-                key={i}
+                key={`${e.timestamp}-${e.spellId}-${e.kind}`}
                 event={e}
                 death={selectedDeath}
                 hpFraction={hpFractions[i]}

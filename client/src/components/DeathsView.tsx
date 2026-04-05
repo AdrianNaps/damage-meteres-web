@@ -46,6 +46,7 @@ export function DeathsView() {
               key={`${record.playerGuid}-${record.timeOfDeath}`}
               record={record}
               rank={i + 1}
+              specId={currentView.players[record.playerName]?.specId}
               onClick={() => setSelectedDeath(record)}
             />
           ))
@@ -58,15 +59,14 @@ export function DeathsView() {
 function DeathRow({
   record,
   rank,
+  specId,
   onClick,
 }: {
   record: PlayerDeathRecord
   rank: number
+  specId?: number
   onClick: () => void
 }) {
-  // Look up specId from the current view's player data via playerName
-  const currentView = useStore(selectCurrentView)
-  const specId = currentView?.players[record.playerName]?.specId
   const color = getClassColor(specId)
 
   const kb = record.killingBlow

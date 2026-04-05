@@ -45,7 +45,6 @@ export interface DeathRecapEvent {
   critical: boolean
   sourceName: string
   sourceIsPlayer: boolean
-  healthPercent: number
 }
 
 export interface PlayerDeathRecord {
@@ -53,7 +52,6 @@ export interface PlayerDeathRecord {
   playerGuid: string
   timeOfDeath: number
   combatElapsed: number
-  unconscious: boolean
   killingBlow: {
     spellId: string
     spellName: string

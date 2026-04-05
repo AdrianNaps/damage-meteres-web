@@ -6,9 +6,7 @@ import type { Segment, PlayerData, SpellDamageStats, SpellHealStats, TargetDamag
 // Rolling window of recent damage/heal events per player GUID — not persisted to snapshot
 const recentEvents = new Map<string, DeathRecapEvent[]>()
 
-const RECAP_WINDOW_SECONDS  = 10  // how far back to collect events
-export const RECAP_DISPLAY_SECONDS = 7   // Details default: 7 s
-export const RECAP_MAX_DISPLAY     = 10  // max rows in UI
+const RECAP_WINDOW_SECONDS = 10  // how far back to collect events
 
 function isPlayerGuid(guid: string): boolean {
   return guid.startsWith('Player-')
@@ -63,7 +61,6 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
         critical:       dmg.critical,
         sourceName:     event.source.name,
         sourceIsPlayer: isPlayerGuid(event.source.guid),
-        healthPercent:  0,
       })
     }
 
@@ -111,7 +108,6 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
         critical:       heal.critical,
         sourceName:     event.source.name,
         sourceIsPlayer: isPlayerGuid(event.source.guid),
-        healthPercent:  0,
       })
     }
 
@@ -136,7 +132,6 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
       combatElapsed: segment.firstEventTime != null
         ? (event.timestamp - segment.firstEventTime) / 1000
         : 0,
-      unconscious: false,
       killingBlow: killingBlow
         ? {
             spellId:    killingBlow.spellId,

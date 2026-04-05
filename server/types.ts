@@ -106,7 +106,6 @@ export interface DeathRecapEvent {
   critical: boolean
   sourceName: string       // who dealt the damage / who cast the heal
   sourceIsPlayer: boolean  // true if source is a player (not an NPC)
-  healthPercent: number    // estimated — 0 in first pass
 }
 
 export interface PlayerDeathRecord {
@@ -114,7 +113,6 @@ export interface PlayerDeathRecord {
   playerGuid: string
   timeOfDeath: number        // absolute ms timestamp
   combatElapsed: number      // seconds since segment.firstEventTime
-  unconscious: boolean       // feign death, divine shield, etc. — not a real death
   killingBlow: {
     spellId: string
     spellName: string

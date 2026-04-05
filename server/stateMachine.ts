@@ -2,7 +2,7 @@ import { EventEmitter } from 'events'
 import { randomUUID } from 'crypto'
 import type { ParsedEvent, EncounterPayload, ChallengeModePayload } from './types.js'
 import { SegmentStore, type Segment } from './store.js'
-import { applyEvent } from './aggregator.js'
+import { applyEvent, resetRecentEvents } from './aggregator.js'
 
 type Mode = 'idle' | 'in_key' | 'in_boss'
 
@@ -141,6 +141,7 @@ export class EncounterStateMachine extends EventEmitter {
   }
 
   private _makeSegment(name: string, startTime: number): Segment {
+    resetRecentEvents()
     return {
       id: randomUUID(),
       keyRunId: this.currentKeyRunId,
