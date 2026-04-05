@@ -34,6 +34,10 @@ npm install
 npm install --prefix client
 ```
 
+**4. In-game logging**
+To begin generating logs, you'll need to type `/combatlog` before the key or raid begins. There are a few addons/tools that automate this such as [Simple Combat Logger](https://www.curseforge.com/wow/addons/simplecombatlogger)
+
+
 ## Running
 
 ### Local development
@@ -49,6 +53,7 @@ npm run dev:client
 ```
 
 Open `http://localhost:5173`.
+
 
 ### Production / tunneling
 

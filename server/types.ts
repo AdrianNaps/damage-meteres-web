@@ -94,3 +94,32 @@ export interface ParsedEvent {
   dest: UnitRef
   payload: EventPayload
 }
+
+export interface DeathRecapEvent {
+  timestamp: number        // absolute ms (same epoch as ParsedEvent.timestamp)
+  kind: 'damage' | 'heal'
+  spellId: string
+  spellName: string
+  amount: number           // effective damage or effective heal
+  overkill: number         // > 0 on the killing blow
+  absorbed: number
+  critical: boolean
+  sourceName: string       // who dealt the damage / who cast the heal
+  sourceIsPlayer: boolean  // true if source is a player (not an NPC)
+  healthPercent: number    // estimated — 0 in first pass
+}
+
+export interface PlayerDeathRecord {
+  playerName: string
+  playerGuid: string
+  timeOfDeath: number        // absolute ms timestamp
+  combatElapsed: number      // seconds since segment.firstEventTime
+  unconscious: boolean       // feign death, divine shield, etc. — not a real death
+  killingBlow: {
+    spellId: string
+    spellName: string
+    sourceName: string
+    overkill: number
+  } | null
+  recap: DeathRecapEvent[]   // up to RECAP_WINDOW_SECONDS before death
+}

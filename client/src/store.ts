@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { SegmentSnapshot, KeyRunSnapshot, HistoryItem, TargetDetail } from './types'
+import type { SegmentSnapshot, KeyRunSnapshot, HistoryItem, TargetDetail, PlayerDeathRecord } from './types'
 
 interface AppState {
   liveSegment: SegmentSnapshot | null
@@ -9,7 +9,8 @@ interface AppState {
   selectedKeyRunId: string | null    // which key run header is selected
   selectedKeyRun: KeyRunSnapshot | null
   selectedPlayer: string | null
-  metric: 'damage' | 'healing'
+  selectedDeath: PlayerDeathRecord | null
+  metric: 'damage' | 'healing' | 'deaths'
   wsStatus: 'connecting' | 'connected' | 'disconnected'
   targetDetail: TargetDetail | null
 
@@ -20,7 +21,8 @@ interface AppState {
   setSelectedKeyRunId: (id: string | null) => void   // clears segment selection
   setSelectedKeyRun: (s: KeyRunSnapshot | null) => void
   setSelectedPlayer: (name: string | null) => void
-  setMetric: (m: 'damage' | 'healing') => void
+  setSelectedDeath: (record: PlayerDeathRecord | null) => void
+  setMetric: (m: AppState['metric']) => void
   setWsStatus: (s: AppState['wsStatus']) => void
   setTargetDetail: (d: TargetDetail | null) => void
 }
@@ -33,6 +35,7 @@ export const useStore = create<AppState>((set) => ({
   selectedKeyRunId: null,
   selectedKeyRun: null,
   selectedPlayer: null,
+  selectedDeath: null,
   metric: 'damage',
   wsStatus: 'connecting',
   targetDetail: null,
@@ -43,6 +46,7 @@ export const useStore = create<AppState>((set) => ({
   setSelectedSegmentId: (id) => set({
     selectedSegmentId: id,
     selectedPlayer: null,
+    selectedDeath: null,
     selectedKeyRunId: null,
     selectedKeyRun: null,
     ...(id === null ? { selectedSegment: null } : {}),
@@ -53,10 +57,12 @@ export const useStore = create<AppState>((set) => ({
     selectedSegmentId: null,
     selectedSegment: null,
     selectedPlayer: null,
+    selectedDeath: null,
   }),
   setSelectedKeyRun: (s) => set({ selectedKeyRun: s }),
   setSelectedPlayer: (name) => set({ selectedPlayer: name }),
-  setMetric: (m) => set({ metric: m }),
+  setSelectedDeath: (record) => set({ selectedDeath: record }),
+  setMetric: (m) => set({ metric: m, selectedPlayer: null, selectedDeath: null }),
   setWsStatus: (s) => set({ wsStatus: s }),
   setTargetDetail: (d) => set({ targetDetail: d }),
 }))

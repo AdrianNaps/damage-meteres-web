@@ -1,3 +1,6 @@
+import type { PlayerDeathRecord } from './types.js'
+export type { PlayerDeathRecord }
+
 export interface SpellDamageStats {
   spellId: string
   spellName: string
@@ -57,6 +60,7 @@ export interface PlayerData {
   specId?: number
   damage: DamageData
   healing: HealData
+  deaths: PlayerDeathRecord[]
 }
 
 export interface Segment {
@@ -266,6 +270,7 @@ export class SegmentStore {
                 Object.entries(player.healing.spells).map(([k, v]) => [k, { ...v }])
               ),
             },
+            deaths: [...player.deaths],
           }
         } else {
           const mp = merged[name]
@@ -314,8 +319,15 @@ export class SegmentStore {
               mt.total += target.total
             }
           }
+
+          mp.deaths.push(...player.deaths)
         }
       }
+    }
+
+    // Re-sort deaths chronologically across segment boundaries
+    for (const mp of Object.values(merged)) {
+      mp.deaths.sort((a, b) => a.timeOfDeath - b.timeOfDeath)
     }
 
     const players: Record<string, PlayerSnapshot> = {}

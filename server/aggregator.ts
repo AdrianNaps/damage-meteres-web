@@ -1,7 +1,30 @@
-import type { ParsedEvent, DamagePayload, HealPayload, CombatantInfoPayload } from './types.js'
+import type { ParsedEvent, DamagePayload, HealPayload, CombatantInfoPayload, DeathPayload, DeathRecapEvent } from './types.js'
 import { PET_FLAG, GUARDIAN_FLAG } from './types.js'
 
-import type { Segment, PlayerData, SpellDamageStats, SpellHealStats, TargetDamageStats } from './store.js'
+import type { Segment, PlayerData, SpellDamageStats, SpellHealStats, TargetDamageStats, PlayerDeathRecord } from './store.js'
+
+// Rolling window of recent damage/heal events per player GUID — not persisted to snapshot
+const recentEvents = new Map<string, DeathRecapEvent[]>()
+
+const RECAP_WINDOW_SECONDS  = 10  // how far back to collect events
+export const RECAP_DISPLAY_SECONDS = 7   // Details default: 7 s
+export const RECAP_MAX_DISPLAY     = 10  // max rows in UI
+
+function isPlayerGuid(guid: string): boolean {
+  return guid.startsWith('Player-')
+}
+
+function pushRecentEvent(guid: string, entry: DeathRecapEvent) {
+  let buf = recentEvents.get(guid) ?? []
+  const cutoff = entry.timestamp - RECAP_WINDOW_SECONDS * 1000
+  buf = buf.filter(e => e.timestamp >= cutoff)
+  buf.push(entry)
+  recentEvents.set(guid, buf)
+}
+
+export function resetRecentEvents() {
+  recentEvents.clear()
+}
 
 export function applyEvent(segment: Segment, event: ParsedEvent) {
   const { payload } = event
@@ -26,6 +49,31 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
 
   if (payload.type === 'damage') {
     const dmg = payload as DamagePayload
+
+    // Track for death recap — victim tracking is independent of source pet resolution
+    if (isPlayerGuid(event.dest.guid)) {
+      pushRecentEvent(event.dest.guid, {
+        timestamp: event.timestamp,
+        kind: 'damage',
+        spellId:        dmg.spellId,
+        spellName:      dmg.spellName,
+        amount:         dmg.amount,
+        overkill:       dmg.overkill,
+        absorbed:       dmg.absorbed,
+        critical:       dmg.critical,
+        sourceName:     event.source.name,
+        sourceIsPlayer: isPlayerGuid(event.source.guid),
+        healthPercent:  0,
+      })
+    }
+
+    // Only attribute damage to the meter for player/pet sources.
+    // Creature→player events are allowed through the parser for death recap above,
+    // but should not create phantom player entries in the damage meter.
+    const sourceIsAttributable = isPlayerGuid(event.source.guid)
+      || !!(event.source.flags & (PET_FLAG | GUARDIAN_FLAG))
+    if (!sourceIsAttributable) return
+
     let sourceName = event.source.name
     let sourceGuid = event.source.guid
 
@@ -49,7 +97,63 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
 
     applyDamage(segment, sourceName, sourceGuid, event.dest.name, dmg)
   } else if (payload.type === 'heal') {
-    applyHeal(segment, event.source.name, event.source.guid, payload as HealPayload)
+    const heal = payload as HealPayload
+
+    if (isPlayerGuid(event.dest.guid)) {
+      pushRecentEvent(event.dest.guid, {
+        timestamp: event.timestamp,
+        kind: 'heal',
+        spellId:        heal.spellId,
+        spellName:      heal.spellName,
+        amount:         heal.amount - heal.overheal,  // effective heal
+        overkill:       0,
+        absorbed:       heal.absorbed,
+        critical:       heal.critical,
+        sourceName:     event.source.name,
+        sourceIsPlayer: isPlayerGuid(event.source.guid),
+        healthPercent:  0,
+      })
+    }
+
+    applyHeal(segment, event.source.name, event.source.guid, heal)
+  } else if (payload.type === 'death') {
+    if (payload.unconsciousOnDeath) return
+    if (!isPlayerGuid(event.dest.guid)) return
+
+    const guid = event.dest.guid
+    const recap = recentEvents.get(guid) ?? []
+
+    const killingBlow = [...recap].reverse().find(e => e.kind === 'damage' && e.overkill > 0)
+      ?? [...recap].reverse().find(e => e.kind === 'damage')
+      ?? null
+
+    const playerName = segment.guidToName[guid] ?? event.dest.name
+
+    const record: PlayerDeathRecord = {
+      playerName,
+      playerGuid: guid,
+      timeOfDeath: event.timestamp,
+      combatElapsed: segment.firstEventTime != null
+        ? (event.timestamp - segment.firstEventTime) / 1000
+        : 0,
+      unconscious: false,
+      killingBlow: killingBlow
+        ? {
+            spellId:    killingBlow.spellId,
+            spellName:  killingBlow.spellName,
+            sourceName: killingBlow.sourceName,
+            overkill:   killingBlow.overkill,
+          }
+        : null,
+      recap: [...recap],
+    }
+
+    const player = getOrCreatePlayer(segment, playerName, guid)
+    if (player) player.deaths.push(record)
+
+    // Clear the buffer so a rez + second death starts fresh
+    recentEvents.delete(guid)
+    return
   }
 
   if (segment.firstEventTime === null) segment.firstEventTime = event.timestamp
@@ -69,6 +173,7 @@ function getOrCreatePlayer(segment: Segment, name: string, guid: string): Player
       specId: segment.guidToSpec[guid],
       damage: { total: 0, spells: {}, targets: {} },
       healing: { total: 0, overheal: 0, spells: {} },
+      deaths: [],
     }
   } else if (segment.players[normalized].specId === undefined && segment.guidToSpec[guid] !== undefined) {
     segment.players[normalized].specId = segment.guidToSpec[guid]

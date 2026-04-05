@@ -42,6 +42,11 @@ const CLASS_COLORS: Record<number, string> = {
 
 const UNKNOWN_CLASS_COLOR = '#64748B' // slate-500, visible but clearly "unknown"
 
+export function getClassColor(specId?: number): string {
+  const classId = specId !== undefined ? SPEC_TO_CLASS[specId] : undefined
+  return classId !== undefined ? CLASS_COLORS[classId] : UNKNOWN_CLASS_COLOR
+}
+
 function formatNum(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`

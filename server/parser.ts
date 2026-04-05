@@ -113,7 +113,10 @@ export function parseLine(raw: string): ParsedEvent | null {
 
     case 'SPELL_DAMAGE':
     case 'SPELL_PERIODIC_DAMAGE': {
-      if (!(source.flags & ATTRIBUTABLE_SOURCE_FLAGS)) return null
+      const destIsPlayer = dest.guid.startsWith('Player-')
+      // Allow creature→player damage through for death recap tracking.
+      // Still drop creature→creature (irrelevant) and self-damage (avoid meter noise).
+      if (!(source.flags & ATTRIBUTABLE_SOURCE_FLAGS) && !destIsPlayer) return null
       if (source.guid === dest.guid) return null
       const damage = parseDamageSuffix(fields)
       if (!damage) return null

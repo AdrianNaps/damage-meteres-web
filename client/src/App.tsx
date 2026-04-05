@@ -4,6 +4,7 @@ import { EncounterHeader } from './components/EncounterHeader'
 import { SegmentTabs } from './components/SegmentTabs'
 import { MeterView } from './components/MeterView'
 import { BreakdownPanel } from './components/BreakdownPanel'
+import { DeathRecapPanel } from './components/DeathRecapPanel'
 
 export default function App() {
   useEffect(() => { connectWs() }, [])
@@ -14,6 +15,7 @@ export default function App() {
       <SegmentTabs />
       <MeterView />
       <BreakdownPanel />
+      <DeathRecapPanel />
     </div>
   )
 }

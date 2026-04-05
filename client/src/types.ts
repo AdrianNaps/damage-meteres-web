@@ -34,6 +34,35 @@ export interface TargetDetail {
   sources: { sourceName: string; total: number }[]
 }
 
+export interface DeathRecapEvent {
+  timestamp: number
+  kind: 'damage' | 'heal'
+  spellId: string
+  spellName: string
+  amount: number
+  overkill: number
+  absorbed: number
+  critical: boolean
+  sourceName: string
+  sourceIsPlayer: boolean
+  healthPercent: number
+}
+
+export interface PlayerDeathRecord {
+  playerName: string
+  playerGuid: string
+  timeOfDeath: number
+  combatElapsed: number
+  unconscious: boolean
+  killingBlow: {
+    spellId: string
+    spellName: string
+    sourceName: string
+    overkill: number
+  } | null
+  recap: DeathRecapEvent[]
+}
+
 export interface PlayerSnapshot {
   name: string
   specId?: number
@@ -41,6 +70,7 @@ export interface PlayerSnapshot {
   hps: number
   damage: { total: number; spells: Record<string, SpellDamageStats>; targets: Record<string, TargetDamageStats> }
   healing: { total: number; overheal: number; spells: Record<string, SpellHealStats> }
+  deaths: PlayerDeathRecord[]
 }
 
 export interface SegmentSnapshot {

@@ -1,5 +1,6 @@
 import { useStore, selectCurrentView } from '../store'
 import { PlayerRow } from './PlayerRow'
+import { DeathsView } from './DeathsView'
 import type { PlayerSnapshot } from '../types'
 
 export function MeterView() {
@@ -10,8 +11,25 @@ export function MeterView() {
 
   if (!currentView) {
     return (
-      <div className="flex-1 flex items-center justify-center text-slate-600 text-sm">
-        No encounter data
+      <div className="flex-1 flex flex-col min-h-0">
+        {/* Toggle */}
+        <div className="flex gap-1 px-4 py-2">
+          <MetricToggle metric={metric} setMetric={setMetric} />
+        </div>
+        <div className="flex-1 flex items-center justify-center text-slate-600 text-sm">
+          No encounter data
+        </div>
+      </div>
+    )
+  }
+
+  if (metric === 'deaths') {
+    return (
+      <div className="flex-1 flex flex-col min-h-0">
+        <div className="flex gap-1 px-4 py-2">
+          <MetricToggle metric={metric} setMetric={setMetric} />
+        </div>
+        <DeathsView />
       </div>
     )
   }
@@ -26,22 +44,7 @@ export function MeterView() {
     <div className="flex-1 flex flex-col min-h-0">
       {/* Toggle */}
       <div className="flex gap-1 px-4 py-2">
-        <button
-          onClick={() => setMetric('damage')}
-          className={`px-3 py-1 rounded text-xs transition-colors ${
-            metric === 'damage' ? 'bg-red-600 text-white' : 'text-slate-400 hover:text-white hover:bg-white/5'
-          }`}
-        >
-          Damage
-        </button>
-        <button
-          onClick={() => setMetric('healing')}
-          className={`px-3 py-1 rounded text-xs transition-colors ${
-            metric === 'healing' ? 'bg-green-600 text-white' : 'text-slate-400 hover:text-white hover:bg-white/5'
-          }`}
-        >
-          Healing
-        </button>
+        <MetricToggle metric={metric} setMetric={setMetric} />
       </div>
 
       {/* Header */}
@@ -63,12 +66,49 @@ export function MeterView() {
               player={player}
               rank={i + 1}
               topValue={topValue}
-              metric={metric}
+              metric={metric as 'damage' | 'healing'}
               onClick={() => setSelectedPlayer(player.name)}
             />
           ))
         )}
       </div>
     </div>
+  )
+}
+
+function MetricToggle({
+  metric,
+  setMetric,
+}: {
+  metric: 'damage' | 'healing' | 'deaths'
+  setMetric: (m: 'damage' | 'healing' | 'deaths') => void
+}) {
+  return (
+    <>
+      <button
+        onClick={() => setMetric('damage')}
+        className={`px-3 py-1 rounded text-xs transition-colors ${
+          metric === 'damage' ? 'bg-red-600 text-white' : 'text-slate-400 hover:text-white hover:bg-white/5'
+        }`}
+      >
+        Damage
+      </button>
+      <button
+        onClick={() => setMetric('healing')}
+        className={`px-3 py-1 rounded text-xs transition-colors ${
+          metric === 'healing' ? 'bg-green-600 text-white' : 'text-slate-400 hover:text-white hover:bg-white/5'
+        }`}
+      >
+        Healing
+      </button>
+      <button
+        onClick={() => setMetric('deaths')}
+        className={`px-3 py-1 rounded text-xs transition-colors ${
+          metric === 'deaths' ? 'bg-slate-500 text-white' : 'text-slate-400 hover:text-white hover:bg-white/5'
+        }`}
+      >
+        Deaths
+      </button>
+    </>
   )
 }
