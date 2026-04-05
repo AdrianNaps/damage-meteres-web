@@ -1,6 +1,6 @@
 # Details Bridge
 
-A local real-time combat meter for World of Warcraft. Reads `WoWCombatLog` files as they're written and streams live DPS/HPS data to a browser — no addons, no uploads.
+A local real-time combat meter for World of Warcraft. Reads `WoWCombatLog` files as they're written and streams game data to a browser after each combat phase.
 
 ## Requirements
 
