@@ -1,9 +1,9 @@
-import { useStore, selectCurrentSegment } from '../store'
+import { useStore, selectCurrentView } from '../store'
 import { PlayerRow } from './PlayerRow'
 import type { PlayerSnapshot } from '../types'
 
 export function MeterView() {
-  const currentSegment = useStore(selectCurrentSegment)
+  const currentSegment = useStore(selectCurrentView)
   const metric = useStore(s => s.metric)
   const setMetric = useStore(s => s.setMetric)
   const setSelectedPlayer = useStore(s => s.setSelectedPlayer)

@@ -1,18 +1,21 @@
 import { useEffect, useState } from 'react'
-import { useStore, selectCurrentSegment } from '../store'
+import { useStore, selectCurrentView } from '../store'
+import type { KeyRunSnapshot, SegmentSnapshot } from '../types'
 
 export function EncounterHeader() {
-  const currentSegment = useStore(selectCurrentSegment)
+  const currentView = useStore(selectCurrentView)
   const wsStatus = useStore(s => s.wsStatus)
   const [elapsed, setElapsed] = useState(0)
 
+  const isLiveSegment = currentView?.type === 'segment' && currentView.endTime === null
+
   useEffect(() => {
-    if (!currentSegment || currentSegment.endTime !== null) return
+    if (!isLiveSegment || currentView?.type !== 'segment') return
     const interval = setInterval(() => {
-      setElapsed(Math.floor((Date.now() - currentSegment.startTime) / 1000))
+      setElapsed(Math.floor((Date.now() - currentView.startTime) / 1000))
     }, 1000)
     return () => clearInterval(interval)
-  }, [currentSegment])
+  }, [isLiveSegment, currentView])
 
   const statusColors: Record<string, string> = {
     connected: 'bg-green-500',
@@ -29,31 +32,89 @@ export function EncounterHeader() {
         <span className="text-sm text-slate-400 capitalize">{wsStatus}</span>
       </div>
 
-      {currentSegment ? (
-        <div className="flex items-center gap-3">
-          <span className="font-semibold text-white">{currentSegment.encounterName}</span>
-          {currentSegment.endTime === null ? (
-            <>
-              <span className="text-xs bg-blue-500/20 text-blue-300 border border-blue-500/40 px-2 py-0.5 rounded">
-                In Progress
-              </span>
-              <span className="text-sm text-slate-400 tabular-nums">{formatTime(elapsed)}</span>
-            </>
-          ) : currentSegment.success ? (
-            <span className="text-xs bg-green-500/20 text-green-300 border border-green-500/40 px-2 py-0.5 rounded">
-              Kill
-            </span>
-          ) : (
-            <span className="text-xs bg-red-500/20 text-red-300 border border-red-500/40 px-2 py-0.5 rounded">
-              Wipe
-            </span>
-          )}
-        </div>
+      {currentView?.type === 'key_run' ? (
+        <KeyRunHeader view={currentView} formatTime={formatTime} />
+      ) : currentView?.type === 'segment' ? (
+        <SegmentHeader view={currentView} elapsed={elapsed} formatTime={formatTime} />
       ) : (
         <span className="text-sm text-slate-500">Waiting for encounter...</span>
       )}
 
       <div className="w-24" />
+    </div>
+  )
+}
+
+function SegmentHeader({
+  view,
+  elapsed,
+  formatTime,
+}: {
+  view: SegmentSnapshot
+  elapsed: number
+  formatTime: (s: number) => string
+}) {
+  return (
+    <div className="flex items-center gap-3">
+      <span className="font-semibold text-white">{view.encounterName}</span>
+      {view.endTime === null ? (
+        <>
+          <span className="text-xs bg-blue-500/20 text-blue-300 border border-blue-500/40 px-2 py-0.5 rounded">
+            In Progress
+          </span>
+          <span className="text-sm text-slate-400 tabular-nums">{formatTime(elapsed)}</span>
+        </>
+      ) : view.success ? (
+        <span className="text-xs bg-green-500/20 text-green-300 border border-green-500/40 px-2 py-0.5 rounded">
+          Kill
+        </span>
+      ) : (
+        <span className="text-xs bg-red-500/20 text-red-300 border border-red-500/40 px-2 py-0.5 rounded">
+          Wipe
+        </span>
+      )}
+    </div>
+  )
+}
+
+function KeyRunHeader({
+  view,
+  formatTime,
+}: {
+  view: KeyRunSnapshot
+  formatTime: (s: number) => string
+}) {
+  return (
+    <div className="flex items-center gap-3">
+      <span className="font-semibold text-white">{view.dungeonName}</span>
+      <span className="text-sm text-slate-400">+{view.keystoneLevel}</span>
+      {view.success === true ? (
+        <>
+          <span className="text-xs bg-green-500/20 text-green-300 border border-green-500/40 px-2 py-0.5 rounded">
+            Timed
+          </span>
+          {view.durationMs !== null && (
+            <span className="text-sm text-slate-400 tabular-nums">
+              {formatTime(Math.floor(view.durationMs / 1000))}
+            </span>
+          )}
+        </>
+      ) : view.success === false ? (
+        <>
+          <span className="text-xs bg-red-500/20 text-red-300 border border-red-500/40 px-2 py-0.5 rounded">
+            Depleted
+          </span>
+          {view.durationMs !== null && (
+            <span className="text-sm text-slate-400 tabular-nums">
+              {formatTime(Math.floor(view.durationMs / 1000))}
+            </span>
+          )}
+        </>
+      ) : (
+        <span className="text-xs bg-slate-500/20 text-slate-400 border border-slate-500/40 px-2 py-0.5 rounded">
+          Incomplete
+        </span>
+      )}
     </div>
   )
 }

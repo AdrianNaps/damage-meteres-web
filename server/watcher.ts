@@ -1,6 +1,7 @@
 import fs from 'fs'
 import path from 'path'
 import { EventEmitter } from 'events'
+import { StringDecoder } from 'string_decoder'
 import chokidar from 'chokidar'
 
 export class LogWatcher extends EventEmitter {
@@ -8,6 +9,7 @@ export class LogWatcher extends EventEmitter {
   private activeFile: string | null = null
   private lastOffset: number = 0
   private lineBuffer: string = ''
+  private decoder: StringDecoder = new StringDecoder('utf8')
   private watcher: ReturnType<typeof chokidar.watch> | null = null
 
   constructor(logsDir: string) {
@@ -87,6 +89,7 @@ export class LogWatcher extends EventEmitter {
     this.activeFile = filePath
     this.lastOffset = 0
     this.lineBuffer = ''
+    this.decoder = new StringDecoder('utf8')
     this.emit('file_switched', filePath)
     this._readNewBytes()
   }
@@ -119,7 +122,7 @@ export class LogWatcher extends EventEmitter {
         fs.readSync(fd, buf, 0, toRead, this.lastOffset)
         this.lastOffset += toRead
 
-        const raw = this.lineBuffer + buf.toString('utf8')
+        const raw = this.lineBuffer + this.decoder.write(buf)
         const lines = raw.split('\n')
         this.lineBuffer = lines.pop() ?? ''
 

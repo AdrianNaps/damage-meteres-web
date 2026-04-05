@@ -44,6 +44,7 @@ export interface PlayerSnapshot {
 }
 
 export interface SegmentSnapshot {
+  type: 'segment'
   id: string
   encounterName: string
   startTime: number
@@ -54,6 +55,7 @@ export interface SegmentSnapshot {
 }
 
 export interface SegmentSummary {
+  type: 'segment'
   id: string
   encounterName: string
   startTime: number
@@ -61,3 +63,30 @@ export interface SegmentSummary {
   success: boolean | null
   duration: number
 }
+
+export interface KeyRunSummary {
+  type: 'key_run'
+  keyRunId: string
+  dungeonName: string
+  keystoneLevel: number
+  startTime: number
+  endTime: number | null
+  success: boolean | null
+  durationMs: number | null
+  segments: SegmentSummary[]
+}
+
+export interface KeyRunSnapshot {
+  type: 'key_run'
+  keyRunId: string
+  dungeonName: string
+  keystoneLevel: number
+  startTime: number
+  endTime: number | null
+  success: boolean | null
+  durationMs: number | null
+  activeDurationSec: number
+  players: Record<string, PlayerSnapshot>
+}
+
+export type HistoryItem = KeyRunSummary | SegmentSummary

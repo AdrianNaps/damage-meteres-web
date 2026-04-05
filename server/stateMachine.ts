@@ -12,6 +12,7 @@ export class EncounterStateMachine extends EventEmitter {
   private activeTrashSegment: Segment | null = null  // trash segment currently receiving events
   private dungeonName: string | null = null
   private trashCount = 0
+  private currentKeyRunId: string | null = null
   currentSegment: Segment | null = null              // segment receiving events right now
 
   constructor(store: SegmentStore) {
@@ -26,6 +27,16 @@ export class EncounterStateMachine extends EventEmitter {
         const p = event.payload as ChallengeModePayload
         this.dungeonName = p.dungeonName ?? null
         this.trashCount = 1
+
+        const keyRunId = randomUUID()
+        this.currentKeyRunId = keyRunId
+        this.store.registerKeyRun(
+          keyRunId,
+          p.dungeonName ?? 'Unknown',
+          p.keystoneLevel ?? 0,
+          event.timestamp,
+        )
+
         const segment = this._makeSegment(`${p.dungeonName} — Trash 1`, event.timestamp)
         this.store.push(segment)
         this.activeTrashSegment = segment
@@ -49,12 +60,24 @@ export class EncounterStateMachine extends EventEmitter {
           this.activeTrashSegment.endTime = event.timestamp
           this.activeTrashSegment.success = p.success ?? false
           console.log(`[key] END (${p.success ? 'timed' : 'depleted'}, ${((p.durationMs ?? 0) / 60000).toFixed(1)}m)`)
-          // Emits the last (most recent) trash segment for the key, not the original Trash 1
-          this.emit('challenge_end', this.activeTrashSegment)
         }
+        // Finalize key run metadata now that we have end time and outcome
+        if (this.currentKeyRunId) {
+          this.store.finalizeKeyRun(
+            this.currentKeyRunId,
+            event.timestamp,
+            p.success ?? null,
+            p.durationMs ?? null,
+          )
+        }
+        // Emit challenge_end with last trash segment for wsServer to broadcast updated list
+        // TODO: handle key abandon / disconnect — endTime and success will be null in those cases.
+        //       Revisit when we have a sample log from an abandoned key.
+        this.emit('challenge_end', this.activeTrashSegment)
         this.activeTrashSegment = null
         this.dungeonName = null
         this.trashCount = 0
+        this.currentKeyRunId = null
         this.currentSegment = null
         this.mode = 'idle'
         break
@@ -120,6 +143,7 @@ export class EncounterStateMachine extends EventEmitter {
   private _makeSegment(name: string, startTime: number): Segment {
     return {
       id: randomUUID(),
+      keyRunId: this.currentKeyRunId,
       encounterName: name,
       startTime,
       endTime: null,

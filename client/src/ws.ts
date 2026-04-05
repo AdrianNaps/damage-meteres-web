@@ -8,7 +8,14 @@ const WS_URL = import.meta.env.VITE_WS_URL
 let ws: WebSocket | null = null
 
 export function connectWs() {
-  const { setWsStatus, setLiveSegment, setSelectedSegment, setSegmentHistory, setTargetDetail } = useStore.getState()
+  const {
+    setWsStatus,
+    setLiveSegment,
+    setSelectedSegment,
+    setSegmentHistory,
+    setSelectedKeyRun,
+    setTargetDetail,
+  } = useStore.getState()
 
   function connect() {
     setWsStatus('connecting')
@@ -41,6 +48,11 @@ export function connectWs() {
         case 'segment_detail':
           if (msg.segmentId === useStore.getState().selectedSegmentId) {
             setSelectedSegment(msg.segment)
+          }
+          break
+        case 'key_run_detail':
+          if (msg.keyRunId === useStore.getState().selectedKeyRunId) {
+            setSelectedKeyRun(msg.snapshot)
           }
           break
         case 'encounter_start':

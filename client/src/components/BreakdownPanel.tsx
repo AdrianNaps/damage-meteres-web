@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useStore, selectCurrentSegment } from '../store'
+import { useStore, selectCurrentView } from '../store'
 import { DamageSpellTable, HealSpellTable } from './SpellTable'
 import { TargetTable } from './TargetTable'
 import { TargetDrillDown } from './TargetDrillDown'
@@ -8,7 +8,7 @@ import { formatNum } from '../utils/format'
 
 export function BreakdownPanel() {
   const selectedPlayer = useStore(s => s.selectedPlayer)
-  const currentSegment = useStore(selectCurrentSegment)
+  const currentView = useStore(selectCurrentView)
   const metric = useStore(s => s.metric)
   const setSelectedPlayer = useStore(s => s.setSelectedPlayer)
   const [viewMode, setViewMode] = useState<'spells' | 'targets'>('spells')
@@ -16,7 +16,11 @@ export function BreakdownPanel() {
   const targetDetail = useStore(s => s.targetDetail)
   const setTargetDetail = useStore(s => s.setTargetDetail)
 
-  // Clear drill state when the panel closes or a different player is selected (F1)
+  const isKeyRun = currentView?.type === 'key_run'
+  // Target drill-down requires a segment ID and isn't available in key run aggregate view
+  const canDrillTargets = !isKeyRun
+
+  // Clear drill state when the panel closes or a different player is selected
   useEffect(() => {
     setDrillTarget(null)
     setTargetDetail(null)
@@ -37,15 +41,16 @@ export function BreakdownPanel() {
     return () => window.removeEventListener('keydown', onKey)
   }, [drillTarget, setSelectedPlayer, setTargetDetail])
 
-  if (!selectedPlayer || !currentSegment) return null
+  if (!selectedPlayer || !currentView) return null
 
-  const player = currentSegment.players[selectedPlayer]
+  const player = currentView.players[selectedPlayer]
   if (!player) return null
 
   const value = metric === 'damage' ? player.dps : player.hps
   const total = metric === 'damage' ? player.damage.total : player.healing.total
+  const duration = isKeyRun ? currentView.activeDurationSec : currentView.duration
 
-  // Clear drill state when switching away from targets tab (F2)
+  // Clear drill state when switching away from targets tab
   function handleModeChange(mode: 'spells' | 'targets') {
     setViewMode(mode)
     if (mode !== 'targets') {
@@ -55,11 +60,11 @@ export function BreakdownPanel() {
   }
 
   function renderContent() {
-    if (!currentSegment) return null
+    if (!currentView) return null
     if (metric === 'healing') {
       return <HealSpellTable spells={player.healing.spells} />
     }
-    if (drillTarget && targetDetail?.targetName === drillTarget) {
+    if (canDrillTargets && drillTarget && targetDetail?.targetName === drillTarget) {
       return (
         <TargetDrillDown
           detail={targetDetail}
@@ -67,15 +72,16 @@ export function BreakdownPanel() {
         />
       )
     }
-    if (viewMode === 'targets') {
+    if (canDrillTargets && viewMode === 'targets') {
+      const segmentId = currentView.type === 'segment' ? currentView.id : ''
       return (
         <TargetTable
           targets={player.damage.targets}
           totalDamage={player.damage.total}
-          duration={currentSegment.duration}
+          duration={duration}
           onSelect={(name) => {
             setDrillTarget(name)
-            requestTargetDetail(currentSegment.id, name)
+            requestTargetDetail(segmentId, name)
           }}
         />
       )
@@ -108,7 +114,7 @@ export function BreakdownPanel() {
           </button>
         </div>
 
-        {metric === 'damage' && (
+        {metric === 'damage' && canDrillTargets && (
           <div className="flex gap-1 px-4 pt-2">
             {(['spells', 'targets'] as const).map(mode => (
               <button

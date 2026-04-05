@@ -19,6 +19,10 @@ export function startWsServer(
     }
   }
 
+  function broadcastSegmentList() {
+    broadcast({ type: 'segment_list', segments: store.getHistoryItems() })
+  }
+
   // Broadcast current segment snapshot ~1/sec
   setInterval(() => {
     const seg = machine.currentSegment
@@ -36,13 +40,21 @@ export function startWsServer(
     broadcast({ type: 'state_update', segment: store.toSnapshot(seg) })
   })
 
+  machine.on('challenge_start', () => {
+    broadcastSegmentList()
+  })
+
+  machine.on('challenge_end', () => {
+    broadcastSegmentList()
+  })
+
   wss.on('connection', (ws) => {
     console.log('[ws] Client connected')
 
     // Send segment list immediately on connect
     ws.send(JSON.stringify({
       type: 'segment_list',
-      segments: store.getAll().map(s => store.toSummary(s)),
+      segments: store.getHistoryItems(),
     }))
 
     // If an encounter is in progress, send current state immediately
@@ -65,12 +77,17 @@ export function startWsServer(
       if (msg.type === 'get_segment_list') {
         ws.send(JSON.stringify({
           type: 'segment_list',
-          segments: store.getAll().map(s => store.toSummary(s)),
+          segments: store.getHistoryItems(),
         }))
       } else if (msg.type === 'get_segment') {
         const seg = store.getById(msg.segmentId)
         if (seg) {
           ws.send(JSON.stringify({ type: 'segment_detail', segmentId: seg.id, segment: store.toSnapshot(seg) }))
+        }
+      } else if (msg.type === 'get_key_run') {
+        const snapshot = store.toKeyRunSnapshot(msg.keyRunId)
+        if (snapshot) {
+          ws.send(JSON.stringify({ type: 'key_run_detail', keyRunId: msg.keyRunId, snapshot }))
         }
       } else if (msg.type === 'get_target_detail') {
         const seg = store.getById(msg.segmentId)

@@ -56,23 +56,29 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
   segment.lastEventTime = event.timestamp
 }
 
-function getOrCreatePlayer(segment: Segment, name: string, guid: string): PlayerData {
-  segment.guidToName[guid] = name
-  if (!segment.players[name]) {
-    segment.players[name] = {
-      name,
+function getOrCreatePlayer(segment: Segment, name: string, guid: string): PlayerData | null {
+  // "nil" is Lua's tostring(nil) — emitted when the WoW API can't resolve the unit name
+  if (!name || name === 'nil') return null
+  // Normalize to NFC so the same special character emitted in NFC and NFD form
+  // doesn't produce two separate player entries in the map
+  const normalized = name.normalize('NFC')
+  segment.guidToName[guid] = normalized
+  if (!segment.players[normalized]) {
+    segment.players[normalized] = {
+      name: normalized,
       specId: segment.guidToSpec[guid],
       damage: { total: 0, spells: {}, targets: {} },
       healing: { total: 0, overheal: 0, spells: {} },
     }
-  } else if (segment.players[name].specId === undefined && segment.guidToSpec[guid] !== undefined) {
-    segment.players[name].specId = segment.guidToSpec[guid]
+  } else if (segment.players[normalized].specId === undefined && segment.guidToSpec[guid] !== undefined) {
+    segment.players[normalized].specId = segment.guidToSpec[guid]
   }
-  return segment.players[name]
+  return segment.players[normalized]
 }
 
 function applyDamage(segment: Segment, sourceName: string, sourceGuid: string, destName: string, payload: DamagePayload) {
   const player = getOrCreatePlayer(segment, sourceName, sourceGuid)
+  if (!player) return
   const { spellId, spellName, amount, absorbed, resisted, blocked, critical } = payload
 
   player.damage.total += amount
@@ -132,6 +138,7 @@ function applyDamage(segment: Segment, sourceName: string, sourceGuid: string, d
 
 function applyHeal(segment: Segment, sourceName: string, sourceGuid: string, payload: HealPayload) {
   const player = getOrCreatePlayer(segment, sourceName, sourceGuid)
+  if (!player) return
   const { spellId, spellName, amount, overheal, absorbed, critical } = payload
 
   // effective heal = amount - overheal
