@@ -14,32 +14,43 @@ export function DeathsView() {
 
   if (!currentView) {
     return (
-      <div className="flex-1 flex items-center justify-center text-slate-600 text-sm">
-        No encounter data
+      <div className="flex-1 flex items-center justify-center">
+        <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>No encounter data</span>
       </div>
     )
   }
 
-  // Flatten all deaths from all players and sort by time of death
   const allDeaths: PlayerDeathRecord[] = Object.values(currentView.players)
     .flatMap(p => p.deaths)
     .sort((a, b) => a.timeOfDeath - b.timeOfDeath)
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      {/* Header */}
-      <div className="flex px-3 pb-1 text-xs text-slate-500">
-        <span className="w-5" />
-        <span className="w-24">Player</span>
-        <span className="w-12 text-right">Time</span>
-        <span className="flex-1 pl-4">Killing Blow</span>
-        <span className="w-20 text-right pr-3">Overkill</span>
+      {/* Column headers */}
+      <div
+        className="flex items-center px-3 pb-1.5"
+        style={{
+          fontSize: 10,
+          fontWeight: 500,
+          textTransform: 'uppercase',
+          letterSpacing: '0.06em',
+          color: 'var(--text-muted)',
+          borderBottom: '1px solid var(--border-subtle)',
+        }}
+      >
+        <span style={{ width: 24, flexShrink: 0 }}>#</span>
+        <span style={{ width: 96 }}>Player</span>
+        <span style={{ width: 48, textAlign: 'right' }}>Time</span>
+        <span className="flex-1" style={{ paddingLeft: 16 }}>Killing Blow</span>
+        <span style={{ width: 64, textAlign: 'right', paddingRight: 8 }}>Overkill</span>
       </div>
 
       {/* Rows */}
       <div className="flex-1 overflow-y-auto">
         {allDeaths.length === 0 ? (
-          <div className="text-center text-slate-600 text-sm py-8">No deaths recorded</div>
+          <div className="text-center py-8" style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+            No deaths recorded
+          </div>
         ) : (
           allDeaths.map((record, i) => (
             <DeathRow
@@ -68,29 +79,40 @@ function DeathRow({
   onClick: () => void
 }) {
   const color = getClassColor(specId)
-
   const kb = record.killingBlow
 
   return (
     <div
-      className="flex items-center px-3 py-1.5 cursor-pointer hover:bg-white/5 transition-colors"
       onClick={onClick}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        height: 32,
+        paddingRight: 12,
+        cursor: 'pointer',
+        borderLeft: `3px solid ${color}`,
+        transition: 'background 0.1s',
+      }}
+      onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-hover)' }}
+      onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
     >
-      <span className="w-5 text-xs text-slate-500 shrink-0">{rank}</span>
-      <span className="w-24 text-sm font-medium truncate" style={{ color }}>
+      <span style={{ width: 24, flexShrink: 0, fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--text-muted)', textAlign: 'center', paddingLeft: 6 }}>
+        {rank}
+      </span>
+      <span className="truncate" style={{ width: 96, fontSize: 13, fontWeight: 500, color }}>
         {record.playerName}
       </span>
-      <span className="w-12 text-right text-xs text-slate-400 tabular-nums">
+      <span style={{ width: 48, textAlign: 'right', fontSize: 12, fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>
         {formatElapsed(record.combatElapsed)}
       </span>
-      <span className="flex-1 pl-4 text-xs text-slate-300 truncate">
+      <span className="truncate" style={{ flex: 1, paddingLeft: 16, fontSize: 12, color: 'var(--text-secondary)' }}>
         {kb ? `${kb.spellName} (${kb.sourceName})` : '—'}
       </span>
-      <span className="w-20 text-right text-xs pr-3">
+      <span style={{ width: 64, textAlign: 'right', fontSize: 12, fontFamily: 'var(--font-mono)', paddingRight: 8 }}>
         {kb && kb.overkill > 0 ? (
-          <span className="text-red-400">{kb.overkill.toLocaleString()}</span>
+          <span style={{ color: 'var(--status-wipe)' }}>{kb.overkill.toLocaleString()}</span>
         ) : (
-          <span className="text-slate-600">—</span>
+          <span style={{ color: 'var(--text-muted)' }}>—</span>
         )}
       </span>
     </div>

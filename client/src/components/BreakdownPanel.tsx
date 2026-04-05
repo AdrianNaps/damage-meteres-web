@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useStore, selectCurrentView } from '../store'
+import { getClassColor } from './PlayerRow'
 import { DamageSpellTable, HealSpellTable } from './SpellTable'
 import { TargetTable } from './TargetTable'
 import { TargetDrillDown } from './TargetDrillDown'
@@ -17,10 +18,8 @@ export function BreakdownPanel() {
   const setTargetDetail = useStore(s => s.setTargetDetail)
 
   const isKeyRun = currentView?.type === 'key_run'
-  // Target drill-down requires a segment ID and isn't available in key run aggregate view
   const canDrillTargets = !isKeyRun
 
-  // Clear drill state when the panel closes or a different player is selected
   useEffect(() => {
     setDrillTarget(null)
     setTargetDetail(null)
@@ -46,11 +45,11 @@ export function BreakdownPanel() {
   const player = currentView.players[selectedPlayer]
   if (!player) return null
 
+  const color = getClassColor(player.specId)
   const value = metric === 'damage' ? player.dps : player.hps
   const total = metric === 'damage' ? player.damage.total : player.healing.total
   const duration = isKeyRun ? currentView.activeDurationSec : currentView.duration
 
-  // Clear drill state when switching away from targets tab
   function handleModeChange(mode: 'spells' | 'targets') {
     setViewMode(mode)
     if (mode !== 'targets') {
@@ -73,7 +72,6 @@ export function BreakdownPanel() {
       )
     }
     if (canDrillTargets && viewMode === 'targets') {
-      // canDrillTargets === true implies currentView.type === 'segment'
       const segmentId = (currentView as { id: string }).id
       return (
         <TargetTable
@@ -94,42 +92,64 @@ export function BreakdownPanel() {
     <>
       {/* Backdrop */}
       <div
-        className="fixed inset-0 bg-black/50 z-40"
+        className="fixed inset-0 z-40"
+        style={{ background: 'rgba(0, 0, 0, 0.6)' }}
         onClick={() => setSelectedPlayer(null)}
       />
 
       {/* Panel */}
-      <div className="fixed right-0 top-0 h-full w-full max-w-lg bg-[#1a1c24] border-l border-white/10 z-50 flex flex-col shadow-2xl">
-        <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
+      <div
+        className="fixed right-0 top-0 h-full w-full max-w-lg z-50 flex flex-col"
+        style={{
+          background: 'var(--bg-elevated)',
+          borderLeft: '1px solid var(--border-default)',
+          boxShadow: '-8px 0 32px rgba(0, 0, 0, 0.4)',
+        }}
+      >
+        {/* Header with class color accent */}
+        <div
+          className="flex items-center justify-between px-4 py-3"
+          style={{
+            borderBottom: '1px solid var(--border-default)',
+            borderLeft: `4px solid ${color}`,
+          }}
+        >
           <div>
-            <div className="font-semibold text-white">{player.name}</div>
-            <div className="text-xs text-slate-400 mt-0.5">
-              {formatNum(total)} total · {formatNum(value)} {metric === 'damage' ? 'DPS' : 'HPS'}
+            <div style={{ fontWeight: 600, fontSize: 15, color }}>{player.name}</div>
+            <div style={{ fontSize: 12, fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', marginTop: 2 }}>
+              {formatNum(total)} total &middot; {formatNum(value)} {metric === 'damage' ? 'DPS' : 'HPS'}
             </div>
           </div>
           <button
             onClick={() => setSelectedPlayer(null)}
-            className="text-slate-400 hover:text-white transition-colors text-xl leading-none"
+            style={{
+              background: 'none',
+              border: 'none',
+              color: 'var(--text-muted)',
+              cursor: 'pointer',
+              fontSize: 20,
+              lineHeight: 1,
+              padding: '4px 8px',
+              transition: 'color 0.15s',
+            }}
+            onMouseEnter={e => { e.currentTarget.style.color = 'var(--text-primary)' }}
+            onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)' }}
           >
-            ×
+            &times;
           </button>
         </div>
 
+        {/* View mode toggle */}
         {metric === 'damage' && canDrillTargets && (
-          <div className="flex gap-1 px-4 pt-2">
-            {(['spells', 'targets'] as const).map(mode => (
-              <button
-                key={mode}
-                onClick={() => handleModeChange(mode)}
-                className={`text-xs px-3 py-1 rounded capitalize transition-colors ${
-                  viewMode === mode
-                    ? 'bg-white/10 text-white'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                {mode}
-              </button>
-            ))}
+          <div className="px-4 pt-2.5">
+            <SegmentedControl
+              options={[
+                { key: 'spells', label: 'Spells' },
+                { key: 'targets', label: 'Targets' },
+              ]}
+              active={viewMode}
+              onChange={handleModeChange}
+            />
           </div>
         )}
 
@@ -138,5 +158,56 @@ export function BreakdownPanel() {
         </div>
       </div>
     </>
+  )
+}
+
+function SegmentedControl<T extends string>({
+  options,
+  active,
+  onChange,
+}: {
+  options: { key: T; label: string }[]
+  active: T
+  onChange: (key: T) => void
+}) {
+  return (
+    <div
+      className="inline-flex"
+      style={{ border: '1px solid var(--border-default)' }}
+    >
+      {options.map(opt => (
+        <button
+          key={opt.key}
+          onClick={() => onChange(opt.key)}
+          style={{
+            padding: '3px 12px',
+            fontSize: 11,
+            fontWeight: 500,
+            textTransform: 'uppercase',
+            letterSpacing: '0.04em',
+            cursor: 'pointer',
+            border: 'none',
+            borderRight: '1px solid var(--border-default)',
+            background: active === opt.key ? 'var(--bg-active)' : 'transparent',
+            color: active === opt.key ? 'var(--text-primary)' : 'var(--text-secondary)',
+            transition: 'background 0.15s, color 0.15s',
+          }}
+          onMouseEnter={e => {
+            if (active !== opt.key) {
+              e.currentTarget.style.background = 'var(--bg-hover)'
+              e.currentTarget.style.color = 'var(--text-primary)'
+            }
+          }}
+          onMouseLeave={e => {
+            if (active !== opt.key) {
+              e.currentTarget.style.background = 'transparent'
+              e.currentTarget.style.color = 'var(--text-secondary)'
+            }
+          }}
+        >
+          {opt.label}
+        </button>
+      ))}
+    </div>
   )
 }

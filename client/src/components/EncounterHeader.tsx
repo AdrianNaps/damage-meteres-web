@@ -17,61 +17,84 @@ export function EncounterHeader() {
     return () => clearInterval(interval)
   }, [isLiveSegment, currentView])
 
-  const statusColors: Record<string, string> = {
-    connected: 'bg-green-500',
-    connecting: 'bg-yellow-500',
-    disconnected: 'bg-red-500',
-  }
-
   const formatTime = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
 
+  const disconnected = wsStatus === 'disconnected'
+
   return (
-    <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
-      <div className="flex items-center gap-3">
-        <span className={`w-2 h-2 rounded-full ${statusColors[wsStatus]}`} />
-        <span className="text-sm text-slate-400 capitalize">{wsStatus}</span>
+    <div
+      className="flex items-center justify-between px-4 py-2.5"
+      style={{
+        borderBottom: '1px solid var(--border-default)',
+        background: disconnected ? 'rgba(239, 68, 68, 0.06)' : 'transparent',
+      }}
+    >
+      <div className="flex items-center gap-2.5">
+        <span
+          className={wsStatus === 'connected' ? 'animate-pulse-dot' : ''}
+          style={{
+            width: 6,
+            height: 6,
+            borderRadius: '50%',
+            flexShrink: 0,
+            background:
+              wsStatus === 'connected' ? 'var(--status-kill)'
+              : wsStatus === 'connecting' ? '#eab308'
+              : 'var(--status-wipe)',
+          }}
+        />
+
+        {currentView?.type === 'key_run' ? (
+          <KeyRunHeader view={currentView} formatTime={formatTime} />
+        ) : currentView?.type === 'segment' ? (
+          <SegmentHeader view={currentView} elapsed={elapsed} formatTime={formatTime} />
+        ) : (
+          <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+            Waiting for combat data...
+          </span>
+        )}
       </div>
 
-      {currentView?.type === 'key_run' ? (
-        <KeyRunHeader view={currentView} formatTime={formatTime} />
-      ) : currentView?.type === 'segment' ? (
-        <SegmentHeader view={currentView} elapsed={elapsed} formatTime={formatTime} />
-      ) : (
-        <span className="text-sm text-slate-500">Waiting for encounter...</span>
+      {/* Duration / timer on the right */}
+      {currentView?.type === 'segment' && currentView.endTime === null && (
+        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--text-secondary)' }}>
+          {formatTime(elapsed)}
+        </span>
       )}
-
-      <div className="w-24" />
+      {currentView?.type === 'segment' && currentView.endTime !== null && (
+        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--text-muted)' }}>
+          {formatTime(currentView.duration)}
+        </span>
+      )}
+      {currentView?.type === 'key_run' && currentView.durationMs !== null && (
+        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--text-muted)' }}>
+          {formatTime(Math.floor(currentView.durationMs / 1000))}
+        </span>
+      )}
     </div>
   )
 }
 
 function SegmentHeader({
   view,
-  elapsed,
-  formatTime,
+  elapsed: _elapsed,
+  formatTime: _formatTime,
 }: {
   view: SegmentSnapshot
   elapsed: number
   formatTime: (s: number) => string
 }) {
   return (
-    <div className="flex items-center gap-3">
-      <span className="font-semibold text-white">{view.encounterName}</span>
+    <div className="flex items-center gap-2">
+      <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-primary)' }}>
+        {view.encounterName}
+      </span>
       {view.endTime === null ? (
-        <>
-          <span className="text-xs bg-blue-500/20 text-blue-300 border border-blue-500/40 px-2 py-0.5 rounded">
-            In Progress
-          </span>
-          <span className="text-sm text-slate-400 tabular-nums">{formatTime(elapsed)}</span>
-        </>
+        <StatusBadge label="LIVE" color="var(--status-live)" />
       ) : view.success ? (
-        <span className="text-xs bg-green-500/20 text-green-300 border border-green-500/40 px-2 py-0.5 rounded">
-          Kill
-        </span>
+        <StatusBadge label="KILL" color="var(--status-kill)" />
       ) : (
-        <span className="text-xs bg-red-500/20 text-red-300 border border-red-500/40 px-2 py-0.5 rounded">
-          Wipe
-        </span>
+        <StatusBadge label="WIPE" color="var(--status-wipe)" />
       )}
     </div>
   )
@@ -79,42 +102,42 @@ function SegmentHeader({
 
 function KeyRunHeader({
   view,
-  formatTime,
+  formatTime: _formatTime,
 }: {
   view: KeyRunSnapshot
   formatTime: (s: number) => string
 }) {
   return (
-    <div className="flex items-center gap-3">
-      <span className="font-semibold text-white">{view.dungeonName}</span>
-      <span className="text-sm text-slate-400">+{view.keystoneLevel}</span>
+    <div className="flex items-center gap-2">
+      <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-primary)' }}>
+        {view.dungeonName}
+      </span>
+      <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>+{view.keystoneLevel}</span>
       {view.success === true ? (
-        <>
-          <span className="text-xs bg-green-500/20 text-green-300 border border-green-500/40 px-2 py-0.5 rounded">
-            Timed
-          </span>
-          {view.durationMs !== null && (
-            <span className="text-sm text-slate-400 tabular-nums">
-              {formatTime(Math.floor(view.durationMs / 1000))}
-            </span>
-          )}
-        </>
+        <StatusBadge label="TIMED" color="var(--status-kill)" />
       ) : view.success === false ? (
-        <>
-          <span className="text-xs bg-red-500/20 text-red-300 border border-red-500/40 px-2 py-0.5 rounded">
-            Depleted
-          </span>
-          {view.durationMs !== null && (
-            <span className="text-sm text-slate-400 tabular-nums">
-              {formatTime(Math.floor(view.durationMs / 1000))}
-            </span>
-          )}
-        </>
-      ) : (
-        <span className="text-xs bg-slate-500/20 text-slate-400 border border-slate-500/40 px-2 py-0.5 rounded">
-          Incomplete
-        </span>
-      )}
+        <StatusBadge label="DEPLETED" color="var(--status-wipe)" />
+      ) : null}
     </div>
+  )
+}
+
+function StatusBadge({ label, color }: { label: string; color: string }) {
+  return (
+    <span
+      style={{
+        fontSize: 10,
+        fontWeight: 600,
+        letterSpacing: '0.06em',
+        textTransform: 'uppercase' as const,
+        color: color,
+        background: `color-mix(in srgb, ${color} 12%, transparent)`,
+        border: `1px solid color-mix(in srgb, ${color} 25%, transparent)`,
+        padding: '1px 6px',
+        lineHeight: '18px',
+      }}
+    >
+      {label}
+    </span>
   )
 }

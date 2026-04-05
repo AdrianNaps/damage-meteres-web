@@ -29,7 +29,6 @@ export function SegmentTabs() {
   const isLive = selectedId === null && selectedKeyRunId === null
   const reversedHistory = [...history].reverse()
 
-  // Find which key run is "active" — either directly selected or contains the selected segment
   const activeKeyRun = reversedHistory.find(
     item =>
       item.type === 'key_run' &&
@@ -39,75 +38,69 @@ export function SegmentTabs() {
   const activeSegments = activeKeyRun?.segments ?? []
 
   return (
-    <div className="flex flex-col">
+    <div className="flex flex-col" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
       {/* Top tier — runs and standalone encounters */}
-      <div className="flex gap-1 px-4 pt-3 overflow-x-auto items-center">
+      <div className="flex gap-0 px-4 pt-2 overflow-x-auto items-end">
         {liveSegment && (
-          <button
+          <TabButton
+            active={isLive}
+            accentColor="var(--status-live)"
             onClick={() => selectSegment(null)}
-            className={`px-3 py-1.5 rounded text-xs whitespace-nowrap transition-colors flex-shrink-0 ${
-              isLive ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white hover:bg-white/5'
-            }`}
           >
             Live
-          </button>
+          </TabButton>
         )}
         {reversedHistory.map(item =>
           item.type === 'key_run' ? (
-            <button
+            <TabButton
               key={item.keyRunId}
+              active={activeKeyRun?.keyRunId === item.keyRunId}
+              accentColor="#d97706"
               onClick={() => selectKeyRun(item.keyRunId)}
-              className={`px-3 py-1.5 rounded text-xs whitespace-nowrap transition-colors flex-shrink-0 ${
-                activeKeyRun?.keyRunId === item.keyRunId
-                  ? 'bg-amber-600 text-white'
-                  : 'text-slate-300 hover:text-white hover:bg-white/5'
-              }`}
             >
-              <span className="font-medium">{item.dungeonName}</span>
-              <span className="ml-1 opacity-60">+{item.keystoneLevel}</span>
-              {item.success === true && <span className="ml-1 text-green-400">✓</span>}
-              {item.success === false && <span className="ml-1 text-red-400">✗</span>}
+              <span style={{ fontWeight: 500 }}>{item.dungeonName}</span>
+              <span style={{ opacity: 0.5, marginLeft: 4 }}>+{item.keystoneLevel}</span>
+              {item.success === true && <span style={{ color: 'var(--status-kill)', marginLeft: 4 }}>&#10003;</span>}
+              {item.success === false && <span style={{ color: 'var(--status-wipe)', marginLeft: 4 }}>&#10007;</span>}
               {item.durationMs !== null && (
-                <span className="ml-1.5 opacity-50 tabular-nums">
+                <span style={{ opacity: 0.4, marginLeft: 6, fontFamily: 'var(--font-mono)' }}>
                   {formatKeyDuration(item.durationMs)}
                 </span>
               )}
-            </button>
+            </TabButton>
           ) : (
-            <button
+            <TabButton
               key={item.id}
+              active={selectedId === item.id && !activeKeyRun}
+              accentColor="var(--text-primary)"
               onClick={() => selectSegment(item.id)}
-              className={`px-3 py-1.5 rounded text-xs whitespace-nowrap transition-colors flex-shrink-0 ${
-                selectedId === item.id
-                  ? 'bg-slate-600 text-white'
-                  : 'text-slate-400 hover:text-white hover:bg-white/5'
-              }`}
             >
               {item.encounterName}
-              {item.success === true && <span className="ml-1 text-green-400">✓</span>}
-              {item.success === false && <span className="ml-1 text-red-400">✗</span>}
-            </button>
+              {item.success === true && <span style={{ color: 'var(--status-kill)', marginLeft: 4 }}>&#10003;</span>}
+              {item.success === false && <span style={{ color: 'var(--status-wipe)', marginLeft: 4 }}>&#10007;</span>}
+            </TabButton>
           )
         )}
       </div>
 
       {/* Bottom tier — segments within the active key run */}
       {activeSegments.length > 0 && (
-        <div className="flex gap-1 px-4 pt-1 pb-0.5 overflow-x-auto items-center">
+        <div
+          className="flex gap-0 px-4 pt-0.5 pb-0.5 overflow-x-auto items-end"
+          style={{ paddingLeft: 28 }}
+        >
           {activeSegments.map(seg => (
-            <button
+            <TabButton
               key={seg.id}
+              active={selectedId === seg.id}
+              accentColor="var(--text-secondary)"
+              small
               onClick={() => selectSegment(seg.id)}
-              className={`px-3 py-1 rounded text-xs whitespace-nowrap transition-colors flex-shrink-0 ${
-                selectedId === seg.id
-                  ? 'bg-slate-600 text-white'
-                  : 'text-slate-500 hover:text-white hover:bg-white/5'
-              }`}
             >
               {shortSegmentName(seg.encounterName)}
-              {seg.success === true && <span className="ml-1 text-green-400">✓</span>}
-              {seg.success === false && <span className="ml-1 text-red-400">✗</span>}
-            </button>
+              {seg.success === true && <span style={{ color: 'var(--status-kill)', marginLeft: 4 }}>&#10003;</span>}
+              {seg.success === false && <span style={{ color: 'var(--status-wipe)', marginLeft: 4 }}>&#10007;</span>}
+            </TabButton>
           ))}
         </div>
       )}
@@ -115,7 +108,48 @@ export function SegmentTabs() {
   )
 }
 
-/** Strip "Dungeon Name — " prefix from trash segment names. */
+function TabButton({
+  active,
+  accentColor,
+  small,
+  onClick,
+  children,
+}: {
+  active: boolean
+  accentColor: string
+  small?: boolean
+  onClick: () => void
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className="flex-shrink-0 transition-colors"
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        padding: small ? '4px 10px' : '6px 12px',
+        fontSize: small ? 11 : 12,
+        whiteSpace: 'nowrap',
+        background: 'transparent',
+        border: 'none',
+        cursor: 'pointer',
+        color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
+        borderBottom: active ? `2px solid ${accentColor}` : '2px solid transparent',
+        marginBottom: -1,
+      }}
+      onMouseEnter={e => {
+        if (!active) (e.currentTarget as HTMLButtonElement).style.color = 'var(--text-primary)'
+      }}
+      onMouseLeave={e => {
+        if (!active) (e.currentTarget as HTMLButtonElement).style.color = 'var(--text-secondary)'
+      }}
+    >
+      {children}
+    </button>
+  )
+}
+
 function shortSegmentName(name: string): string {
   const idx = name.indexOf(' — ')
   return idx !== -1 ? name.slice(idx + 3) : name

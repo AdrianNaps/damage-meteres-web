@@ -12,12 +12,13 @@ export function MeterView() {
   if (!currentView) {
     return (
       <div className="flex-1 flex flex-col min-h-0">
-        {/* Toggle */}
-        <div className="flex gap-1 px-4 py-2">
+        <div className="px-4 py-2">
           <MetricToggle metric={metric} setMetric={setMetric} />
         </div>
-        <div className="flex-1 flex items-center justify-center text-slate-600 text-sm">
-          No encounter data
+        <div className="flex-1 flex items-center justify-center">
+          <span className="animate-pulse-dot" style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+            No encounter data
+          </span>
         </div>
       </div>
     )
@@ -26,7 +27,7 @@ export function MeterView() {
   if (metric === 'deaths') {
     return (
       <div className="flex-1 flex flex-col min-h-0">
-        <div className="flex gap-1 px-4 py-2">
+        <div className="px-4 py-2">
           <MetricToggle metric={metric} setMetric={setMetric} />
         </div>
         <DeathsView />
@@ -43,22 +44,34 @@ export function MeterView() {
   return (
     <div className="flex-1 flex flex-col min-h-0">
       {/* Toggle */}
-      <div className="flex gap-1 px-4 py-2">
+      <div className="px-4 py-2">
         <MetricToggle metric={metric} setMetric={setMetric} />
       </div>
 
-      {/* Header */}
-      <div className="flex px-3 pb-1 text-xs text-slate-500">
-        <span className="w-5" />
+      {/* Column headers */}
+      <div
+        className="flex items-center px-3 pb-1.5"
+        style={{
+          fontSize: 11,
+          textTransform: 'uppercase',
+          letterSpacing: '0.05em',
+          color: 'var(--text-muted)',
+          borderBottom: '1px solid var(--border-subtle)',
+        }}
+      >
+        <span style={{ width: 24, flexShrink: 0 }}>#</span>
         <span className="flex-1">Player</span>
-        <span className="w-16 text-right">Total</span>
-        <span className="w-20 text-right">{metric === 'damage' ? 'DPS' : 'HPS'}</span>
+        <span style={{ width: 64, textAlign: 'right' }}>Total</span>
+        <span style={{ width: 72, textAlign: 'right' }}>{metric === 'damage' ? 'DPS' : 'HPS'}</span>
+        <span style={{ width: 40, textAlign: 'right' }}>%</span>
       </div>
 
       {/* Rows */}
       <div className="flex-1 overflow-y-auto">
         {sorted.length === 0 ? (
-          <div className="text-center text-slate-600 text-sm py-8">No player data yet</div>
+          <div className="text-center py-8" style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+            No player data yet
+          </div>
         ) : (
           sorted.map((player, i) => (
             <PlayerRow
@@ -83,32 +96,51 @@ function MetricToggle({
   metric: 'damage' | 'healing' | 'deaths'
   setMetric: (m: 'damage' | 'healing' | 'deaths') => void
 }) {
+  const options: { key: 'damage' | 'healing' | 'deaths'; label: string }[] = [
+    { key: 'damage', label: 'Damage' },
+    { key: 'healing', label: 'Healing' },
+    { key: 'deaths', label: 'Deaths' },
+  ]
+
   return (
-    <>
-      <button
-        onClick={() => setMetric('damage')}
-        className={`px-3 py-1 rounded text-xs transition-colors ${
-          metric === 'damage' ? 'bg-red-600 text-white' : 'text-slate-400 hover:text-white hover:bg-white/5'
-        }`}
-      >
-        Damage
-      </button>
-      <button
-        onClick={() => setMetric('healing')}
-        className={`px-3 py-1 rounded text-xs transition-colors ${
-          metric === 'healing' ? 'bg-green-600 text-white' : 'text-slate-400 hover:text-white hover:bg-white/5'
-        }`}
-      >
-        Healing
-      </button>
-      <button
-        onClick={() => setMetric('deaths')}
-        className={`px-3 py-1 rounded text-xs transition-colors ${
-          metric === 'deaths' ? 'bg-slate-500 text-white' : 'text-slate-400 hover:text-white hover:bg-white/5'
-        }`}
-      >
-        Deaths
-      </button>
-    </>
+    <div
+      className="inline-flex"
+      style={{
+        border: '1px solid var(--border-default)',
+        overflow: 'hidden',
+      }}
+    >
+      {options.map(opt => (
+        <button
+          key={opt.key}
+          onClick={() => setMetric(opt.key)}
+          style={{
+            padding: '4px 14px',
+            fontSize: 12,
+            fontWeight: 500,
+            cursor: 'pointer',
+            border: 'none',
+            borderRight: '1px solid var(--border-default)',
+            background: metric === opt.key ? 'var(--bg-active)' : 'transparent',
+            color: metric === opt.key ? 'var(--text-primary)' : 'var(--text-secondary)',
+            transition: 'background 0.15s, color 0.15s',
+          }}
+          onMouseEnter={e => {
+            if (metric !== opt.key) {
+              e.currentTarget.style.background = 'var(--bg-hover)'
+              e.currentTarget.style.color = 'var(--text-primary)'
+            }
+          }}
+          onMouseLeave={e => {
+            if (metric !== opt.key) {
+              e.currentTarget.style.background = 'transparent'
+              e.currentTarget.style.color = 'var(--text-secondary)'
+            }
+          }}
+        >
+          {opt.label}
+        </button>
+      ))}
+    </div>
   )
 }

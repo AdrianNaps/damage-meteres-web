@@ -8,31 +8,57 @@ interface Props {
   onSelect: (targetName: string) => void
 }
 
+const thStyle: React.CSSProperties = {
+  fontSize: 10,
+  fontWeight: 500,
+  textTransform: 'uppercase',
+  letterSpacing: '0.06em',
+  color: 'var(--text-muted)',
+  padding: '6px 0',
+  borderBottom: '1px solid var(--border-default)',
+}
+
+const tdStyle: React.CSSProperties = {
+  padding: '5px 0',
+  fontSize: 12,
+  borderBottom: '1px solid var(--border-subtle)',
+}
+
+const monoStyle: React.CSSProperties = {
+  fontFamily: 'var(--font-mono)',
+}
+
 export function TargetTable({ targets, totalDamage, duration, onSelect }: Props) {
   const rows = Object.values(targets).sort((a, b) => b.total - a.total)
   return (
-    <table className="w-full text-xs">
+    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
       <thead>
-        <tr className="text-slate-500 border-b border-white/10">
-          <th className="text-left py-1.5 font-normal">Target</th>
-          <th className="text-right py-1.5 font-normal">Total</th>
-          <th className="text-right py-1.5 font-normal">DPS</th>
-          <th className="text-right py-1.5 font-normal">%</th>
+        <tr>
+          <th style={{ ...thStyle, textAlign: 'left' }}>Target</th>
+          <th style={{ ...thStyle, textAlign: 'right' }}>Total</th>
+          <th style={{ ...thStyle, textAlign: 'right' }}>DPS</th>
+          <th style={{ ...thStyle, textAlign: 'right' }}>%</th>
         </tr>
       </thead>
       <tbody>
-        {rows.map(t => (
+        {rows.map((t, i) => (
           <tr
             key={t.targetName}
-            className="border-b border-white/5 hover:bg-white/5 cursor-pointer"
+            style={{
+              cursor: 'pointer',
+              background: i % 2 === 1 ? 'rgba(255,255,255,0.02)' : 'transparent',
+              transition: 'background 0.1s',
+            }}
             onClick={() => onSelect(t.targetName)}
+            onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-hover)' }}
+            onMouseLeave={e => { e.currentTarget.style.background = i % 2 === 1 ? 'rgba(255,255,255,0.02)' : 'transparent' }}
           >
-            <td className="py-1 text-slate-200">{t.targetName}</td>
-            <td className="py-1 text-right text-white">{formatNum(t.total)}</td>
-            <td className="py-1 text-right text-slate-300">
+            <td style={{ ...tdStyle, color: 'var(--text-primary)' }}>{t.targetName}</td>
+            <td style={{ ...tdStyle, ...monoStyle, textAlign: 'right', color: 'var(--text-primary)', fontWeight: 600 }}>{formatNum(t.total)}</td>
+            <td style={{ ...tdStyle, ...monoStyle, textAlign: 'right', color: 'var(--text-secondary)' }}>
               {duration > 0 ? formatNum(t.total / duration) : '—'}
             </td>
-            <td className="py-1 text-right text-slate-400">{pct(t.total, totalDamage)}</td>
+            <td style={{ ...tdStyle, ...monoStyle, textAlign: 'right', color: 'var(--text-muted)' }}>{pct(t.total, totalDamage)}</td>
           </tr>
         ))}
       </tbody>

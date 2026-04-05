@@ -10,36 +10,64 @@ function pct(a: number, b: number): string {
   return b > 0 ? `${Math.round((a / b) * 100)}%` : '—'
 }
 
+const thStyle: React.CSSProperties = {
+  fontSize: 10,
+  fontWeight: 500,
+  textTransform: 'uppercase',
+  letterSpacing: '0.06em',
+  color: 'var(--text-muted)',
+  padding: '6px 0',
+  borderBottom: '1px solid var(--border-default)',
+}
+
+const tdStyle: React.CSSProperties = {
+  padding: '5px 0',
+  fontSize: 12,
+  borderBottom: '1px solid var(--border-subtle)',
+}
+
+const monoStyle: React.CSSProperties = {
+  fontFamily: 'var(--font-mono)',
+}
+
 interface DamageProps { spells: Record<string, SpellDamageStats> }
 interface HealProps   { spells: Record<string, SpellHealStats> }
 
 export function DamageSpellTable({ spells }: DamageProps) {
   const rows = Object.values(spells).sort((a, b) => b.total - a.total)
   return (
-    <table className="w-full text-xs">
+    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
       <thead>
-        <tr className="text-slate-500 border-b border-white/10">
-          <th className="text-left py-1.5 font-normal">Spell</th>
-          <th className="text-right py-1.5 font-normal">Total</th>
-          <th className="text-right py-1.5 font-normal">Hits</th>
-          <th className="text-right py-1.5 font-normal">Crit%</th>
-          <th className="text-right py-1.5 font-normal">Min</th>
-          <th className="text-right py-1.5 font-normal">Max</th>
-          <th className="text-right py-1.5 font-normal">Absorb</th>
+        <tr>
+          <th style={{ ...thStyle, textAlign: 'left' }}>Spell</th>
+          <th style={{ ...thStyle, textAlign: 'right' }}>Total</th>
+          <th style={{ ...thStyle, textAlign: 'right' }}>Hits</th>
+          <th style={{ ...thStyle, textAlign: 'right' }}>Crit%</th>
+          <th style={{ ...thStyle, textAlign: 'right' }}>Min</th>
+          <th style={{ ...thStyle, textAlign: 'right' }}>Max</th>
+          <th style={{ ...thStyle, textAlign: 'right' }}>Absorb</th>
         </tr>
       </thead>
       <tbody>
-        {rows.map(s => (
-          <tr key={s.spellId} className="border-b border-white/5 hover:bg-white/5">
-            <td className="py-1 text-slate-200">{s.spellName}</td>
-            <td className="py-1 text-right text-white">{formatNum(s.total)}</td>
-            <td className="py-1 text-right text-slate-300">{s.hitCount}</td>
-            <td className="py-1 text-right text-yellow-400">{pct(s.critCount, s.hitCount)}</td>
-            <td className="py-1 text-right text-slate-400">
+        {rows.map((s, i) => (
+          <tr
+            key={s.spellId}
+            style={{
+              background: i % 2 === 1 ? 'rgba(255,255,255,0.02)' : 'transparent',
+              transition: 'background 0.1s',
+            }}
+            onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-hover)' }}
+            onMouseLeave={e => { e.currentTarget.style.background = i % 2 === 1 ? 'rgba(255,255,255,0.02)' : 'transparent' }}
+          >
+            <td style={{ ...tdStyle, color: 'var(--text-primary)' }}>{s.spellName}</td>
+            <td style={{ ...tdStyle, ...monoStyle, textAlign: 'right', color: 'var(--text-primary)', fontWeight: 600 }}>{formatNum(s.total)}</td>
+            <td style={{ ...tdStyle, ...monoStyle, textAlign: 'right', color: 'var(--text-secondary)' }}>{s.hitCount}</td>
+            <td style={{ ...tdStyle, ...monoStyle, textAlign: 'right', color: '#eab308' }}>{pct(s.critCount, s.hitCount)}</td>
+            <td style={{ ...tdStyle, ...monoStyle, textAlign: 'right', color: 'var(--text-muted)' }}>
               {s.normalMin === Infinity ? '—' : formatNum(s.normalMin)}
             </td>
-            <td className="py-1 text-right text-slate-400">{formatNum(s.normalMax)}</td>
-            <td className="py-1 text-right text-slate-400">{formatNum(s.absorbed)}</td>
+            <td style={{ ...tdStyle, ...monoStyle, textAlign: 'right', color: 'var(--text-muted)' }}>{formatNum(s.normalMax)}</td>
+            <td style={{ ...tdStyle, ...monoStyle, textAlign: 'right', color: 'var(--text-muted)' }}>{formatNum(s.absorbed)}</td>
           </tr>
         ))}
       </tbody>
@@ -50,24 +78,32 @@ export function DamageSpellTable({ spells }: DamageProps) {
 export function HealSpellTable({ spells }: HealProps) {
   const rows = Object.values(spells).sort((a, b) => b.total - a.total)
   return (
-    <table className="w-full text-xs">
+    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
       <thead>
-        <tr className="text-slate-500 border-b border-white/10">
-          <th className="text-left py-1.5 font-normal">Spell</th>
-          <th className="text-right py-1.5 font-normal">Total</th>
-          <th className="text-right py-1.5 font-normal">Hits</th>
-          <th className="text-right py-1.5 font-normal">Crit%</th>
-          <th className="text-right py-1.5 font-normal">Overheal%</th>
+        <tr>
+          <th style={{ ...thStyle, textAlign: 'left' }}>Spell</th>
+          <th style={{ ...thStyle, textAlign: 'right' }}>Total</th>
+          <th style={{ ...thStyle, textAlign: 'right' }}>Hits</th>
+          <th style={{ ...thStyle, textAlign: 'right' }}>Crit%</th>
+          <th style={{ ...thStyle, textAlign: 'right' }}>Overheal%</th>
         </tr>
       </thead>
       <tbody>
-        {rows.map(s => (
-          <tr key={s.spellId} className="border-b border-white/5 hover:bg-white/5">
-            <td className="py-1 text-slate-200">{s.spellName}</td>
-            <td className="py-1 text-right text-white">{formatNum(s.total)}</td>
-            <td className="py-1 text-right text-slate-300">{s.hitCount}</td>
-            <td className="py-1 text-right text-yellow-400">{pct(s.critCount, s.hitCount)}</td>
-            <td className="py-1 text-right text-slate-400">{pct(s.overheal, s.total + s.overheal)}</td>
+        {rows.map((s, i) => (
+          <tr
+            key={s.spellId}
+            style={{
+              background: i % 2 === 1 ? 'rgba(255,255,255,0.02)' : 'transparent',
+              transition: 'background 0.1s',
+            }}
+            onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-hover)' }}
+            onMouseLeave={e => { e.currentTarget.style.background = i % 2 === 1 ? 'rgba(255,255,255,0.02)' : 'transparent' }}
+          >
+            <td style={{ ...tdStyle, color: 'var(--text-primary)' }}>{s.spellName}</td>
+            <td style={{ ...tdStyle, ...monoStyle, textAlign: 'right', color: 'var(--text-primary)', fontWeight: 600 }}>{formatNum(s.total)}</td>
+            <td style={{ ...tdStyle, ...monoStyle, textAlign: 'right', color: 'var(--text-secondary)' }}>{s.hitCount}</td>
+            <td style={{ ...tdStyle, ...monoStyle, textAlign: 'right', color: '#eab308' }}>{pct(s.critCount, s.hitCount)}</td>
+            <td style={{ ...tdStyle, ...monoStyle, textAlign: 'right', color: 'var(--text-muted)' }}>{pct(s.overheal, s.total + s.overheal)}</td>
           </tr>
         ))}
       </tbody>

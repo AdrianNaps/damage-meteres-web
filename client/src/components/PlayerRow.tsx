@@ -29,7 +29,7 @@ const CLASS_COLORS: Record<number, string> = {
   2: '#F48CBA',  // Paladin
   3: '#AAD372',  // Hunter
   4: '#FFF468',  // Rogue
-  5: '#E8D5A3',  // Priest (white is too harsh on dark bg)
+  5: '#E8D5A3',  // Priest
   6: '#C41E3A',  // Death Knight
   7: '#0070DD',  // Shaman
   8: '#3FC7EB',  // Mage
@@ -40,7 +40,7 @@ const CLASS_COLORS: Record<number, string> = {
   13: '#33937F', // Evoker
 }
 
-const UNKNOWN_CLASS_COLOR = '#64748B' // slate-500, visible but clearly "unknown"
+const UNKNOWN_CLASS_COLOR = '#64748B'
 
 export function getClassColor(specId?: number): string {
   const classId = specId !== undefined ? SPEC_TO_CLASS[specId] : undefined
@@ -57,34 +57,114 @@ export function PlayerRow({ player, rank, topValue, metric, onClick }: Props) {
   const value = metric === 'damage' ? player.dps : player.hps
   const total = metric === 'damage' ? player.damage.total : player.healing.total
   const fillPct = topValue > 0 ? (value / topValue) * 100 : 0
-  const classId = player.specId !== undefined ? SPEC_TO_CLASS[player.specId] : undefined
-  const color = classId !== undefined ? CLASS_COLORS[classId] : UNKNOWN_CLASS_COLOR
+  const pctOfTop = topValue > 0 ? Math.round((value / topValue) * 100) : 0
+  const color = getClassColor(player.specId)
 
   return (
     <div
-      className="relative flex items-center px-3 py-1.5 cursor-pointer hover:bg-white/5 transition-colors"
       onClick={onClick}
+      style={{
+        position: 'relative',
+        display: 'flex',
+        alignItems: 'center',
+        paddingRight: 12,
+        paddingTop: 0,
+        paddingBottom: 0,
+        height: 32,
+        cursor: 'pointer',
+        borderLeft: `3px solid ${color}`,
+        overflow: 'hidden',
+        transition: 'background 0.1s',
+      }}
+      onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-hover)' }}
+      onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
     >
-      {/* Background bar */}
+      {/* Bar fill */}
       <div
-        className="absolute inset-y-0 left-0 opacity-20 rounded"
-        style={{ width: `${fillPct}%`, backgroundColor: color }}
+        style={{
+          position: 'absolute',
+          top: 0,
+          bottom: 0,
+          left: 0,
+          width: `${fillPct}%`,
+          backgroundColor: color,
+          opacity: 0.12,
+          borderRadius: '0 2px 2px 0',
+          pointerEvents: 'none',
+        }}
       />
 
       {/* Rank */}
-      <span className="relative w-5 text-xs text-slate-500 shrink-0">{rank}</span>
+      <span
+        style={{
+          position: 'relative',
+          width: 24,
+          flexShrink: 0,
+          fontSize: 11,
+          fontFamily: 'var(--font-mono)',
+          color: 'var(--text-muted)',
+          textAlign: 'center',
+          paddingLeft: 6,
+        }}
+      >
+        {rank}
+      </span>
 
       {/* Name */}
-      <span className="relative flex-1 text-sm font-medium truncate" style={{ color }}>
+      <span
+        className="truncate"
+        style={{
+          position: 'relative',
+          flex: 1,
+          fontSize: 13,
+          fontWeight: 500,
+          color: color,
+        }}
+      >
         {player.name}
       </span>
 
       {/* Total */}
-      <span className="relative text-xs text-slate-400 w-16 text-right">{formatNum(total)}</span>
+      <span
+        style={{
+          position: 'relative',
+          width: 64,
+          textAlign: 'right',
+          fontSize: 12,
+          fontFamily: 'var(--font-mono)',
+          color: 'var(--text-secondary)',
+        }}
+      >
+        {formatNum(total)}
+      </span>
 
-      {/* DPS/HPS */}
-      <span className="relative text-sm font-semibold w-20 text-right text-white">
+      {/* DPS / HPS */}
+      <span
+        style={{
+          position: 'relative',
+          width: 72,
+          textAlign: 'right',
+          fontSize: 13,
+          fontWeight: 600,
+          fontFamily: 'var(--font-mono)',
+          color: 'var(--text-primary)',
+        }}
+      >
         {formatNum(value)}
+      </span>
+
+      {/* % of top */}
+      <span
+        style={{
+          position: 'relative',
+          width: 40,
+          textAlign: 'right',
+          fontSize: 11,
+          fontFamily: 'var(--font-mono)',
+          color: 'var(--text-muted)',
+        }}
+      >
+        {pctOfTop}%
       </span>
     </div>
   )
