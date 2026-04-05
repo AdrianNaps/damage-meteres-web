@@ -3,12 +3,12 @@ import { PlayerRow } from './PlayerRow'
 import type { PlayerSnapshot } from '../types'
 
 export function MeterView() {
-  const currentSegment = useStore(selectCurrentView)
+  const currentView = useStore(selectCurrentView)
   const metric = useStore(s => s.metric)
   const setMetric = useStore(s => s.setMetric)
   const setSelectedPlayer = useStore(s => s.setSelectedPlayer)
 
-  if (!currentSegment) {
+  if (!currentView) {
     return (
       <div className="flex-1 flex items-center justify-center text-slate-600 text-sm">
         No encounter data
@@ -16,7 +16,7 @@ export function MeterView() {
     )
   }
 
-  const players: PlayerSnapshot[] = Object.values(currentSegment.players)
+  const players: PlayerSnapshot[] = Object.values(currentView.players)
   const sorted = [...players].sort((a, b) =>
     metric === 'damage' ? b.dps - a.dps : b.hps - a.hps
   )

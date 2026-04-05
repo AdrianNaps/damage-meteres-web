@@ -204,27 +204,30 @@ export class SegmentStore {
   }
 
   getHistoryItems(): HistoryItem[] {
-    const items: HistoryItem[] = []
-    const seen = new Set<string>()
+    // Single O(n) pass: group segments by keyRunId, preserving insertion order
+    const keySegments = new Map<string, SegmentSummary[]>()
+    const order: Array<{ type: 'key_run'; keyRunId: string } | { type: 'segment'; summary: SegmentSummary }> = []
 
     for (const seg of this.segments) {
       if (seg.keyRunId) {
-        if (!seen.has(seg.keyRunId)) {
-          seen.add(seg.keyRunId)
-          const meta = this.keyRunMeta.get(seg.keyRunId)
-          if (meta) {
-            const keySegments = this.segments
-              .filter(s => s.keyRunId === seg.keyRunId)
-              .map(s => this.toSummary(s))
-            items.push({ type: 'key_run', ...meta, segments: keySegments })
-          }
+        if (!keySegments.has(seg.keyRunId)) {
+          keySegments.set(seg.keyRunId, [])
+          order.push({ type: 'key_run', keyRunId: seg.keyRunId })
         }
+        keySegments.get(seg.keyRunId)!.push(this.toSummary(seg))
       } else {
-        items.push(this.toSummary(seg))
+        const summary = this.toSummary(seg)
+        order.push({ type: 'segment', summary })
       }
     }
 
-    return items
+    return order.map(entry => {
+      if (entry.type === 'key_run') {
+        const meta = this.keyRunMeta.get(entry.keyRunId)!
+        return { type: 'key_run' as const, ...meta, segments: keySegments.get(entry.keyRunId)! }
+      }
+      return entry.summary
+    })
   }
 
   toKeyRunSnapshot(keyRunId: string): KeyRunSnapshot | null {

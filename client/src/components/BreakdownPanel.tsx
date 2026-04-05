@@ -73,7 +73,8 @@ export function BreakdownPanel() {
       )
     }
     if (canDrillTargets && viewMode === 'targets') {
-      const segmentId = currentView.type === 'segment' ? currentView.id : ''
+      // canDrillTargets === true implies currentView.type === 'segment'
+      const segmentId = (currentView as { id: string }).id
       return (
         <TargetTable
           targets={player.damage.targets}

@@ -10,7 +10,7 @@ export function EncounterHeader() {
   const isLiveSegment = currentView?.type === 'segment' && currentView.endTime === null
 
   useEffect(() => {
-    if (!isLiveSegment || currentView?.type !== 'segment') return
+    if (!isLiveSegment) return
     const interval = setInterval(() => {
       setElapsed(Math.floor((Date.now() - currentView.startTime) / 1000))
     }, 1000)
