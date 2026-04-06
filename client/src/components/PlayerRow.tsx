@@ -53,6 +53,8 @@ function formatNum(n: number): string {
   return String(Math.round(n))
 }
 
+const textShadow = '0 1px 2px rgba(0, 0, 0, 0.85), 0 0 1px rgba(0, 0, 0, 0.9)'
+
 export function PlayerRow({ player, rank, topValue, metric, onClick }: Props) {
   const value = metric === 'damage' ? player.dps : player.hps
   const total = metric === 'damage' ? player.damage.total : player.healing.total
@@ -88,7 +90,7 @@ export function PlayerRow({ player, rank, topValue, metric, onClick }: Props) {
           left: 0,
           width: `${fillPct}%`,
           backgroundColor: color,
-          opacity: 0.12,
+          opacity: 0.7,
           borderRadius: '0 2px 2px 0',
           pointerEvents: 'none',
         }}
@@ -102,7 +104,8 @@ export function PlayerRow({ player, rank, topValue, metric, onClick }: Props) {
           flexShrink: 0,
           fontSize: 11,
           fontFamily: 'var(--font-mono)',
-          color: 'var(--text-muted)',
+          color: '#ffffff',
+          textShadow: textShadow,
           textAlign: 'center',
           paddingLeft: 6,
         }}
@@ -118,7 +121,8 @@ export function PlayerRow({ player, rank, topValue, metric, onClick }: Props) {
           flex: 1,
           fontSize: 13,
           fontWeight: 500,
-          color: color,
+          color: '#ffffff',
+          textShadow: textShadow,
         }}
       >
         {player.name}
@@ -132,7 +136,8 @@ export function PlayerRow({ player, rank, topValue, metric, onClick }: Props) {
           textAlign: 'right',
           fontSize: 12,
           fontFamily: 'var(--font-mono)',
-          color: 'var(--text-secondary)',
+          color: '#ffffff',
+          textShadow: textShadow,
         }}
       >
         {formatNum(total)}
@@ -147,7 +152,8 @@ export function PlayerRow({ player, rank, topValue, metric, onClick }: Props) {
           fontSize: 13,
           fontWeight: 600,
           fontFamily: 'var(--font-mono)',
-          color: 'var(--text-primary)',
+          color: '#ffffff',
+          textShadow: textShadow,
         }}
       >
         {formatNum(value)}
@@ -161,7 +167,8 @@ export function PlayerRow({ player, rank, topValue, metric, onClick }: Props) {
           textAlign: 'right',
           fontSize: 11,
           fontFamily: 'var(--font-mono)',
-          color: 'var(--text-muted)',
+          color: '#ffffff',
+          textShadow: textShadow,
         }}
       >
         {pctOfTop}%
