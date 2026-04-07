@@ -16,6 +16,10 @@ interface AppState {
   // Per-name spec cache, accumulated across every snapshot we've seen.
   // Used as a fallback when a segment (e.g. Trash 1) was created before COMBATANT_INFO fired.
   playerSpecs: Record<string, number>
+  // spellId → Wowhead icon filename. Accumulated across snapshots so icons
+  // stay visible even when a snapshot arrives before the server resolver
+  // has finished looking up a new ID.
+  spellIcons: Record<string, string>
 
   setLiveSegment: (s: SegmentSnapshot) => void
   setSelectedSegment: (s: SegmentSnapshot | null) => void
@@ -28,6 +32,21 @@ interface AppState {
   setMetric: (m: AppState['metric']) => void
   setWsStatus: (s: AppState['wsStatus']) => void
   setTargetDetail: (d: TargetDetail | null) => void
+}
+
+function mergeIcons(
+  prev: Record<string, string>,
+  incoming: Record<string, string> | undefined,
+): Record<string, string> {
+  if (!incoming) return prev
+  let next = prev
+  for (const [id, name] of Object.entries(incoming)) {
+    if (name && prev[id] !== name) {
+      if (next === prev) next = { ...prev }
+      next[id] = name
+    }
+  }
+  return next
 }
 
 function mergeSpecs(
@@ -58,14 +77,17 @@ export const useStore = create<AppState>((set) => ({
   wsStatus: 'connecting',
   targetDetail: null,
   playerSpecs: {},
+  spellIcons: {},
 
   setLiveSegment: (s) => set(state => ({
     liveSegment: s,
     playerSpecs: mergeSpecs(state.playerSpecs, s?.players),
+    spellIcons: mergeIcons(state.spellIcons, s?.spellIcons),
   })),
   setSelectedSegment: (s) => set(state => ({
     selectedSegment: s,
     playerSpecs: mergeSpecs(state.playerSpecs, s?.players),
+    spellIcons: mergeIcons(state.spellIcons, s?.spellIcons),
   })),
   setSegmentHistory: (list) => set({ segmentHistory: list }),
   setSelectedSegmentId: (id) => set({
@@ -87,6 +109,7 @@ export const useStore = create<AppState>((set) => ({
   setSelectedKeyRun: (s) => set(state => ({
     selectedKeyRun: s,
     playerSpecs: mergeSpecs(state.playerSpecs, s?.players),
+    spellIcons: mergeIcons(state.spellIcons, s?.spellIcons),
   })),
   setSelectedPlayer: (name) => set({ selectedPlayer: name }),
   setSelectedDeath: (record) => set({ selectedDeath: record }),

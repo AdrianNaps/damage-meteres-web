@@ -80,6 +80,7 @@ export interface SegmentSnapshot {
   success: boolean | null
   duration: number
   players: Record<string, PlayerSnapshot>
+  spellIcons?: Record<string, string>
 }
 
 export interface SegmentSummary {
@@ -115,6 +116,7 @@ export interface KeyRunSnapshot {
   durationMs: number | null
   activeDurationSec: number
   players: Record<string, PlayerSnapshot>
+  spellIcons?: Record<string, string>
 }
 
 export type HistoryItem = KeyRunSummary | SegmentSummary

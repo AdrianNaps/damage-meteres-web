@@ -1,6 +1,7 @@
 import type { PlayerSnapshot } from '../types'
 import { useStore, resolveSpecId } from '../store'
 import { shortName } from '../utils/format'
+import { specIconUrl } from '../utils/icons'
 
 interface Props {
   player: PlayerSnapshot
@@ -64,6 +65,7 @@ export function PlayerRow({ player, rank, topValue, metric, onClick }: Props) {
   const pctOfTop = topValue > 0 ? Math.round((value / topValue) * 100) : 0
   const cachedSpec = useStore(s => resolveSpecId(s.playerSpecs, player.name, player.specId))
   const color = getClassColor(cachedSpec)
+  const specIcon = specIconUrl(cachedSpec)
 
   return (
     <div
@@ -115,6 +117,24 @@ export function PlayerRow({ player, rank, topValue, metric, onClick }: Props) {
       >
         {rank}
       </span>
+
+      {/* Spec icon */}
+      {specIcon && (
+        <img
+          src={specIcon}
+          alt=""
+          width={18}
+          height={18}
+          style={{
+            position: 'relative',
+            marginRight: 6,
+            border: '1px solid rgba(0, 0, 0, 0.7)',
+            borderRadius: 2,
+            flexShrink: 0,
+          }}
+          onError={e => { e.currentTarget.style.display = 'none' }}
+        />
+      )}
 
       {/* Name */}
       <span

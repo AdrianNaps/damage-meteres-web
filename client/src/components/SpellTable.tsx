@@ -1,4 +1,44 @@
 import type { SpellDamageStats, SpellHealStats } from '../types'
+import { useStore } from '../store'
+import { spellIconUrl } from '../utils/icons'
+
+function SpellIcon({ spellId }: { spellId: string }) {
+  const name = useStore(s => s.spellIcons[spellId])
+  const url = spellIconUrl(name)
+  return (
+    <div
+      style={{
+        width: 18,
+        height: 18,
+        border: '1px solid rgba(0, 0, 0, 0.7)',
+        borderRadius: 2,
+        background: 'rgba(255, 255, 255, 0.04)',
+        overflow: 'hidden',
+        flexShrink: 0,
+      }}
+    >
+      {url && (
+        <img
+          src={url}
+          alt=""
+          width={18}
+          height={18}
+          style={{ display: 'block' }}
+          onError={e => { e.currentTarget.style.display = 'none' }}
+        />
+      )}
+    </div>
+  )
+}
+
+function SpellNameCell({ spellId, spellName }: { spellId: string; spellName: string }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <SpellIcon spellId={spellId} />
+      <span>{spellName}</span>
+    </div>
+  )
+}
 
 function formatNum(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`
@@ -59,7 +99,9 @@ export function DamageSpellTable({ spells }: DamageProps) {
             onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-hover)' }}
             onMouseLeave={e => { e.currentTarget.style.background = i % 2 === 1 ? 'rgba(255,255,255,0.02)' : 'transparent' }}
           >
-            <td style={{ ...tdStyle, color: 'var(--text-primary)' }}>{s.spellName}</td>
+            <td style={{ ...tdStyle, color: 'var(--text-primary)' }}>
+              <SpellNameCell spellId={s.spellId} spellName={s.spellName} />
+            </td>
             <td style={{ ...tdStyle, ...monoStyle, textAlign: 'right', color: 'var(--text-primary)', fontWeight: 600 }}>{formatNum(s.total)}</td>
             <td style={{ ...tdStyle, ...monoStyle, textAlign: 'right', color: 'var(--text-secondary)' }}>{s.hitCount}</td>
             <td style={{ ...tdStyle, ...monoStyle, textAlign: 'right', color: '#eab308' }}>{pct(s.critCount, s.hitCount)}</td>
@@ -99,7 +141,9 @@ export function HealSpellTable({ spells }: HealProps) {
             onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-hover)' }}
             onMouseLeave={e => { e.currentTarget.style.background = i % 2 === 1 ? 'rgba(255,255,255,0.02)' : 'transparent' }}
           >
-            <td style={{ ...tdStyle, color: 'var(--text-primary)' }}>{s.spellName}</td>
+            <td style={{ ...tdStyle, color: 'var(--text-primary)' }}>
+              <SpellNameCell spellId={s.spellId} spellName={s.spellName} />
+            </td>
             <td style={{ ...tdStyle, ...monoStyle, textAlign: 'right', color: 'var(--text-primary)', fontWeight: 600 }}>{formatNum(s.total)}</td>
             <td style={{ ...tdStyle, ...monoStyle, textAlign: 'right', color: 'var(--text-secondary)' }}>{s.hitCount}</td>
             <td style={{ ...tdStyle, ...monoStyle, textAlign: 'right', color: '#eab308' }}>{pct(s.critCount, s.hitCount)}</td>

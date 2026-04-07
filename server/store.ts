@@ -1,4 +1,5 @@
 import type { PlayerDeathRecord } from './types.js'
+import { iconResolver } from './iconResolver.js'
 export type { PlayerDeathRecord }
 
 export interface SpellDamageStats {
@@ -89,6 +90,7 @@ export interface SegmentSnapshot extends Omit<Segment, 'players'> {
   type: 'segment'
   duration: number
   players: Record<string, PlayerSnapshot>
+  spellIcons: Record<string, string>   // spellId → Wowhead icon filename
 }
 
 export interface SegmentSummary {
@@ -135,6 +137,7 @@ export interface KeyRunSnapshot {
   durationMs: number | null
   activeDurationSec: number          // sum of individual segment combat durations
   players: Record<string, PlayerSnapshot>
+  spellIcons: Record<string, string> // spellId → Wowhead icon filename
 }
 
 export type HistoryItem = KeyRunSummary | SegmentSummary
@@ -339,7 +342,14 @@ export class SegmentStore {
       }
     }
 
-    return { type: 'key_run', ...meta, activeDurationSec, players }
+    const spellIds = new Set<string>()
+    for (const p of Object.values(players)) {
+      for (const sid of Object.keys(p.damage.spells)) spellIds.add(sid)
+      for (const sid of Object.keys(p.healing.spells)) spellIds.add(sid)
+    }
+    iconResolver.requestMany(spellIds)
+
+    return { type: 'key_run', ...meta, activeDurationSec, players, spellIcons: iconResolver.getAll() }
   }
 
   toSnapshot(segment: Segment): SegmentSnapshot {
@@ -357,7 +367,14 @@ export class SegmentStore {
       }
     }
 
-    return { type: 'segment' as const, ...segment, duration, players }
+    const spellIds = new Set<string>()
+    for (const p of Object.values(players)) {
+      for (const sid of Object.keys(p.damage.spells)) spellIds.add(sid)
+      for (const sid of Object.keys(p.healing.spells)) spellIds.add(sid)
+    }
+    iconResolver.requestMany(spellIds)
+
+    return { type: 'segment' as const, ...segment, duration, players, spellIcons: iconResolver.getAll() }
   }
 
   toSummary(segment: Segment): SegmentSummary {
