@@ -89,7 +89,7 @@ export function SegmentTabs() {
           className="flex gap-0 px-4 pt-0.5 pb-0.5 overflow-x-auto items-end"
           style={{ paddingLeft: 28 }}
         >
-          {activeSegments.map(seg => (
+          {[...activeSegments].reverse().map(seg => (
             <TabButton
               key={seg.id}
               active={selectedId === seg.id}

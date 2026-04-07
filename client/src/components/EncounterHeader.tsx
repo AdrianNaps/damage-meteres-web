@@ -1,23 +1,9 @@
-import { useEffect, useState } from 'react'
 import { useStore, selectCurrentView } from '../store'
 import type { KeyRunSnapshot, SegmentSnapshot } from '../types'
 
 export function EncounterHeader() {
   const currentView = useStore(selectCurrentView)
   const wsStatus = useStore(s => s.wsStatus)
-  const [elapsed, setElapsed] = useState(0)
-
-  const isLiveSegment = currentView?.type === 'segment' && currentView.endTime === null
-
-  useEffect(() => {
-    if (!isLiveSegment) return
-    const interval = setInterval(() => {
-      setElapsed(Math.floor((Date.now() - currentView.startTime) / 1000))
-    }, 1000)
-    return () => clearInterval(interval)
-  }, [isLiveSegment, currentView])
-
-  const formatTime = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
 
   const disconnected = wsStatus === 'disconnected'
 
@@ -45,9 +31,9 @@ export function EncounterHeader() {
         />
 
         {currentView?.type === 'key_run' ? (
-          <KeyRunHeader view={currentView} formatTime={formatTime} />
+          <KeyRunHeader view={currentView} />
         ) : currentView?.type === 'segment' ? (
-          <SegmentHeader view={currentView} elapsed={elapsed} formatTime={formatTime} />
+          <SegmentHeader view={currentView} />
         ) : (
           <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>
             Waiting for combat data...
@@ -55,35 +41,11 @@ export function EncounterHeader() {
         )}
       </div>
 
-      {/* Duration / timer on the right */}
-      {currentView?.type === 'segment' && currentView.endTime === null && (
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--text-secondary)' }}>
-          {formatTime(elapsed)}
-        </span>
-      )}
-      {currentView?.type === 'segment' && currentView.endTime !== null && (
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--text-muted)' }}>
-          {formatTime(currentView.duration)}
-        </span>
-      )}
-      {currentView?.type === 'key_run' && currentView.durationMs !== null && (
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--text-muted)' }}>
-          {formatTime(Math.floor(currentView.durationMs / 1000))}
-        </span>
-      )}
     </div>
   )
 }
 
-function SegmentHeader({
-  view,
-  elapsed: _elapsed,
-  formatTime: _formatTime,
-}: {
-  view: SegmentSnapshot
-  elapsed: number
-  formatTime: (s: number) => string
-}) {
+function SegmentHeader({ view }: { view: SegmentSnapshot }) {
   return (
     <div className="flex items-center gap-2">
       <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-primary)' }}>
@@ -100,13 +62,7 @@ function SegmentHeader({
   )
 }
 
-function KeyRunHeader({
-  view,
-  formatTime: _formatTime,
-}: {
-  view: KeyRunSnapshot
-  formatTime: (s: number) => string
-}) {
+function KeyRunHeader({ view }: { view: KeyRunSnapshot }) {
   return (
     <div className="flex items-center gap-2">
       <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-primary)' }}>
