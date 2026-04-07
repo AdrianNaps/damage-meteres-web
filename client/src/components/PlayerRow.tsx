@@ -1,4 +1,6 @@
 import type { PlayerSnapshot } from '../types'
+import { useStore, resolveSpecId } from '../store'
+import { shortName } from '../utils/format'
 
 interface Props {
   player: PlayerSnapshot
@@ -20,7 +22,7 @@ const SPEC_TO_CLASS: Record<number, number> = {
   265: 9, 266: 9, 267: 9,        // Warlock
   268: 10, 269: 10, 270: 10,     // Monk
   102: 11, 103: 11, 104: 11, 105: 11, // Druid
-  577: 12, 581: 12,              // Demon Hunter
+  577: 12, 581: 12, 1480: 12,    // Demon Hunter (Havoc, Vengeance, Devourer)
   1467: 13, 1468: 13, 1473: 13, // Evoker
 }
 
@@ -60,7 +62,8 @@ export function PlayerRow({ player, rank, topValue, metric, onClick }: Props) {
   const total = metric === 'damage' ? player.damage.total : player.healing.total
   const fillPct = topValue > 0 ? (value / topValue) * 100 : 0
   const pctOfTop = topValue > 0 ? Math.round((value / topValue) * 100) : 0
-  const color = getClassColor(player.specId)
+  const cachedSpec = useStore(s => resolveSpecId(s.playerSpecs, player.name, player.specId))
+  const color = getClassColor(cachedSpec)
 
   return (
     <div
@@ -125,7 +128,7 @@ export function PlayerRow({ player, rank, topValue, metric, onClick }: Props) {
           textShadow: textShadow,
         }}
       >
-        {player.name}
+        {shortName(player.name)}
       </span>
 
       {/* Total */}

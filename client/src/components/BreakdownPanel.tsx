@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
-import { useStore, selectCurrentView } from '../store'
+import { useStore, selectCurrentView, resolveSpecId } from '../store'
 import { getClassColor } from './PlayerRow'
 import { DamageSpellTable, HealSpellTable } from './SpellTable'
 import { TargetTable } from './TargetTable'
 import { TargetDrillDown } from './TargetDrillDown'
 import { requestTargetDetail } from '../ws'
-import { formatNum } from '../utils/format'
+import { formatNum, shortName } from '../utils/format'
 
 export function BreakdownPanel() {
   const selectedPlayer = useStore(s => s.selectedPlayer)
@@ -16,6 +16,7 @@ export function BreakdownPanel() {
   const [drillTarget, setDrillTarget] = useState<string | null>(null)
   const targetDetail = useStore(s => s.targetDetail)
   const setTargetDetail = useStore(s => s.setTargetDetail)
+  const playerSpecs = useStore(s => s.playerSpecs)
 
   const isKeyRun = currentView?.type === 'key_run'
   const canDrillTargets = !isKeyRun
@@ -45,7 +46,7 @@ export function BreakdownPanel() {
   const player = currentView.players[selectedPlayer]
   if (!player) return null
 
-  const color = getClassColor(player.specId)
+  const color = getClassColor(resolveSpecId(playerSpecs, selectedPlayer, player.specId))
   const value = metric === 'damage' ? player.dps : player.hps
   const total = metric === 'damage' ? player.damage.total : player.healing.total
   const duration = isKeyRun ? currentView.activeDurationSec : currentView.duration
@@ -115,7 +116,7 @@ export function BreakdownPanel() {
           }}
         >
           <div>
-            <div style={{ fontWeight: 600, fontSize: 15, color }}>{player.name}</div>
+            <div style={{ fontWeight: 600, fontSize: 15, color }}>{shortName(player.name)}</div>
             <div style={{ fontSize: 12, fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', marginTop: 2 }}>
               {formatNum(total)} total &middot; {formatNum(value)} {metric === 'damage' ? 'DPS' : 'HPS'}
             </div>

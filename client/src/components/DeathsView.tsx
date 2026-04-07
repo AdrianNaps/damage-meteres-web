@@ -1,5 +1,6 @@
-import { useStore, selectCurrentView } from '../store'
+import { useStore, selectCurrentView, resolveSpecId } from '../store'
 import { getClassColor } from './PlayerRow'
+import { shortName } from '../utils/format'
 import type { PlayerDeathRecord } from '../types'
 
 function formatElapsed(sec: number): string {
@@ -11,6 +12,7 @@ function formatElapsed(sec: number): string {
 export function DeathsView() {
   const currentView = useStore(selectCurrentView)
   const setSelectedDeath = useStore(s => s.setSelectedDeath)
+  const playerSpecs = useStore(s => s.playerSpecs)
 
   if (!currentView) {
     return (
@@ -57,7 +59,7 @@ export function DeathsView() {
               key={`${record.playerGuid}-${record.timeOfDeath}`}
               record={record}
               rank={i + 1}
-              specId={currentView.players[record.playerName]?.specId}
+              specId={resolveSpecId(playerSpecs, record.playerName, currentView.players[record.playerName]?.specId)}
               onClick={() => setSelectedDeath(record)}
             />
           ))
@@ -100,7 +102,7 @@ function DeathRow({
         {rank}
       </span>
       <span className="truncate" style={{ width: 96, fontSize: 13, fontWeight: 500, color }}>
-        {record.playerName}
+        {shortName(record.playerName)}
       </span>
       <span style={{ width: 48, textAlign: 'right', fontSize: 12, fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>
         {formatElapsed(record.combatElapsed)}

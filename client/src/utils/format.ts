@@ -7,3 +7,9 @@ export function formatNum(n: number): string {
 export function pct(a: number, b: number): string {
   return b > 0 ? `${Math.round((a / b) * 100)}%` : '—'
 }
+
+// "Adrianw-Sargeras-US" → "Adrianw". Names without a realm pass through unchanged.
+export function shortName(fullName: string): string {
+  const dash = fullName.indexOf('-')
+  return dash === -1 ? fullName : fullName.slice(0, dash)
+}

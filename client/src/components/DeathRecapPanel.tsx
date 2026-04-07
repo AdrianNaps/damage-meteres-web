@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
-import { useStore, selectCurrentView } from '../store'
+import { useStore, selectCurrentView, resolveSpecId } from '../store'
 import { getClassColor } from './PlayerRow'
+import { shortName } from '../utils/format'
 import type { DeathRecapEvent, PlayerDeathRecord } from '../types'
 
 function formatNum(n: number): string {
@@ -59,6 +60,7 @@ export function DeathRecapPanel() {
   const selectedDeath = useStore(s => s.selectedDeath)
   const setSelectedDeath = useStore(s => s.setSelectedDeath)
   const currentView = useStore(selectCurrentView)
+  const playerSpecs = useStore(s => s.playerSpecs)
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -70,7 +72,11 @@ export function DeathRecapPanel() {
 
   if (!selectedDeath || !currentView) return null
 
-  const specId = currentView.players[selectedDeath.playerName]?.specId
+  const specId = resolveSpecId(
+    playerSpecs,
+    selectedDeath.playerName,
+    currentView.players[selectedDeath.playerName]?.specId,
+  )
   const color = getClassColor(specId)
 
   const events = selectedDeath.recap
@@ -104,7 +110,7 @@ export function DeathRecapPanel() {
           }}
         >
           <div>
-            <div style={{ fontWeight: 600, fontSize: 15, color }}>{selectedDeath.playerName}</div>
+            <div style={{ fontWeight: 600, fontSize: 15, color }}>{shortName(selectedDeath.playerName)}</div>
             <div style={{ fontSize: 12, fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', marginTop: 2 }}>
               Died at {formatElapsedFull(selectedDeath.combatElapsed)}
               {kb && (
@@ -263,7 +269,7 @@ function RecapRow({
           color: event.sourceIsPlayer ? 'var(--text-secondary)' : 'var(--text-muted)',
         }}
       >
-        {event.sourceName}
+        {event.sourceIsPlayer ? shortName(event.sourceName) : event.sourceName}
       </span>
 
       {/* Amount */}

@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { SegmentSnapshot, KeyRunSnapshot, HistoryItem, TargetDetail, PlayerDeathRecord } from './types'
+import type { SegmentSnapshot, KeyRunSnapshot, HistoryItem, TargetDetail, PlayerDeathRecord, PlayerSnapshot } from './types'
 
 interface AppState {
   liveSegment: SegmentSnapshot | null
@@ -13,6 +13,9 @@ interface AppState {
   metric: 'damage' | 'healing' | 'deaths'
   wsStatus: 'connecting' | 'connected' | 'disconnected'
   targetDetail: TargetDetail | null
+  // Per-name spec cache, accumulated across every snapshot we've seen.
+  // Used as a fallback when a segment (e.g. Trash 1) was created before COMBATANT_INFO fired.
+  playerSpecs: Record<string, number>
 
   setLiveSegment: (s: SegmentSnapshot) => void
   setSelectedSegment: (s: SegmentSnapshot | null) => void
@@ -27,6 +30,21 @@ interface AppState {
   setTargetDetail: (d: TargetDetail | null) => void
 }
 
+function mergeSpecs(
+  prev: Record<string, number>,
+  players: Record<string, PlayerSnapshot> | undefined,
+): Record<string, number> {
+  if (!players) return prev
+  let next = prev
+  for (const p of Object.values(players)) {
+    if (p.specId !== undefined && prev[p.name] !== p.specId) {
+      if (next === prev) next = { ...prev }
+      next[p.name] = p.specId
+    }
+  }
+  return next
+}
+
 export const useStore = create<AppState>((set) => ({
   liveSegment: null,
   selectedSegment: null,
@@ -39,9 +57,16 @@ export const useStore = create<AppState>((set) => ({
   metric: 'damage',
   wsStatus: 'connecting',
   targetDetail: null,
+  playerSpecs: {},
 
-  setLiveSegment: (s) => set({ liveSegment: s }),
-  setSelectedSegment: (s) => set({ selectedSegment: s }),
+  setLiveSegment: (s) => set(state => ({
+    liveSegment: s,
+    playerSpecs: mergeSpecs(state.playerSpecs, s?.players),
+  })),
+  setSelectedSegment: (s) => set(state => ({
+    selectedSegment: s,
+    playerSpecs: mergeSpecs(state.playerSpecs, s?.players),
+  })),
   setSegmentHistory: (list) => set({ segmentHistory: list }),
   setSelectedSegmentId: (id) => set({
     selectedSegmentId: id,
@@ -59,7 +84,10 @@ export const useStore = create<AppState>((set) => ({
     selectedPlayer: null,
     selectedDeath: null,
   }),
-  setSelectedKeyRun: (s) => set({ selectedKeyRun: s }),
+  setSelectedKeyRun: (s) => set(state => ({
+    selectedKeyRun: s,
+    playerSpecs: mergeSpecs(state.playerSpecs, s?.players),
+  })),
   setSelectedPlayer: (name) => set({ selectedPlayer: name }),
   setSelectedDeath: (record) => set({ selectedDeath: record }),
   setMetric: (m) => set({ metric: m, selectedPlayer: null, selectedDeath: null }),
@@ -69,6 +97,16 @@ export const useStore = create<AppState>((set) => ({
 
 export const selectCurrentView = (s: AppState): SegmentSnapshot | KeyRunSnapshot | null =>
   s.selectedKeyRun ?? (s.selectedSegmentId === null ? s.liveSegment : s.selectedSegment)
+
+// Resolve a player's spec via the cross-segment cache, falling back to whatever the
+// current view's player record happens to carry. Use this everywhere a class color is rendered.
+export function resolveSpecId(
+  playerSpecs: Record<string, number>,
+  name: string,
+  fallback?: number,
+): number | undefined {
+  return playerSpecs[name] ?? fallback
+}
 
 // Kept for components that only care about individual segment data (e.g. target drill-down)
 export const selectCurrentSegment = (s: AppState): SegmentSnapshot | null =>
