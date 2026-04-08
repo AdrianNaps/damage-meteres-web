@@ -57,6 +57,8 @@ async function createWindow() {
     minWidth: 720,
     minHeight: 480,
     backgroundColor: '#0a0b0f',
+    title: 'APEMeters',
+    icon: path.join(__dirname, '../../build/icon.png'),
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -138,7 +140,7 @@ app.whenReady().then(async () => {
     await backend.start()
   } catch (err) {
     dialog.showErrorBox(
-      'Details Bridge failed to start',
+      'APEMeters failed to start',
       err instanceof Error ? err.message : String(err),
     )
     app.quit()
