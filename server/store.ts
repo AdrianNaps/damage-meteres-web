@@ -1,5 +1,5 @@
 import type { PlayerDeathRecord } from './types.js'
-import { iconResolver } from './iconResolver.js'
+import type { IconResolver } from './iconResolver.js'
 export type { PlayerDeathRecord }
 
 export interface SpellDamageStats {
@@ -146,9 +146,11 @@ export class SegmentStore {
   private segments: Segment[] = []
   private maxSegments: number        // max history items (key runs + standalone segments)
   private keyRunMeta: Map<string, KeyRunMeta> = new Map()
+  private iconResolver: IconResolver
 
-  constructor(maxSegments = 10) {
+  constructor(maxSegments: number, iconResolver: IconResolver) {
     this.maxSegments = maxSegments
+    this.iconResolver = iconResolver
   }
 
   registerKeyRun(keyRunId: string, dungeonName: string, keystoneLevel: number, startTime: number) {
@@ -347,9 +349,9 @@ export class SegmentStore {
       for (const sid of Object.keys(p.damage.spells)) spellIds.add(sid)
       for (const sid of Object.keys(p.healing.spells)) spellIds.add(sid)
     }
-    iconResolver.requestMany(spellIds)
+    this.iconResolver.requestMany(spellIds)
 
-    return { type: 'key_run', ...meta, activeDurationSec, players, spellIcons: iconResolver.getAll() }
+    return { type: 'key_run', ...meta, activeDurationSec, players, spellIcons: this.iconResolver.getAll() }
   }
 
   toSnapshot(segment: Segment): SegmentSnapshot {
@@ -372,9 +374,9 @@ export class SegmentStore {
       for (const sid of Object.keys(p.damage.spells)) spellIds.add(sid)
       for (const sid of Object.keys(p.healing.spells)) spellIds.add(sid)
     }
-    iconResolver.requestMany(spellIds)
+    this.iconResolver.requestMany(spellIds)
 
-    return { type: 'segment' as const, ...segment, duration, players, spellIcons: iconResolver.getAll() }
+    return { type: 'segment' as const, ...segment, duration, players, spellIcons: this.iconResolver.getAll() }
   }
 
   toSummary(segment: Segment): SegmentSummary {

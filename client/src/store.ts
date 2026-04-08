@@ -1,6 +1,11 @@
 import { create } from 'zustand'
 import type { SegmentSnapshot, KeyRunSnapshot, HistoryItem, TargetDetail, PlayerDeathRecord, PlayerSnapshot } from './types'
 
+export interface BootInfoState {
+  logsDir: string
+  logsDirExists: boolean
+}
+
 interface AppState {
   liveSegment: SegmentSnapshot | null
   selectedSegment: SegmentSnapshot | null
@@ -20,6 +25,9 @@ interface AppState {
   // stay visible even when a snapshot arrives before the server resolver
   // has finished looking up a new ID.
   spellIcons: Record<string, string>
+  // Boot info from the Electron main process. null in pure-browser dev mode.
+  bootInfo: BootInfoState | null
+  settingsOpen: boolean
 
   setLiveSegment: (s: SegmentSnapshot) => void
   setSelectedSegment: (s: SegmentSnapshot | null) => void
@@ -32,6 +40,9 @@ interface AppState {
   setMetric: (m: AppState['metric']) => void
   setWsStatus: (s: AppState['wsStatus']) => void
   setTargetDetail: (d: TargetDetail | null) => void
+  setBootInfo: (info: BootInfoState | null) => void
+  setSettingsOpen: (open: boolean) => void
+  refreshBootInfo: () => Promise<void>
 }
 
 function mergeIcons(
@@ -78,6 +89,8 @@ export const useStore = create<AppState>((set) => ({
   targetDetail: null,
   playerSpecs: {},
   spellIcons: {},
+  bootInfo: null,
+  settingsOpen: false,
 
   setLiveSegment: (s) => set(state => ({
     liveSegment: s,
@@ -116,6 +129,17 @@ export const useStore = create<AppState>((set) => ({
   setMetric: (m) => set({ metric: m, selectedPlayer: null, selectedDeath: null }),
   setWsStatus: (s) => set({ wsStatus: s }),
   setTargetDetail: (d) => set({ targetDetail: d }),
+  setBootInfo: (info) => set({ bootInfo: info }),
+  setSettingsOpen: (open) => set({ settingsOpen: open }),
+  refreshBootInfo: async () => {
+    if (!window.api?.getBootInfo) return
+    try {
+      const info = await window.api.getBootInfo()
+      set({ bootInfo: { logsDir: info.settings.logsDir, logsDirExists: info.logsDirExists } })
+    } catch {
+      // pure-browser dev mode — ignore
+    }
+  },
 }))
 
 export const selectCurrentView = (s: AppState): SegmentSnapshot | KeyRunSnapshot | null =>
