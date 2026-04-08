@@ -1,11 +1,16 @@
 import { useStore } from './store'
 
-// In dev (Vite), VITE_WS_URL points to the local server.
-// In production (served from Node), derive from the current page's host.
-const WS_URL = import.meta.env.VITE_WS_URL
-  ?? `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`
-
 let ws: WebSocket | null = null
+
+async function resolveWsUrl(): Promise<string> {
+  if (window.api?.getBootInfo) {
+    const { wsPort } = await window.api.getBootInfo()
+    return `ws://127.0.0.1:${wsPort}`
+  }
+  if (import.meta.env.VITE_WS_URL) return import.meta.env.VITE_WS_URL
+  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
+  return `${proto}://${window.location.host}`
+}
 
 export function connectWs() {
   const {
@@ -17,9 +22,18 @@ export function connectWs() {
     setTargetDetail,
   } = useStore.getState()
 
-  function connect() {
+  async function connect() {
     setWsStatus('connecting')
-    ws = new WebSocket(WS_URL)
+    let url: string
+    try {
+      url = await resolveWsUrl()
+    } catch {
+      setWsStatus('disconnected')
+      setTimeout(connect, 2000)
+      return
+    }
+
+    ws = new WebSocket(url)
 
     ws.onopen = () => {
       setWsStatus('connected')

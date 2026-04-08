@@ -59,8 +59,13 @@ function combatantInfo(playerGuid: string, specId: number, offset = 0): ParsedEv
   }
 }
 
+const stubIconResolver = {
+  requestMany() {},
+  getAll() { return {} },
+}
+
 function makeSm() {
-  const store = new SegmentStore(20)
+  const store = new SegmentStore(20, stubIconResolver)
   const sm = new EncounterStateMachine(store)
   return { sm, store }
 }

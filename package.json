@@ -2,22 +2,65 @@
   "name": "details-bridge",
   "version": "1.0.0",
   "type": "module",
+  "main": "dist-electron/electron/main.js",
   "scripts": {
     "start": "tsx server/index.ts",
     "dev:server": "tsx server/index.ts",
     "dev:client": "cd client && npm run dev",
-    "test": "tsx --test server/stateMachine.test.ts",
-    "build": "cd client && npm run build"
+    "dev:electron": "concurrently -k \"npm:dev:client\" \"npm:electron:watch\"",
+    "electron:watch": "wait-on http://localhost:5173 && npm run build:electron && cross-env NODE_ENV=development electron dist-electron/electron/main.js",
+    "build:client": "cd client && npm run build",
+    "build:electron": "tsc -p electron && node -e \"const fs=require('fs');fs.mkdirSync('dist-electron/electron',{recursive:true});fs.copyFileSync('electron/preload.cjs','dist-electron/electron/preload.cjs');fs.writeFileSync('dist-electron/package.json',JSON.stringify({type:'commonjs'}))\"",
+    "build": "npm run build:client && npm run build:electron",
+    "package": "npm run build && electron-builder --win",
+    "test": "tsx --test server/stateMachine.test.ts"
   },
   "dependencies": {
     "chokidar": "^3.6.0",
     "dotenv": "^17.4.0",
+    "electron-store": "^8.2.0",
     "ws": "^8.20.0"
   },
   "devDependencies": {
     "@types/node": "^25.5.2",
     "@types/ws": "^8.18.1",
+    "concurrently": "^9.0.0",
+    "cross-env": "^7.0.3",
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0",
     "tsx": "^4.21.0",
-    "typescript": "^6.0.2"
+    "typescript": "^6.0.2",
+    "wait-on": "^8.0.0"
+  },
+  "build": {
+    "appId": "com.adriannaps.detailsbridge",
+    "productName": "Details Bridge",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist-electron/**/*",
+      "client/dist/**/*",
+      "server/data/**/*",
+      "package.json",
+      "!**/*.map"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false
+    }
   }
 }

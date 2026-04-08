@@ -1,15 +1,16 @@
-import http from 'http'
 import { WebSocketServer, WebSocket } from 'ws'
 import type { SegmentStore, Segment } from './store.js'
 import type { EncounterStateMachine } from './stateMachine.js'
 
-export function startWsServer(
-  server: http.Server,
+export interface AttachedWsHandlers {
+  stop(): void
+}
+
+export function attachWsHandlers(
+  wss: WebSocketServer,
   store: SegmentStore,
   machine: EncounterStateMachine,
-) {
-  const wss = new WebSocketServer({ server })
-
+): AttachedWsHandlers {
   function broadcast(msg: object) {
     const data = JSON.stringify(msg)
     for (const client of wss.clients) {
@@ -24,31 +25,27 @@ export function startWsServer(
   }
 
   // Broadcast current segment snapshot ~1/sec
-  setInterval(() => {
+  const broadcastInterval = setInterval(() => {
     const seg = machine.currentSegment
     if (!seg || wss.clients.size === 0) return
     broadcast({ type: 'state_update', segment: store.toSnapshot(seg) })
   }, 1000)
 
-  machine.on('encounter_start', (seg: Segment) => {
+  const onEncounterStart = (seg: Segment) => {
     broadcast({ type: 'encounter_start', encounterName: seg.encounterName, segmentId: seg.id })
-  })
-
-  machine.on('encounter_end', (seg: Segment) => {
+  }
+  const onEncounterEnd = (seg: Segment) => {
     broadcast({ type: 'encounter_end', segmentId: seg.id, success: seg.success })
     // Send the final snapshot so the client has complete data
     broadcast({ type: 'state_update', segment: store.toSnapshot(seg) })
-  })
+  }
 
-  machine.on('challenge_start', () => {
-    broadcastSegmentList()
-  })
+  machine.on('encounter_start', onEncounterStart)
+  machine.on('encounter_end', onEncounterEnd)
+  machine.on('challenge_start', broadcastSegmentList)
+  machine.on('challenge_end', broadcastSegmentList)
 
-  machine.on('challenge_end', () => {
-    broadcastSegmentList()
-  })
-
-  wss.on('connection', (ws) => {
+  const onConnection = (ws: WebSocket) => {
     console.log('[ws] Client connected')
 
     // Send segment list immediately on connect
@@ -106,7 +103,18 @@ export function startWsServer(
     })
 
     ws.on('close', () => console.log('[ws] Client disconnected'))
-  })
+  }
 
-  return wss
+  wss.on('connection', onConnection)
+
+  return {
+    stop() {
+      clearInterval(broadcastInterval)
+      machine.off('encounter_start', onEncounterStart)
+      machine.off('encounter_end', onEncounterEnd)
+      machine.off('challenge_start', broadcastSegmentList)
+      machine.off('challenge_end', broadcastSegmentList)
+      wss.off('connection', onConnection)
+    },
+  }
 }

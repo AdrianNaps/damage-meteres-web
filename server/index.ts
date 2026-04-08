@@ -3,11 +3,13 @@ import http from 'http'
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
+import { WebSocketServer } from 'ws'
 import { LogWatcher } from './watcher.js'
 import { parseLine } from './parser.js'
 import { SegmentStore } from './store.js'
 import { EncounterStateMachine } from './stateMachine.js'
-import { startWsServer } from './wsServer.js'
+import { attachWsHandlers } from './wsServer.js'
+import { createIconResolver } from './iconResolver.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -51,9 +53,13 @@ const httpServer = http.createServer((req, res) => {
   fs.createReadStream(filePath).pipe(res)
 })
 
-const store   = new SegmentStore(maxSegments)
+const iconResolver = createIconResolver({
+  cacheFile: path.resolve(__dirname, 'data/spell-icons.json'),
+})
+const store   = new SegmentStore(maxSegments, iconResolver)
 const machine = new EncounterStateMachine(store)
-startWsServer(httpServer, store, machine)
+const wss     = new WebSocketServer({ server: httpServer })
+attachWsHandlers(wss, store, machine)
 
 httpServer.listen(port, () => {
   console.log(`[server] Listening on http://localhost:${port}`)
