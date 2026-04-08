@@ -10,16 +10,12 @@ import { SettingsModal } from './components/SettingsModal'
 import { LogsBanner } from './components/LogsBanner'
 
 export default function App() {
-  const setBootInfo = useStore(s => s.setBootInfo)
+  const refreshBootInfo = useStore(s => s.refreshBootInfo)
 
   useEffect(() => {
     connectWs()
-    if (window.api?.getBootInfo) {
-      window.api.getBootInfo().then(info => {
-        setBootInfo({ logsDir: info.settings.logsDir, logsDirExists: info.logsDirExists })
-      }).catch(() => { /* pure-browser dev mode — ignore */ })
-    }
-  }, [setBootInfo])
+    refreshBootInfo()
+  }, [refreshBootInfo])
 
   return (
     <div className="min-h-screen flex flex-col" style={{ background: 'var(--bg-root)', color: 'var(--text-primary)' }}>

@@ -8,31 +8,42 @@ import { Backend } from './backend.js'
 // client/dist without spinning up the Vite dev server.
 const isDev = !app.isPackaged && process.env.FORCE_PROD !== '1'
 
+// Single-instance lock — second launch focuses the existing window
+// instead of spawning a duplicate watcher on the same log file.
+// `app.quit()` is async, so we MUST short-circuit module evaluation here
+// or the duplicate process keeps going and grabs a second WS port + watcher
+// before exiting.
+if (!app.requestSingleInstanceLock()) {
+  app.quit()
+  process.exit(0)
+}
+
 let mainWindow: BrowserWindow | null = null
 const backend = new Backend()
 
-// Single-instance lock — second launch focuses the existing window
-// instead of spawning a duplicate watcher on the same log file.
-if (!app.requestSingleInstanceLock()) {
-  app.quit()
-} else {
-  app.on('second-instance', () => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore()
-      mainWindow.focus()
-    }
-  })
-}
+app.on('second-instance', () => {
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.focus()
+  }
+})
 
+// Require ~50px of horizontal overlap with a real display work area, plus
+// the title bar fully on-screen. Catches the cases where the saved window
+// has its top-left technically inside a display but its body off-screen
+// (e.g. unplugged second monitor, or window dragged mostly off the right edge).
 function pickInitialBounds(saved: WindowBounds): WindowBounds {
   const { width, height, x, y } = saved
   if (x === undefined || y === undefined) return { width, height }
 
-  // Drop saved x/y if they fall outside any current display work area
-  // (handles unplugged second monitors).
+  const TITLE_BAR_GRAB_PX = 50
+  const TITLE_BAR_HEIGHT = 24
   const onscreen = screen.getAllDisplays().some(d => {
     const wa = d.workArea
-    return x >= wa.x && y >= wa.y && x < wa.x + wa.width && y < wa.y + wa.height
+    const xOverlap = Math.min(x + width, wa.x + wa.width) - Math.max(x, wa.x)
+    return xOverlap >= TITLE_BAR_GRAB_PX
+        && y >= wa.y
+        && y <= wa.y + wa.height - TITLE_BAR_HEIGHT
   })
   return onscreen ? { width, height, x, y } : { width, height }
 }
@@ -55,8 +66,21 @@ async function createWindow() {
     },
   })
 
-  // Disable Ctrl+Plus/Minus/0 zoom — leaves users no visible recovery path.
+  if (settings.windowMaximized) mainWindow.maximize()
+
+  // Disable pinch-to-zoom AND Ctrl+/Ctrl-/Ctrl+0 keyboard zoom.
+  // setVisualZoomLevelLimits only handles pinch — keyboard shortcuts need
+  // a before-input-event interceptor.
   mainWindow.webContents.setVisualZoomLevelLimits(1, 1)
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown') return
+    if (!(input.control || input.meta)) return
+    // Plus, equal (= unshifted), minus, and zero — covers all keyboard layouts
+    // where Ctrl+= acts as Ctrl++.
+    if (input.key === '+' || input.key === '=' || input.key === '-' || input.key === '0') {
+      event.preventDefault()
+    }
+  })
 
   if (isDev) {
     await mainWindow.loadURL('http://localhost:5173')
@@ -72,11 +96,12 @@ async function createWindow() {
     return { action: 'deny' }
   })
 
-  // Persist window bounds on close
+  // Persist window bounds on close. Use getNormalBounds() so a maximized
+  // window doesn't restore at full-screen-but-not-maximized next launch.
   mainWindow.on('close', () => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      setSetting('windowBounds', mainWindow.getBounds())
-    }
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    setSetting('windowBounds', mainWindow.getNormalBounds())
+    setSetting('windowMaximized', mainWindow.isMaximized())
   })
 
   mainWindow.on('closed', () => {
@@ -109,7 +134,16 @@ ipcMain.handle('app:pickLogsDir', async () => {
 })
 
 app.whenReady().then(async () => {
-  await backend.start()
+  try {
+    await backend.start()
+  } catch (err) {
+    dialog.showErrorBox(
+      'Details Bridge failed to start',
+      err instanceof Error ? err.message : String(err),
+    )
+    app.quit()
+    return
+  }
   await createWindow()
 })
 

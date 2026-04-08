@@ -5,7 +5,7 @@ export function SettingsModal() {
   const open = useStore(s => s.settingsOpen)
   const bootInfo = useStore(s => s.bootInfo)
   const setSettingsOpen = useStore(s => s.setSettingsOpen)
-  const setBootInfo = useStore(s => s.setBootInfo)
+  const refreshBootInfo = useStore(s => s.refreshBootInfo)
 
   useEffect(() => {
     if (!open) return
@@ -25,10 +25,7 @@ export function SettingsModal() {
     const dir = await window.api.pickLogsDir()
     if (!dir) return
     // Refresh boot info so the banner clears and the displayed path updates
-    if (window.api.getBootInfo) {
-      const info = await window.api.getBootInfo()
-      setBootInfo({ logsDir: info.settings.logsDir, logsDirExists: info.logsDirExists })
-    }
+    await refreshBootInfo()
     setSettingsOpen(false)
   }
 

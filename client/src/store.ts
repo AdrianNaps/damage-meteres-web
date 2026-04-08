@@ -42,6 +42,7 @@ interface AppState {
   setTargetDetail: (d: TargetDetail | null) => void
   setBootInfo: (info: BootInfoState | null) => void
   setSettingsOpen: (open: boolean) => void
+  refreshBootInfo: () => Promise<void>
 }
 
 function mergeIcons(
@@ -130,6 +131,15 @@ export const useStore = create<AppState>((set) => ({
   setTargetDetail: (d) => set({ targetDetail: d }),
   setBootInfo: (info) => set({ bootInfo: info }),
   setSettingsOpen: (open) => set({ settingsOpen: open }),
+  refreshBootInfo: async () => {
+    if (!window.api?.getBootInfo) return
+    try {
+      const info = await window.api.getBootInfo()
+      set({ bootInfo: { logsDir: info.settings.logsDir, logsDirExists: info.logsDirExists } })
+    } catch {
+      // pure-browser dev mode — ignore
+    }
+  },
 }))
 
 export const selectCurrentView = (s: AppState): SegmentSnapshot | KeyRunSnapshot | null =>
