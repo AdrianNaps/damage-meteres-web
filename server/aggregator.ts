@@ -139,7 +139,7 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
       if (prior
           && prior.timestamp === event.timestamp
           && prior.destName === event.dest.name) {
-        subtractFromCredit(segment, prior, event.source.name, dmg.amount)
+        subtractFromCredit(segment, prior, event.source.name, dmg.amount - Math.max(dmg.overkill, 0))
       }
 
       // (2) Legacy spellId-scrub: kept as a fallback for any standalone-Aug plain events
@@ -372,7 +372,10 @@ function scrubSupportOwnedSpell(segment: Segment, spellId: string) {
 function applyDamage(segment: Segment, sourceName: string, sourceGuid: string, destName: string, payload: DamagePayload, timestamp: number) {
   const player = getOrCreatePlayer(segment, sourceName, sourceGuid)
   if (!player) return
-  const { spellId, spellName, amount, absorbed, resisted, blocked, critical } = payload
+  const { spellId, spellName, absorbed, resisted, blocked, critical } = payload
+  // WCL's "Amount" column excludes overkill (damage dealt past 0 HP). Match that convention.
+  // overkill is -1 when the hit wasn't a killing blow, >0 only on the killing blow itself.
+  const amount = payload.amount - Math.max(payload.overkill, 0)
 
   player.damage.total += amount
 
