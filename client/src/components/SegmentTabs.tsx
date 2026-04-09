@@ -1,14 +1,15 @@
 import { useStore } from '../store'
 import { send } from '../ws'
-import type { KeyRunSummary } from '../types'
+import type { KeyRunSummary, BossSectionSummary } from '../types'
 
 export function SegmentTabs() {
   const history = useStore(s => s.segmentHistory)
   const selectedId = useStore(s => s.selectedSegmentId)
   const selectedKeyRunId = useStore(s => s.selectedKeyRunId)
-  const liveSegment = useStore(s => s.liveSegment)
+  const selectedBossSectionId = useStore(s => s.selectedBossSectionId)
   const setSelectedSegmentId = useStore(s => s.setSelectedSegmentId)
   const setSelectedKeyRunId = useStore(s => s.setSelectedKeyRunId)
+  const setSelectedBossSectionId = useStore(s => s.setSelectedBossSectionId)
 
   if (history.length === 0) return null
 
@@ -26,7 +27,11 @@ export function SegmentTabs() {
     send({ type: 'get_key_run', keyRunId })
   }
 
-  const isLive = selectedId === null && selectedKeyRunId === null
+  function selectBossSection(bossSectionId: string) {
+    setSelectedBossSectionId(bossSectionId)
+    send({ type: 'get_boss_section', bossSectionId })
+  }
+
   const reversedHistory = [...history].reverse()
 
   const activeKeyRun = reversedHistory.find(
@@ -35,43 +40,59 @@ export function SegmentTabs() {
       (item.keyRunId === selectedKeyRunId || item.segments.some(s => s.id === selectedId))
   ) as KeyRunSummary | undefined
 
-  const activeSegments = activeKeyRun?.segments ?? []
+  const activeBossSection = !activeKeyRun ? (reversedHistory.find(
+    item =>
+      item.type === 'boss_section' &&
+      (item.bossSectionId === selectedBossSectionId || item.segments.some(s => s.id === selectedId))
+  ) as BossSectionSummary | undefined) : undefined
+
+  const activeSegments = activeKeyRun?.segments ?? activeBossSection?.segments ?? []
 
   return (
     <div className="flex flex-col" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
       {/* Top tier — runs and standalone encounters */}
       <div className="flex gap-0 px-4 pt-2 overflow-x-auto items-end">
-        {liveSegment && (
-          <TabButton
-            active={isLive}
-            accentColor="var(--status-live)"
-            onClick={() => selectSegment(null)}
-          >
-            Live
-          </TabButton>
-        )}
-        {reversedHistory.map(item =>
-          item.type === 'key_run' ? (
-            <TabButton
-              key={item.keyRunId}
-              active={activeKeyRun?.keyRunId === item.keyRunId}
-              accentColor="#d97706"
-              onClick={() => selectKeyRun(item.keyRunId)}
-            >
-              <span style={{ fontWeight: 500 }}>{item.dungeonName}</span>
-              <span style={{ opacity: 0.5, marginLeft: 4 }}>+{item.keystoneLevel}</span>
-              {item.success === true && <span style={{ color: 'var(--status-kill)', marginLeft: 4 }}>&#10003;</span>}
-              {item.success === false && <span style={{ color: 'var(--status-wipe)', marginLeft: 4 }}>&#10007;</span>}
-              {item.durationMs !== null && (
-                <span style={{ opacity: 0.4, marginLeft: 6, fontFamily: 'var(--font-mono)' }}>
-                  {formatKeyDuration(item.durationMs)}
+        {reversedHistory.map(item => {
+          if (item.type === 'key_run') {
+            return (
+              <TabButton
+                key={item.keyRunId}
+                active={activeKeyRun?.keyRunId === item.keyRunId}
+                accentColor="#d97706"
+                onClick={() => selectKeyRun(item.keyRunId)}
+              >
+                <span style={{ fontWeight: 500 }}>{item.dungeonName}</span>
+                <span style={{ opacity: 0.5, marginLeft: 4 }}>+{item.keystoneLevel}</span>
+                {item.success === true && <span style={{ color: 'var(--status-kill)', marginLeft: 4 }}>&#10003;</span>}
+                {item.success === false && <span style={{ color: 'var(--status-wipe)', marginLeft: 4 }}>&#10007;</span>}
+                {item.durationMs !== null && (
+                  <span style={{ opacity: 0.4, marginLeft: 6, fontFamily: 'var(--font-mono)' }}>
+                    {formatKeyDuration(item.durationMs)}
+                  </span>
+                )}
+              </TabButton>
+            )
+          }
+          if (item.type === 'boss_section') {
+            const kills = item.segments.filter(s => s.success === true).length
+            return (
+              <TabButton
+                key={item.bossSectionId}
+                active={activeBossSection?.bossSectionId === item.bossSectionId}
+                accentColor="#8b5cf6"
+                onClick={() => selectBossSection(item.bossSectionId)}
+              >
+                <span style={{ fontWeight: 500 }}>{item.encounterName}</span>
+                <span style={{ opacity: 0.5, marginLeft: 6, fontFamily: 'var(--font-mono)' }}>
+                  {kills}/{item.segments.length}
                 </span>
-              )}
-            </TabButton>
-          ) : (
+              </TabButton>
+            )
+          }
+          return (
             <TabButton
               key={item.id}
-              active={selectedId === item.id && !activeKeyRun}
+              active={selectedId === item.id && !activeKeyRun && !activeBossSection}
               accentColor="var(--text-primary)"
               onClick={() => selectSegment(item.id)}
             >
@@ -80,24 +101,31 @@ export function SegmentTabs() {
               {item.success === false && <span style={{ color: 'var(--status-wipe)', marginLeft: 4 }}>&#10007;</span>}
             </TabButton>
           )
-        )}
+        })}
       </div>
 
-      {/* Bottom tier — segments within the active key run */}
+      {/* Bottom tier — segments within the active container */}
       {activeSegments.length > 0 && (
         <div
           className="flex gap-0 px-4 pt-0.5 pb-0.5 overflow-x-auto items-end"
           style={{ paddingLeft: 28 }}
         >
           <TabButton
-            active={selectedId === null && selectedKeyRunId === activeKeyRun?.keyRunId}
+            active={
+              selectedId === null &&
+              ((!!activeKeyRun && selectedKeyRunId === activeKeyRun.keyRunId) ||
+                (!!activeBossSection && selectedBossSectionId === activeBossSection.bossSectionId))
+            }
             accentColor="var(--text-secondary)"
             small
-            onClick={() => activeKeyRun && selectKeyRun(activeKeyRun.keyRunId)}
+            onClick={() => {
+              if (activeKeyRun) selectKeyRun(activeKeyRun.keyRunId)
+              else if (activeBossSection) selectBossSection(activeBossSection.bossSectionId)
+            }}
           >
             Overall
           </TabButton>
-          {[...activeSegments].reverse().map(seg => (
+          {activeSegments.map((seg, i) => ({ seg, pullNum: i + 1 })).reverse().map(({ seg, pullNum }) => (
             <TabButton
               key={seg.id}
               active={selectedId === seg.id}
@@ -105,7 +133,7 @@ export function SegmentTabs() {
               small
               onClick={() => selectSegment(seg.id)}
             >
-              {shortSegmentName(seg.encounterName)}
+              {activeBossSection ? `Pull ${pullNum}` : shortSegmentName(seg.encounterName)}
               {seg.success === true && <span style={{ color: 'var(--status-kill)', marginLeft: 4 }}>&#10003;</span>}
               {seg.success === false && <span style={{ color: 'var(--status-wipe)', marginLeft: 4 }}>&#10007;</span>}
             </TabButton>

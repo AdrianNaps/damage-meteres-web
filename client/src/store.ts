@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { SegmentSnapshot, KeyRunSnapshot, HistoryItem, TargetDetail, PlayerDeathRecord, PlayerSnapshot } from './types'
+import type { SegmentSnapshot, KeyRunSnapshot, BossSectionSnapshot, HistoryItem, TargetDetail, PlayerDeathRecord, PlayerSnapshot } from './types'
 
 export interface BootInfoState {
   logsDir: string
@@ -7,12 +7,13 @@ export interface BootInfoState {
 }
 
 interface AppState {
-  liveSegment: SegmentSnapshot | null
   selectedSegment: SegmentSnapshot | null
   segmentHistory: HistoryItem[]
-  selectedSegmentId: string | null   // null = live
+  selectedSegmentId: string | null
   selectedKeyRunId: string | null    // which key run header is selected
   selectedKeyRun: KeyRunSnapshot | null
+  selectedBossSectionId: string | null
+  selectedBossSection: BossSectionSnapshot | null
   selectedPlayer: string | null
   selectedDeath: PlayerDeathRecord | null
   metric: 'damage' | 'healing' | 'deaths' | 'interrupts'
@@ -29,12 +30,13 @@ interface AppState {
   bootInfo: BootInfoState | null
   settingsOpen: boolean
 
-  setLiveSegment: (s: SegmentSnapshot) => void
   setSelectedSegment: (s: SegmentSnapshot | null) => void
   setSegmentHistory: (list: HistoryItem[]) => void
   setSelectedSegmentId: (id: string | null) => void  // clears selectedPlayer, key run state, and (when null) selectedSegment
   setSelectedKeyRunId: (id: string | null) => void   // clears segment selection
   setSelectedKeyRun: (s: KeyRunSnapshot | null) => void
+  setSelectedBossSectionId: (id: string | null) => void
+  setSelectedBossSection: (s: BossSectionSnapshot | null) => void
   setSelectedPlayer: (name: string | null) => void
   setSelectedDeath: (record: PlayerDeathRecord | null) => void
   setMetric: (m: AppState['metric']) => void
@@ -76,12 +78,13 @@ function mergeSpecs(
 }
 
 export const useStore = create<AppState>((set) => ({
-  liveSegment: null,
   selectedSegment: null,
   segmentHistory: [],
   selectedSegmentId: null,
   selectedKeyRunId: null,
   selectedKeyRun: null,
+  selectedBossSectionId: null,
+  selectedBossSection: null,
   selectedPlayer: null,
   selectedDeath: null,
   metric: 'damage',
@@ -92,11 +95,6 @@ export const useStore = create<AppState>((set) => ({
   bootInfo: null,
   settingsOpen: false,
 
-  setLiveSegment: (s) => set(state => ({
-    liveSegment: s,
-    playerSpecs: mergeSpecs(state.playerSpecs, s?.players),
-    spellIcons: mergeIcons(state.spellIcons, s?.spellIcons),
-  })),
   setSelectedSegment: (s) => set(state => ({
     selectedSegment: s,
     playerSpecs: mergeSpecs(state.playerSpecs, s?.players),
@@ -109,6 +107,8 @@ export const useStore = create<AppState>((set) => ({
     selectedDeath: null,
     selectedKeyRunId: null,
     selectedKeyRun: null,
+    selectedBossSectionId: null,
+    selectedBossSection: null,
     ...(id === null ? { selectedSegment: null } : {}),
   }),
   setSelectedKeyRunId: (id) => set({
@@ -116,11 +116,28 @@ export const useStore = create<AppState>((set) => ({
     selectedKeyRun: null,
     selectedSegmentId: null,
     selectedSegment: null,
+    selectedBossSectionId: null,
+    selectedBossSection: null,
     selectedPlayer: null,
     selectedDeath: null,
   }),
   setSelectedKeyRun: (s) => set(state => ({
     selectedKeyRun: s,
+    playerSpecs: mergeSpecs(state.playerSpecs, s?.players),
+    spellIcons: mergeIcons(state.spellIcons, s?.spellIcons),
+  })),
+  setSelectedBossSectionId: (id) => set({
+    selectedBossSectionId: id,
+    selectedBossSection: null,
+    selectedSegmentId: null,
+    selectedSegment: null,
+    selectedKeyRunId: null,
+    selectedKeyRun: null,
+    selectedPlayer: null,
+    selectedDeath: null,
+  }),
+  setSelectedBossSection: (s) => set(state => ({
+    selectedBossSection: s,
     playerSpecs: mergeSpecs(state.playerSpecs, s?.players),
     spellIcons: mergeIcons(state.spellIcons, s?.spellIcons),
   })),
@@ -142,8 +159,8 @@ export const useStore = create<AppState>((set) => ({
   },
 }))
 
-export const selectCurrentView = (s: AppState): SegmentSnapshot | KeyRunSnapshot | null =>
-  s.selectedKeyRun ?? (s.selectedSegmentId === null ? s.liveSegment : s.selectedSegment)
+export const selectCurrentView = (s: AppState): SegmentSnapshot | KeyRunSnapshot | BossSectionSnapshot | null =>
+  s.selectedKeyRun ?? s.selectedBossSection ?? s.selectedSegment
 
 // Resolve a player's spec via the cross-segment cache, falling back to whatever the
 // current view's player record happens to carry. Use this everywhere a class color is rendered.
@@ -157,4 +174,4 @@ export function resolveSpecId(
 
 // Kept for components that only care about individual segment data (e.g. target drill-down)
 export const selectCurrentSegment = (s: AppState): SegmentSnapshot | null =>
-  s.selectedSegmentId === null ? s.liveSegment : s.selectedSegment
+  s.selectedSegment

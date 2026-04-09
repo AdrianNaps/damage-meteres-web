@@ -24,20 +24,11 @@ export function attachWsHandlers(
     broadcast({ type: 'segment_list', segments: store.getHistoryItems() })
   }
 
-  // Broadcast current segment snapshot ~1/sec
-  const broadcastInterval = setInterval(() => {
-    const seg = machine.currentSegment
-    if (!seg || wss.clients.size === 0) return
-    broadcast({ type: 'state_update', segment: store.toSnapshot(seg) })
-  }, 1000)
-
   const onEncounterStart = (seg: Segment) => {
     broadcast({ type: 'encounter_start', encounterName: seg.encounterName, segmentId: seg.id })
   }
   const onEncounterEnd = (seg: Segment) => {
     broadcast({ type: 'encounter_end', segmentId: seg.id, success: seg.success })
-    // Send the final snapshot so the client has complete data
-    broadcast({ type: 'state_update', segment: store.toSnapshot(seg) })
   }
 
   machine.on('encounter_start', onEncounterStart)
@@ -54,16 +45,12 @@ export function attachWsHandlers(
       segments: store.getHistoryItems(),
     }))
 
-    // If an encounter is in progress, send current state immediately
+    // If an encounter is in progress, notify the client
     if (machine.currentSegment) {
       ws.send(JSON.stringify({
         type: 'encounter_start',
         encounterName: machine.currentSegment.encounterName,
         segmentId: machine.currentSegment.id,
-      }))
-      ws.send(JSON.stringify({
-        type: 'state_update',
-        segment: store.toSnapshot(machine.currentSegment),
       }))
     }
 
@@ -85,6 +72,11 @@ export function attachWsHandlers(
         const snapshot = store.toKeyRunSnapshot(msg.keyRunId)
         if (snapshot) {
           ws.send(JSON.stringify({ type: 'key_run_detail', keyRunId: msg.keyRunId, snapshot }))
+        }
+      } else if (msg.type === 'get_boss_section') {
+        const snapshot = store.toBossSectionSnapshot(msg.bossSectionId)
+        if (snapshot) {
+          ws.send(JSON.stringify({ type: 'boss_section_detail', bossSectionId: msg.bossSectionId, snapshot }))
         }
       } else if (msg.type === 'get_target_detail') {
         const seg = store.getById(msg.segmentId)
@@ -109,7 +101,6 @@ export function attachWsHandlers(
 
   return {
     stop() {
-      clearInterval(broadcastInterval)
       machine.off('encounter_start', onEncounterStart)
       machine.off('encounter_end', onEncounterEnd)
       machine.off('challenge_start', broadcastSegmentList)

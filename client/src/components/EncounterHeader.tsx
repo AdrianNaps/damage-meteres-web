@@ -1,5 +1,5 @@
 import { useStore, selectCurrentView } from '../store'
-import type { KeyRunSnapshot, SegmentSnapshot } from '../types'
+import type { KeyRunSnapshot, BossSectionSnapshot, SegmentSnapshot } from '../types'
 
 export function EncounterHeader() {
   const currentView = useStore(selectCurrentView)
@@ -34,6 +34,8 @@ export function EncounterHeader() {
 
         {currentView?.type === 'key_run' ? (
           <KeyRunHeader view={currentView} />
+        ) : currentView?.type === 'boss_section' ? (
+          <BossSectionHeader view={currentView} />
         ) : currentView?.type === 'segment' ? (
           <SegmentHeader view={currentView} />
         ) : (
@@ -83,12 +85,12 @@ function SegmentHeader({ view }: { view: SegmentSnapshot }) {
       <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-primary)' }}>
         {view.encounterName}
       </span>
-      {view.endTime === null ? (
-        <StatusBadge label="LIVE" color="var(--status-live)" />
-      ) : view.success ? (
-        <StatusBadge label="KILL" color="var(--status-kill)" />
-      ) : (
-        <StatusBadge label="WIPE" color="var(--status-wipe)" />
+      {view.endTime !== null && (
+        view.success ? (
+          <StatusBadge label="KILL" color="var(--status-kill)" />
+        ) : (
+          <StatusBadge label="WIPE" color="var(--status-wipe)" />
+        )
       )}
     </div>
   )
@@ -106,6 +108,19 @@ function KeyRunHeader({ view }: { view: KeyRunSnapshot }) {
       ) : view.success === false ? (
         <StatusBadge label="DEPLETED" color="var(--status-wipe)" />
       ) : null}
+    </div>
+  )
+}
+
+function BossSectionHeader({ view }: { view: BossSectionSnapshot }) {
+  return (
+    <div className="flex items-center gap-2">
+      <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-primary)' }}>
+        {view.encounterName}
+      </span>
+      <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+        {view.kills}/{view.pullCount} {view.pullCount === 1 ? 'pull' : 'pulls'}
+      </span>
     </div>
   )
 }

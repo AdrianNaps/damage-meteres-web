@@ -15,10 +15,10 @@ async function resolveWsUrl(): Promise<string> {
 export function connectWs() {
   const {
     setWsStatus,
-    setLiveSegment,
     setSelectedSegment,
     setSegmentHistory,
     setSelectedKeyRun,
+    setSelectedBossSection,
     setTargetDetail,
   } = useStore.getState()
 
@@ -53,9 +53,6 @@ export function connectWs() {
       try { msg = JSON.parse(e.data) } catch { return }
 
       switch (msg.type) {
-        case 'state_update':
-          setLiveSegment(msg.segment)
-          break
         case 'segment_list':
           setSegmentHistory(msg.segments)
           break
@@ -69,9 +66,14 @@ export function connectWs() {
             setSelectedKeyRun(msg.snapshot)
           }
           break
+        case 'boss_section_detail':
+          if (msg.bossSectionId === useStore.getState().selectedBossSectionId) {
+            setSelectedBossSection(msg.snapshot)
+          }
+          break
         case 'encounter_start':
         case 'encounter_end':
-          // state_update will follow; request fresh segment list
+          // request fresh segment list
           send({ type: 'get_segment_list' })
           break
         case 'target_detail':
