@@ -60,7 +60,7 @@ export const SPEC_ICON_NAMES: Record<number, string> = {
   // Demon Hunter
   577: 'ability_demonhunter_specdps',      // Havoc
   581: 'ability_demonhunter_spectank',     // Vengeance
-  1480:'ability_demonhunter_specdps',      // (Devourer placeholder)
+  1480:'classicon_demonhunter_void',       // Devourer
 
   // Evoker
   1467:'classicon_evoker_devastation',     // Devastation
