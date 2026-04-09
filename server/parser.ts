@@ -7,7 +7,7 @@ const ATTRIBUTABLE_SOURCE_FLAGS = PLAYER_FLAG | PET_FLAG | GUARDIAN_FLAG
 // Placeholder used for events that have no source/dest (ENCOUNTER_*, CHALLENGE_MODE_*)
 const NULL_UNIT: UnitRef = Object.freeze({ guid: '', name: '', flags: 0 })
 
-export function parseLine(raw: string): ParsedEvent | null {
+export function parseLine(raw: string): ParsedEvent | ParsedEvent[] | null {
   // Format: "M/D/YYYY H:MM:SS.mmm±TZ  EVENT_TYPE,p1,p2,..."
   // Timestamp and event type are separated by TWO spaces
   const twoSpaceIdx = raw.indexOf('  ')
@@ -275,34 +275,38 @@ export function parseLine(raw: string): ParsedEvent | null {
     }
 
     // SPELL_HEAL_ABSORBED fires when a heal lands on a target carrying a heal-absorption
-    // debuff (e.g. Rift Sickness on Chimaerus). The paired SPELL_HEAL event records only the
-    // portion that actually topped the target off; the portion eaten by the heal-absorb shield
-    // comes through here. WCL credits the full original heal to the healer, so we re-emit this
-    // as a heal event on (healer, healSpellId, amount=absorbedAmount, overheal=0).
+    // debuff (e.g. Light of the Martyr, Rift Sickness on Chimaerus).
     //
     // Field layout: [1..3] debuff applier, [5..7] target, [9..11] debuff spell,
-    //               [12..14] healer, [16..18] heal spell, [-2] absorbedAmount, [-1] totalAmount
+    //               [12..14] healer of the absorbed heal, [16..18] heal spell,
+    //               [-2] absorbedAmount, [-1] totalAmount
+    //
+    // WCL's model — which we mirror:
+    //   - The original healer is already credited for the full pre-absorb
+    //     amount, because the paired SPELL_HEAL carries baseAmount (pre-absorb)
+    //     and the aggregator computes effective = baseAmount - overheal. For
+    //     fully-absorbed heals no SPELL_HEAL fires at all, so those land only
+    //     on the Martyr row — which matches WCL (e.g. Leech rows only include
+    //     hits that actually reached the target).
+    //   - The absorb debuff is shown as a NEGATIVE heal under the debuff's
+    //     spell, credited to the debuff applier (paladin Light of the Martyr
+    //     shows -N). Only emitted when the debuff applier is a player.
+    //
+    // Net effect on player total: sum(base - overheal) - sum(absorbed),
+    // matching WCL's grand total.
     case 'SPELL_HEAL_ABSORBED': {
       if (fields.length < 21) return null
-      const healerGuid  = fields[12]
-      const healerName  = stripQuotes(fields[13])
-      const healerFlags = parseInt(fields[14], 16)
-      if (!(healerFlags & ATTRIBUTABLE_SOURCE_FLAGS)) return null
-
-      const healSpellId = fields[16]
-      const healSpell   = stripQuotes(fields[17])
-      const absorbed    = parseInt(fields[fields.length - 2])
+      if (!(source.flags & PLAYER_FLAG)) return null
+      const absorbed = parseInt(fields[fields.length - 2])
       if (!absorbed || isNaN(absorbed)) return null
-
-      const healerRef: UnitRef = { guid: healerGuid, name: healerName, flags: healerFlags }
       return {
-        timestamp, type: eventType, source: healerRef, dest,
+        timestamp, type: eventType, source, dest,
         payload: {
           type: 'heal',
-          spellId: healSpellId,
-          spellName: healSpell,
-          amount: absorbed,
-          baseAmount: absorbed,
+          spellId: fields[9],
+          spellName: stripQuotes(fields[10]),
+          amount: -absorbed,
+          baseAmount: -absorbed,
           overheal: 0,
           absorbed: 0,
           critical: false,

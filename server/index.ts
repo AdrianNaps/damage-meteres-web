@@ -72,9 +72,13 @@ const watcher = new LogWatcher(logsDir)
 
 watcher.on('lines', (lines: string[]) => {
   for (const line of lines) {
-    const event = parseLine(line)
-    if (!event) continue
-    machine.handle(event)
+    const parsed = parseLine(line)
+    if (!parsed) continue
+    if (Array.isArray(parsed)) {
+      for (const event of parsed) machine.handle(event)
+    } else {
+      machine.handle(parsed)
+    }
   }
 })
 

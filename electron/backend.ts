@@ -80,8 +80,13 @@ export class Backend {
     this.watcher = new LogWatcher(dir)
     this.watcher.on('lines', (lines: string[]) => {
       for (const line of lines) {
-        const event = parseLine(line)
-        if (event) this.machine.handle(event)
+        const parsed = parseLine(line)
+        if (!parsed) continue
+        if (Array.isArray(parsed)) {
+          for (const event of parsed) this.machine.handle(event)
+        } else {
+          this.machine.handle(parsed)
+        }
       }
     })
     this.watcher.start()

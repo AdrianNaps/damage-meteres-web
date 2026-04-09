@@ -205,7 +205,7 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
         kind: 'heal',
         spellId:        heal.spellId,
         spellName:      heal.spellName,
-        amount:         heal.amount - heal.overheal,  // effective heal
+        amount:         heal.baseAmount - heal.overheal,  // effective heal
         overkill:       0,
         absorbed:       heal.absorbed,
         critical:       heal.critical,
@@ -464,13 +464,33 @@ function subtractFromCredit(segment: Segment, prior: LastCredit, sourceName: str
   }
 }
 
+// Some spells fire under multiple spellIds that players think of as one ability
+// (e.g. Sun's Avatar has 6 distinct IDs for base/empowered/etc. variants). Map
+// every alias to a single canonical (id, name) pair so the breakdown aggregates
+// them the way WCL/Details do.
+const HEAL_SPELL_ALIASES: Record<string, { id: string; name: string }> = {
+  '431911': { id: '431907', name: "Sun's Avatar" },
+  '431939': { id: '431907', name: "Sun's Avatar" },
+  '463073': { id: '431907', name: "Sun's Avatar" },
+  '463074': { id: '431907', name: "Sun's Avatar" },
+  '463075': { id: '431907', name: "Sun's Avatar" },
+}
+
 function applyHeal(segment: Segment, sourceName: string, sourceGuid: string, payload: HealPayload) {
   const player = getOrCreatePlayer(segment, sourceName, sourceGuid)
   if (!player) return
-  const { spellId, spellName, amount, overheal, absorbed, critical } = payload
+  const alias = HEAL_SPELL_ALIASES[payload.spellId]
+  const spellId   = alias?.id   ?? payload.spellId
+  const spellName = alias?.name ?? payload.spellName
+  const { baseAmount, overheal, absorbed, critical } = payload
 
-  // effective heal = amount - overheal
-  const effective = amount - overheal
+  // WCL's model: effective heal is (baseAmount - overheal). baseAmount is the
+  // pre-absorb heal value, so this credits the healer for heals that land and
+  // are then eaten by a heal-absorb debuff (Light of the Martyr, Rift Sickness,
+  // etc.) — matching how WCL shows Holy Shock/Holy Light/etc. at their full
+  // totals. The absorb debuff itself is accounted as a negative heal elsewhere
+  // (see SPELL_HEAL_ABSORBED in parser.ts) so the player grand total nets out.
+  const effective = baseAmount - overheal
   player.healing.total += effective
   player.healing.overheal += overheal
 
