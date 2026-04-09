@@ -8,6 +8,17 @@ export function pct(a: number, b: number): string {
   return b > 0 ? `${Math.round((a / b) * 100)}%` : '—'
 }
 
+// WoW raid difficultyID → short label. Returns null for unknown/non-raid difficulties.
+export function raidDifficultyLabel(difficultyID: number): string | null {
+  switch (difficultyID) {
+    case 14: return 'N'    // Normal raid
+    case 15: return 'H'    // Heroic raid
+    case 16: return 'M'    // Mythic raid
+    case 17: return 'LFR'  // Raid Finder
+    default: return null
+  }
+}
+
 // "Adrianw-Sargeras-US" → "Adrianw". Names without a realm pass through unchanged.
 export function shortName(fullName: string): string {
   const dash = fullName.indexOf('-')

@@ -13,6 +13,8 @@ export class EncounterStateMachine extends EventEmitter {
   private dungeonName: string | null = null
   private trashCount = 0
   private currentKeyRunId: string | null = null
+  private activeBossSectionId: string | null = null      // contiguous raid-boss grouping (outside M+)
+  private activeBossSectionEncounterID: number | null = null
   currentSegment: Segment | null = null              // segment receiving events right now
 
   constructor(store: SegmentStore) {
@@ -24,6 +26,9 @@ export class EncounterStateMachine extends EventEmitter {
     switch (event.type) {
       case 'CHALLENGE_MODE_START': {
         if (this.mode !== 'idle') break
+        // Entering a dungeon closes any open raid boss section
+        this.activeBossSectionId = null
+        this.activeBossSectionEncounterID = null
         const p = event.payload as ChallengeModePayload
         this.dungeonName = p.dungeonName ?? null
         this.trashCount = 1
@@ -86,7 +91,19 @@ export class EncounterStateMachine extends EventEmitter {
       case 'ENCOUNTER_START': {
         if (this.mode === 'in_boss') break  // shouldn't happen, but guard against nested events
         const p = event.payload as EncounterPayload
-        const segment = this._makeSegment(p.encounterName, event.timestamp)
+
+        // For standalone raid pulls (no active M+ run), group contiguous same-encounter pulls
+        // into a boss section. A different encounterID closes the prior section and opens a new one.
+        if (!this.currentKeyRunId) {
+          if (this.activeBossSectionId === null || this.activeBossSectionEncounterID !== p.encounterID) {
+            const sectionId = randomUUID()
+            this.store.registerBossSection(sectionId, p.encounterID, p.encounterName, p.difficultyID, event.timestamp)
+            this.activeBossSectionId = sectionId
+            this.activeBossSectionEncounterID = p.encounterID
+          }
+        }
+
+        const segment = this._makeSegment(p.encounterName, event.timestamp, p.encounterID)
         // Carry over spec/name/pet info gathered during trash
         if (this.activeTrashSegment) {
           segment.guidToSpec = { ...this.activeTrashSegment.guidToSpec }
@@ -140,11 +157,13 @@ export class EncounterStateMachine extends EventEmitter {
     }
   }
 
-  private _makeSegment(name: string, startTime: number): Segment {
+  private _makeSegment(name: string, startTime: number, encounterID: number = 0): Segment {
     resetRecentEvents()
     return {
       id: randomUUID(),
       keyRunId: this.currentKeyRunId,
+      bossSectionId: this.currentKeyRunId ? null : this.activeBossSectionId,
+      encounterID,
       encounterName: name,
       startTime,
       endTime: null,

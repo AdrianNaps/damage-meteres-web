@@ -1,6 +1,7 @@
 import { useStore } from '../store'
 import { send } from '../ws'
 import type { KeyRunSummary, BossSectionSummary } from '../types'
+import { raidDifficultyLabel } from '../utils/format'
 
 export function SegmentTabs() {
   const history = useStore(s => s.segmentHistory)
@@ -75,6 +76,7 @@ export function SegmentTabs() {
           }
           if (item.type === 'boss_section') {
             const kills = item.segments.filter(s => s.success === true).length
+            const diff = raidDifficultyLabel(item.difficultyID)
             return (
               <TabButton
                 key={item.bossSectionId}
@@ -83,6 +85,9 @@ export function SegmentTabs() {
                 onClick={() => selectBossSection(item.bossSectionId)}
               >
                 <span style={{ fontWeight: 500 }}>{item.encounterName}</span>
+                {diff && (
+                  <span style={{ opacity: 0.5, marginLeft: 4 }}>{diff}</span>
+                )}
                 <span style={{ opacity: 0.5, marginLeft: 6, fontFamily: 'var(--font-mono)' }}>
                   {kills}/{item.segments.length}
                 </span>

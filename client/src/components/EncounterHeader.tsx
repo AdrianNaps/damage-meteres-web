@@ -1,5 +1,6 @@
 import { useStore, selectCurrentView } from '../store'
 import type { KeyRunSnapshot, BossSectionSnapshot, SegmentSnapshot } from '../types'
+import { raidDifficultyLabel } from '../utils/format'
 
 export function EncounterHeader() {
   const currentView = useStore(selectCurrentView)
@@ -113,11 +114,15 @@ function KeyRunHeader({ view }: { view: KeyRunSnapshot }) {
 }
 
 function BossSectionHeader({ view }: { view: BossSectionSnapshot }) {
+  const diff = raidDifficultyLabel(view.difficultyID)
   return (
     <div className="flex items-center gap-2">
       <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-primary)' }}>
         {view.encounterName}
       </span>
+      {diff && (
+        <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{diff}</span>
+      )}
       <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
         {view.kills}/{view.pullCount} {view.pullCount === 1 ? 'pull' : 'pulls'}
       </span>

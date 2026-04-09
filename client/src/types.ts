@@ -132,4 +132,30 @@ export interface KeyRunSnapshot {
   spellIcons?: Record<string, string>
 }
 
-export type HistoryItem = KeyRunSummary | SegmentSummary
+export interface BossSectionSummary {
+  type: 'boss_section'
+  bossSectionId: string
+  encounterID: number
+  encounterName: string
+  difficultyID: number
+  startTime: number
+  endTime: number | null
+  segments: SegmentSummary[]
+}
+
+export interface BossSectionSnapshot {
+  type: 'boss_section'
+  bossSectionId: string
+  encounterID: number
+  encounterName: string
+  difficultyID: number
+  startTime: number
+  endTime: number | null
+  activeDurationSec: number
+  pullCount: number
+  kills: number
+  players: Record<string, PlayerSnapshot>
+  spellIcons?: Record<string, string>
+}
+
+export type HistoryItem = KeyRunSummary | BossSectionSummary | SegmentSummary

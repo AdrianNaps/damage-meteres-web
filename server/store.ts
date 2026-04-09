@@ -82,6 +82,8 @@ export interface PlayerData {
 export interface Segment {
   id: string
   keyRunId: string | null           // null for non-M+ segments
+  bossSectionId: string | null      // container id for contiguous pulls of the same raid boss (null inside M+ or trash)
+  encounterID: number               // 0 for trash segments
   encounterName: string
   startTime: number                 // ENCOUNTER_START timestamp (or first event for open segments)
   endTime: number | null            // ENCOUNTER_END timestamp, null while in progress
@@ -121,6 +123,41 @@ export interface SegmentSummary {
 }
 
 // Internal — not exported over the wire
+interface BossSectionMeta {
+  bossSectionId: string
+  encounterID: number
+  encounterName: string
+  difficultyID: number
+  startTime: number
+}
+
+export interface BossSectionSummary {
+  type: 'boss_section'
+  bossSectionId: string
+  encounterID: number
+  encounterName: string
+  difficultyID: number
+  startTime: number
+  endTime: number | null
+  segments: SegmentSummary[]
+}
+
+export interface BossSectionSnapshot {
+  type: 'boss_section'
+  bossSectionId: string
+  encounterID: number
+  encounterName: string
+  difficultyID: number
+  startTime: number
+  endTime: number | null
+  activeDurationSec: number
+  pullCount: number
+  kills: number
+  players: Record<string, PlayerSnapshot>
+  spellIcons: Record<string, string>
+}
+
+// Internal — not exported over the wire
 interface KeyRunMeta {
   keyRunId: string
   dungeonName: string
@@ -157,12 +194,13 @@ export interface KeyRunSnapshot {
   spellIcons: Record<string, string> // spellId → Wowhead icon filename
 }
 
-export type HistoryItem = KeyRunSummary | SegmentSummary
+export type HistoryItem = KeyRunSummary | BossSectionSummary | SegmentSummary
 
 export class SegmentStore {
   private segments: Segment[] = []
-  private maxSegments: number        // max history items (key runs + standalone segments)
+  private maxSegments: number        // max history items (key runs + boss sections + standalone segments)
   private keyRunMeta: Map<string, KeyRunMeta> = new Map()
+  private bossSectionMeta: Map<string, BossSectionMeta> = new Map()
   private iconResolver: IconResolver
 
   constructor(maxSegments: number, iconResolver: IconResolver) {
@@ -179,6 +217,16 @@ export class SegmentStore {
       endTime: null,
       success: null,
       durationMs: null,
+    })
+  }
+
+  registerBossSection(bossSectionId: string, encounterID: number, encounterName: string, difficultyID: number, startTime: number) {
+    this.bossSectionMeta.set(bossSectionId, {
+      bossSectionId,
+      encounterID,
+      encounterName,
+      difficultyID,
+      startTime,
     })
   }
 
@@ -201,12 +249,14 @@ export class SegmentStore {
 
   private _historyItemCount(): number {
     const keyRunIds = new Set<string>()
+    const bossSectionIds = new Set<string>()
     let standalone = 0
     for (const s of this.segments) {
       if (s.keyRunId) keyRunIds.add(s.keyRunId)
+      else if (s.bossSectionId) bossSectionIds.add(s.bossSectionId)
       else standalone++
     }
-    return keyRunIds.size + standalone
+    return keyRunIds.size + bossSectionIds.size + standalone
   }
 
   private _evictOldest() {
@@ -216,6 +266,10 @@ export class SegmentStore {
       const id = oldest.keyRunId
       this.segments = this.segments.filter(s => s.keyRunId !== id)
       this.keyRunMeta.delete(id)
+    } else if (oldest.bossSectionId) {
+      const id = oldest.bossSectionId
+      this.segments = this.segments.filter(s => s.bossSectionId !== id)
+      this.bossSectionMeta.delete(id)
     } else {
       this.segments.shift()
     }
@@ -230,38 +284,92 @@ export class SegmentStore {
   }
 
   getHistoryItems(): HistoryItem[] {
-    // Single O(n) pass: group segments by keyRunId, preserving insertion order
+    // Single O(n) pass: group segments by container id, preserving insertion order
     const keySegments = new Map<string, SegmentSummary[]>()
-    const order: Array<{ type: 'key_run'; keyRunId: string } | { type: 'segment'; summary: SegmentSummary }> = []
+    const bossSegments = new Map<string, SegmentSummary[]>()
+    const order: Array<
+      | { kind: 'key_run'; keyRunId: string }
+      | { kind: 'boss_section'; bossSectionId: string }
+      | { kind: 'segment'; summary: SegmentSummary }
+    > = []
 
     for (const seg of this.segments) {
       if (seg.keyRunId) {
         if (!keySegments.has(seg.keyRunId)) {
           keySegments.set(seg.keyRunId, [])
-          order.push({ type: 'key_run', keyRunId: seg.keyRunId })
+          order.push({ kind: 'key_run', keyRunId: seg.keyRunId })
         }
         keySegments.get(seg.keyRunId)!.push(this.toSummary(seg))
+      } else if (seg.bossSectionId) {
+        if (!bossSegments.has(seg.bossSectionId)) {
+          bossSegments.set(seg.bossSectionId, [])
+          order.push({ kind: 'boss_section', bossSectionId: seg.bossSectionId })
+        }
+        bossSegments.get(seg.bossSectionId)!.push(this.toSummary(seg))
       } else {
-        const summary = this.toSummary(seg)
-        order.push({ type: 'segment', summary })
+        order.push({ kind: 'segment', summary: this.toSummary(seg) })
       }
     }
 
-    return order.map(entry => {
-      if (entry.type === 'key_run') {
+    return order.map<HistoryItem>(entry => {
+      if (entry.kind === 'key_run') {
         const meta = this.keyRunMeta.get(entry.keyRunId)!
         return { type: 'key_run' as const, ...meta, segments: keySegments.get(entry.keyRunId)! }
+      }
+      if (entry.kind === 'boss_section') {
+        const meta = this.bossSectionMeta.get(entry.bossSectionId)!
+        const segs = bossSegments.get(entry.bossSectionId)!
+        const lastEnd = segs.length > 0 ? segs[segs.length - 1].endTime : null
+        return {
+          type: 'boss_section' as const,
+          bossSectionId: meta.bossSectionId,
+          encounterID: meta.encounterID,
+          encounterName: meta.encounterName,
+          difficultyID: meta.difficultyID,
+          startTime: meta.startTime,
+          endTime: lastEnd,
+          segments: segs,
+        }
       }
       return entry.summary
     })
   }
 
-  toKeyRunSnapshot(keyRunId: string): KeyRunSnapshot | null {
-    const meta = this.keyRunMeta.get(keyRunId)
+  toBossSectionSnapshot(bossSectionId: string): BossSectionSnapshot | null {
+    const meta = this.bossSectionMeta.get(bossSectionId)
     if (!meta) return null
-    const segs = this.segments.filter(s => s.keyRunId === keyRunId)
+    const segs = this.segments.filter(s => s.bossSectionId === bossSectionId)
     if (segs.length === 0) return null
 
+    const { players, activeDurationSec } = this._mergeSegments(segs)
+
+    const spellIds = new Set<string>()
+    for (const p of Object.values(players)) {
+      for (const sid of Object.keys(p.damage.spells)) spellIds.add(sid)
+      for (const sid of Object.keys(p.healing.spells)) spellIds.add(sid)
+      for (const sid of Object.keys(p.interrupts.byKicker)) spellIds.add(sid)
+      for (const sid of Object.keys(p.interrupts.byKicked)) spellIds.add(sid)
+    }
+    this.iconResolver.requestMany(spellIds)
+
+    const lastEnd = segs[segs.length - 1].endTime ?? segs[segs.length - 1].lastEventTime
+    return {
+      type: 'boss_section',
+      bossSectionId: meta.bossSectionId,
+      encounterID: meta.encounterID,
+      encounterName: meta.encounterName,
+      difficultyID: meta.difficultyID,
+      startTime: meta.startTime,
+      endTime: lastEnd,
+      activeDurationSec,
+      pullCount: segs.length,
+      kills: segs.filter(s => s.success === true).length,
+      players,
+      spellIcons: this.iconResolver.getAll(),
+    }
+  }
+
+  private _mergeSegments(segs: Segment[]): { players: Record<string, PlayerSnapshot>; activeDurationSec: number } {
     const merged: Record<string, PlayerData> = {}
     let activeDurationSec = 0
 
@@ -272,7 +380,6 @@ export class SegmentStore {
 
       for (const [name, player] of Object.entries(seg.players)) {
         if (!merged[name]) {
-          // Deep-copy the first occurrence so mutations don't affect the source segment
           merged[name] = {
             name: player.name,
             specId: player.specId,
@@ -368,7 +475,6 @@ export class SegmentStore {
       }
     }
 
-    // Re-sort deaths chronologically across segment boundaries
     for (const mp of Object.values(merged)) {
       mp.deaths.sort((a, b) => a.timeOfDeath - b.timeOfDeath)
     }
@@ -381,6 +487,16 @@ export class SegmentStore {
         hps: activeDurationSec > 0 ? player.healing.total / activeDurationSec : 0,
       }
     }
+    return { players, activeDurationSec }
+  }
+
+  toKeyRunSnapshot(keyRunId: string): KeyRunSnapshot | null {
+    const meta = this.keyRunMeta.get(keyRunId)
+    if (!meta) return null
+    const segs = this.segments.filter(s => s.keyRunId === keyRunId)
+    if (segs.length === 0) return null
+
+    const { players, activeDurationSec } = this._mergeSegments(segs)
 
     const spellIds = new Set<string>()
     for (const p of Object.values(players)) {

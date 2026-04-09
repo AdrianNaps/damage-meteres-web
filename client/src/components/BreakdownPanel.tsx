@@ -18,8 +18,8 @@ export function BreakdownPanel() {
   const setTargetDetail = useStore(s => s.setTargetDetail)
   const playerSpecs = useStore(s => s.playerSpecs)
 
-  const isKeyRun = currentView?.type === 'key_run'
-  const canDrillTargets = !isKeyRun
+  const isAggregate = currentView?.type === 'key_run' || currentView?.type === 'boss_section'
+  const canDrillTargets = !isAggregate
 
   useEffect(() => {
     setDrillTarget(null)
@@ -55,7 +55,7 @@ export function BreakdownPanel() {
     metric === 'damage' ? player.damage.total
     : metric === 'healing' ? player.healing.total
     : player.interrupts.total
-  const duration = isKeyRun ? currentView.activeDurationSec : currentView.duration
+  const duration = isAggregate ? currentView.activeDurationSec : currentView.duration
 
   function handleModeChange(mode: 'spells' | 'targets') {
     setViewMode(mode)
