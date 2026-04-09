@@ -271,6 +271,52 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
     // Clear the buffer so a rez + second death starts fresh
     recentEvents.delete(guid)
     return
+  } else if (payload.type === 'interrupt') {
+    // Resolve pet/guardian source back to owning player, same as damage/heal paths.
+    let sourceName = event.source.name
+    let sourceGuid = event.source.guid
+    const isPet = !!(event.source.flags & (PET_FLAG | GUARDIAN_FLAG))
+    if (isPet) {
+      let ownerGuid = segment.petToOwner[event.source.guid]
+      if (!ownerGuid) {
+        const key = petBatchKey(event.source.guid)
+        if (key) ownerGuid = segment.petBatchToOwner[key]
+        if (ownerGuid) recordPetOwner(segment, event.source.guid, ownerGuid)
+      }
+      const ownerName = ownerGuid ? segment.guidToName[ownerGuid] : undefined
+      if (!ownerName) return
+      sourceName = ownerName
+      sourceGuid = ownerGuid
+    } else if (!event.source.guid.startsWith('Player-')) {
+      return
+    }
+
+    const player = getOrCreatePlayer(segment, sourceName, sourceGuid)
+    if (!player) return
+
+    player.interrupts.total++
+
+    const kicker = player.interrupts.byKicker[payload.spellId]
+    if (!kicker) {
+      player.interrupts.byKicker[payload.spellId] = {
+        spellId: payload.spellId,
+        spellName: payload.spellName,
+        count: 1,
+      }
+    } else {
+      kicker.count++
+    }
+
+    const kicked = player.interrupts.byKicked[payload.extraSpellId]
+    if (!kicked) {
+      player.interrupts.byKicked[payload.extraSpellId] = {
+        spellId: payload.extraSpellId,
+        spellName: payload.extraSpellName,
+        count: 1,
+      }
+    } else {
+      kicked.count++
+    }
   }
 
   if (segment.firstEventTime === null) segment.firstEventTime = event.timestamp
@@ -291,6 +337,7 @@ function getOrCreatePlayer(segment: Segment, name: string, guid: string): Player
       damage: { total: 0, spells: {}, targets: {} },
       healing: { total: 0, overheal: 0, spells: {} },
       deaths: [],
+      interrupts: { total: 0, byKicker: {}, byKicked: {} },
     }
   } else if (segment.players[normalized].specId === undefined && segment.guidToSpec[guid] !== undefined) {
     segment.players[normalized].specId = segment.guidToSpec[guid]

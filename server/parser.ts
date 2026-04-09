@@ -323,6 +323,22 @@ export function parseLine(raw: string): ParsedEvent | null {
       }
     }
 
+    case 'SPELL_INTERRUPT': {
+      // [9]=spellId [10]=spellName [11]=school [12]=extraSpellId [13]=extraSpellName [14]=extraSchool
+      if (!(source.flags & ATTRIBUTABLE_SOURCE_FLAGS)) return null
+      if (fields.length < 14) return null
+      return {
+        timestamp, type: eventType, source, dest,
+        payload: {
+          type: 'interrupt',
+          spellId:       fields[9],
+          spellName:     stripQuotes(fields[10]),
+          extraSpellId:  fields[12],
+          extraSpellName: stripQuotes(fields[13]),
+        }
+      }
+    }
+
     case 'UNIT_DIED':
       return {
         timestamp, type: eventType, source, dest,

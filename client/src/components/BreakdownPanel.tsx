@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useStore, selectCurrentView, resolveSpecId } from '../store'
 import { getClassColor } from './PlayerRow'
-import { DamageSpellTable, HealSpellTable } from './SpellTable'
+import { DamageSpellTable, HealSpellTable, InterruptSpellTable } from './SpellTable'
 import { TargetTable } from './TargetTable'
 import { TargetDrillDown } from './TargetDrillDown'
 import { requestTargetDetail } from '../ws'
@@ -47,8 +47,14 @@ export function BreakdownPanel() {
   if (!player) return null
 
   const color = getClassColor(resolveSpecId(playerSpecs, selectedPlayer, player.specId))
-  const value = metric === 'damage' ? player.dps : player.hps
-  const total = metric === 'damage' ? player.damage.total : player.healing.total
+  const value =
+    metric === 'damage' ? player.dps
+    : metric === 'healing' ? player.hps
+    : player.interrupts.total
+  const total =
+    metric === 'damage' ? player.damage.total
+    : metric === 'healing' ? player.healing.total
+    : player.interrupts.total
   const duration = isKeyRun ? currentView.activeDurationSec : currentView.duration
 
   function handleModeChange(mode: 'spells' | 'targets') {
@@ -63,6 +69,14 @@ export function BreakdownPanel() {
     if (!currentView) return null
     if (metric === 'healing') {
       return <HealSpellTable spells={player.healing.spells} />
+    }
+    if (metric === 'interrupts') {
+      return (
+        <>
+          <InterruptSpellTable spells={player.interrupts.byKicker} heading="Interrupt Ability" />
+          <InterruptSpellTable spells={player.interrupts.byKicked} heading="Spell Interrupted" />
+        </>
+      )
     }
     if (canDrillTargets && drillTarget && targetDetail?.targetName === drillTarget) {
       return (
@@ -118,7 +132,9 @@ export function BreakdownPanel() {
           <div>
             <div style={{ fontWeight: 600, fontSize: 15, color }}>{shortName(player.name)}</div>
             <div style={{ fontSize: 12, fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', marginTop: 2 }}>
-              {formatNum(total)} total &middot; {formatNum(value)} {metric === 'damage' ? 'DPS' : 'HPS'}
+              {metric === 'interrupts'
+                ? `${total} interrupts`
+                : `${formatNum(total)} total \u00b7 ${formatNum(value)} ${metric === 'damage' ? 'DPS' : 'HPS'}`}
             </div>
           </div>
           <button

@@ -1,4 +1,4 @@
-import type { SpellDamageStats, SpellHealStats } from '../types'
+import type { SpellDamageStats, SpellHealStats, InterruptSpellStats } from '../types'
 import { useStore } from '../store'
 import { spellIconUrl } from '../utils/icons'
 
@@ -112,6 +112,54 @@ export function DamageSpellTable({ spells }: DamageProps) {
             <td style={{ ...tdStyle, ...monoStyle, textAlign: 'right', color: 'var(--text-muted)' }}>{formatNum(s.absorbed)}</td>
           </tr>
         ))}
+      </tbody>
+    </table>
+  )
+}
+
+interface InterruptProps {
+  spells: Record<string, InterruptSpellStats>
+  heading: string
+}
+
+export function InterruptSpellTable({ spells, heading }: InterruptProps) {
+  const rows = Object.values(spells).sort((a, b) => b.count - a.count)
+  const total = rows.reduce((sum, s) => sum + s.count, 0)
+  return (
+    <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 16 }}>
+      <thead>
+        <tr>
+          <th style={{ ...thStyle, textAlign: 'left' }}>{heading}</th>
+          <th style={{ ...thStyle, textAlign: 'right' }}>Count</th>
+          <th style={{ ...thStyle, textAlign: 'right' }}>%</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.length === 0 ? (
+          <tr>
+            <td colSpan={3} style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-muted)' }}>
+              None
+            </td>
+          </tr>
+        ) : (
+          rows.map((s, i) => (
+            <tr
+              key={s.spellId}
+              style={{
+                background: i % 2 === 1 ? 'rgba(255,255,255,0.02)' : 'transparent',
+                transition: 'background 0.1s',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-hover)' }}
+              onMouseLeave={e => { e.currentTarget.style.background = i % 2 === 1 ? 'rgba(255,255,255,0.02)' : 'transparent' }}
+            >
+              <td style={{ ...tdStyle, color: 'var(--text-primary)' }}>
+                <SpellNameCell spellId={s.spellId} spellName={s.spellName} />
+              </td>
+              <td style={{ ...tdStyle, ...monoStyle, textAlign: 'right', color: 'var(--text-primary)', fontWeight: 600 }}>{s.count}</td>
+              <td style={{ ...tdStyle, ...monoStyle, textAlign: 'right', color: 'var(--text-muted)' }}>{pct(s.count, total)}</td>
+            </tr>
+          ))
+        )}
       </tbody>
     </table>
   )

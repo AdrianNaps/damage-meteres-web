@@ -15,7 +15,7 @@ interface AppState {
   selectedKeyRun: KeyRunSnapshot | null
   selectedPlayer: string | null
   selectedDeath: PlayerDeathRecord | null
-  metric: 'damage' | 'healing' | 'deaths'
+  metric: 'damage' | 'healing' | 'deaths' | 'interrupts'
   wsStatus: 'connecting' | 'connected' | 'disconnected'
   targetDetail: TargetDetail | null
   // Per-name spec cache, accumulated across every snapshot we've seen.

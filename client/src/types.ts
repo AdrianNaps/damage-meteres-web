@@ -61,6 +61,18 @@ export interface PlayerDeathRecord {
   recap: DeathRecapEvent[]
 }
 
+export interface InterruptSpellStats {
+  spellId: string
+  spellName: string
+  count: number
+}
+
+export interface InterruptData {
+  total: number
+  byKicker: Record<string, InterruptSpellStats>
+  byKicked: Record<string, InterruptSpellStats>
+}
+
 export interface PlayerSnapshot {
   name: string
   specId?: number
@@ -69,6 +81,7 @@ export interface PlayerSnapshot {
   damage: { total: number; spells: Record<string, SpellDamageStats>; targets: Record<string, TargetDamageStats> }
   healing: { total: number; overheal: number; spells: Record<string, SpellHealStats> }
   deaths: PlayerDeathRecord[]
+  interrupts: InterruptData
 }
 
 export interface SegmentSnapshot {

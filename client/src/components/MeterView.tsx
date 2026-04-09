@@ -35,12 +35,14 @@ export function MeterView() {
     )
   }
 
+  const valueOf = (p: PlayerSnapshot): number =>
+    metric === 'damage' ? p.dps
+    : metric === 'healing' ? p.hps
+    : p.interrupts.total
   const players: PlayerSnapshot[] = Object.values(currentView.players)
-  const sorted = [...players].sort((a, b) =>
-    metric === 'damage' ? b.dps - a.dps : b.hps - a.hps
-  )
-  const topValue = sorted[0] ? (metric === 'damage' ? sorted[0].dps : sorted[0].hps) : 0
-  const totalValue = sorted.reduce((sum, p) => sum + (metric === 'damage' ? p.dps : p.hps), 0)
+  const sorted = [...players].sort((a, b) => valueOf(b) - valueOf(a))
+  const topValue = sorted[0] ? valueOf(sorted[0]) : 0
+  const totalValue = sorted.reduce((sum, p) => sum + valueOf(p), 0)
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
@@ -63,7 +65,9 @@ export function MeterView() {
         <span style={{ width: 24, flexShrink: 0 }}>#</span>
         <span className="flex-1">Player</span>
         <span style={{ width: 64, textAlign: 'right' }}>Total</span>
-        <span style={{ width: 72, textAlign: 'right' }}>{metric === 'damage' ? 'DPS' : 'HPS'}</span>
+        <span style={{ width: 72, textAlign: 'right' }}>
+          {metric === 'damage' ? 'DPS' : metric === 'healing' ? 'HPS' : 'Count'}
+        </span>
         <span style={{ width: 52, textAlign: 'right' }}>%</span>
       </div>
 
@@ -81,7 +85,7 @@ export function MeterView() {
               rank={i + 1}
               topValue={topValue}
               totalValue={totalValue}
-              metric={metric as 'damage' | 'healing'}
+              metric={metric as 'damage' | 'healing' | 'interrupts'}
               onClick={() => setSelectedPlayer(player.name)}
             />
           ))
@@ -95,13 +99,14 @@ function MetricToggle({
   metric,
   setMetric,
 }: {
-  metric: 'damage' | 'healing' | 'deaths'
-  setMetric: (m: 'damage' | 'healing' | 'deaths') => void
+  metric: 'damage' | 'healing' | 'deaths' | 'interrupts'
+  setMetric: (m: 'damage' | 'healing' | 'deaths' | 'interrupts') => void
 }) {
-  const options: { key: 'damage' | 'healing' | 'deaths'; label: string }[] = [
+  const options: { key: 'damage' | 'healing' | 'deaths' | 'interrupts'; label: string }[] = [
     { key: 'damage', label: 'Damage' },
     { key: 'healing', label: 'Healing' },
     { key: 'deaths', label: 'Deaths' },
+    { key: 'interrupts', label: 'Interrupts' },
   ]
 
   return (

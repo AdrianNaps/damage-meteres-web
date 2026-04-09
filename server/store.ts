@@ -56,12 +56,27 @@ export interface HealData {
   spells: Record<string, SpellHealStats>
 }
 
+export interface InterruptSpellStats {
+  spellId: string
+  spellName: string
+  count: number
+}
+
+export interface InterruptData {
+  total: number
+  // Kicker's own abilities (e.g. Pummel, Kick, Mind Freeze)
+  byKicker: Record<string, InterruptSpellStats>
+  // Enemy spells that got interrupted
+  byKicked: Record<string, InterruptSpellStats>
+}
+
 export interface PlayerData {
   name: string
   specId?: number
   damage: DamageData
   healing: HealData
   deaths: PlayerDeathRecord[]
+  interrupts: InterruptData
 }
 
 export interface Segment {
@@ -278,6 +293,15 @@ export class SegmentStore {
               ),
             },
             deaths: [...player.deaths],
+            interrupts: {
+              total: player.interrupts.total,
+              byKicker: Object.fromEntries(
+                Object.entries(player.interrupts.byKicker).map(([k, v]) => [k, { ...v }])
+              ),
+              byKicked: Object.fromEntries(
+                Object.entries(player.interrupts.byKicked).map(([k, v]) => [k, { ...v }])
+              ),
+            },
           }
         } else {
           const mp = merged[name]
@@ -328,6 +352,18 @@ export class SegmentStore {
           }
 
           mp.deaths.push(...player.deaths)
+
+          mp.interrupts.total += player.interrupts.total
+          for (const [sid, s] of Object.entries(player.interrupts.byKicker)) {
+            const existing = mp.interrupts.byKicker[sid]
+            if (!existing) mp.interrupts.byKicker[sid] = { ...s }
+            else existing.count += s.count
+          }
+          for (const [sid, s] of Object.entries(player.interrupts.byKicked)) {
+            const existing = mp.interrupts.byKicked[sid]
+            if (!existing) mp.interrupts.byKicked[sid] = { ...s }
+            else existing.count += s.count
+          }
         }
       }
     }
@@ -350,6 +386,8 @@ export class SegmentStore {
     for (const p of Object.values(players)) {
       for (const sid of Object.keys(p.damage.spells)) spellIds.add(sid)
       for (const sid of Object.keys(p.healing.spells)) spellIds.add(sid)
+      for (const sid of Object.keys(p.interrupts.byKicker)) spellIds.add(sid)
+      for (const sid of Object.keys(p.interrupts.byKicked)) spellIds.add(sid)
     }
     this.iconResolver.requestMany(spellIds)
 
@@ -375,6 +413,8 @@ export class SegmentStore {
     for (const p of Object.values(players)) {
       for (const sid of Object.keys(p.damage.spells)) spellIds.add(sid)
       for (const sid of Object.keys(p.healing.spells)) spellIds.add(sid)
+      for (const sid of Object.keys(p.interrupts.byKicker)) spellIds.add(sid)
+      for (const sid of Object.keys(p.interrupts.byKicked)) spellIds.add(sid)
     }
     this.iconResolver.requestMany(spellIds)
 

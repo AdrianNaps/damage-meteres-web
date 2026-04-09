@@ -24,6 +24,7 @@ export type EventType =
   | 'SPELL_HEAL'
   | 'SPELL_PERIODIC_HEAL'
   | 'SPELL_HEAL_ABSORBED'
+  | 'SPELL_INTERRUPT'
   | 'UNIT_DIED'
 
 export interface UnitRef {
@@ -96,7 +97,15 @@ export interface SummonPayload {
   type: 'summon'
 }
 
-export type EventPayload = DamagePayload | HealPayload | EncounterPayload | DeathPayload | CombatantInfoPayload | ChallengeModePayload | SummonPayload
+export interface InterruptPayload {
+  type: 'interrupt'
+  spellId: string           // the kicker's ability (e.g. Pummel)
+  spellName: string
+  extraSpellId: string      // the spell that got interrupted
+  extraSpellName: string
+}
+
+export type EventPayload = DamagePayload | HealPayload | EncounterPayload | DeathPayload | CombatantInfoPayload | ChallengeModePayload | SummonPayload | InterruptPayload
 
 export interface ParsedEvent {
   timestamp: number
