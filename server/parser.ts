@@ -112,7 +112,8 @@ export function parseLine(raw: string): ParsedEvent | null {
     }
 
     case 'SPELL_DAMAGE':
-    case 'SPELL_PERIODIC_DAMAGE': {
+    case 'SPELL_PERIODIC_DAMAGE':
+    case 'RANGE_DAMAGE': {
       const destIsPlayer = dest.guid.startsWith('Player-')
       // Allow creature→player damage through for death recap tracking.
       // Still drop creature→creature (irrelevant) and self-damage (avoid meter noise).
@@ -126,33 +127,109 @@ export function parseLine(raw: string): ParsedEvent | null {
       }
     }
 
+    // SPELL_ABSORBED fires alongside a sibling *_MISSED(ABSORB) (fully absorbed) or
+    // *_DAMAGE (partially absorbed). For DAMAGE accounting we rely on the sibling — the
+    // *_DAMAGE suffix already carries the absorbed portion, and *_MISSED handles full
+    // absorbs. So we do NOT consume SPELL_ABSORBED for damage.
+    //
+    // For HEAL accounting, however, this is the only event that credits the shield caster
+    // (the healer) with the effective mitigation. WCL counts it as healing. We re-emit it
+    // here as a heal event whose source is the absorber, spell is the shield, and amount
+    // is the absorbed portion (overheal=0 — shield overhealing would need aura tracking).
+    //
+    // Two field layouts:
+    //   Swing-absorbed (~19 fields): [9..12]=absorber, [13..15]=shield, [16]=absorbed
+    //   Spell-absorbed (~22 fields): [9..11]=damagingSpell, [12..15]=absorber,
+    //                                [16..18]=shield, [19]=absorbed
     case 'SPELL_ABSORBED': {
-      // Format (no advanced-log block):
-      // [9]=spellId [10]=spellName [11]=school
-      // [12-15]=absorb caster (guid/name/flags/raidflags)
-      // [16]=absorbSpellId [17]=absorbSpellName [18]=absorbSchool
-      // [19]=amount (full hit incl. crit multiplier)  [20]=base (non-crit) amount  [21]=critical
+      // Distinguish by whether fields[9] looks like a GUID (swing) or an integer spellId (spell-caused)
+      const f9 = fields[9] ?? ''
+      const isSwing = f9.startsWith('Player-') || f9.startsWith('Creature-') || f9.startsWith('Pet-') || f9.startsWith('Vehicle-')
+      const absorberBase = isSwing ? 9 : 12
+      const shieldBase   = isSwing ? 13 : 16
+      const amountIdx    = isSwing ? 16 : 19
+      if (fields.length <= amountIdx) return null
+
+      const absorberGuid  = fields[absorberBase]
+      const absorberName  = stripQuotes(fields[absorberBase + 1])
+      const absorberFlags = parseInt(fields[absorberBase + 2], 16)
+      if (!(absorberFlags & PLAYER_FLAG)) return null
+
+      const shieldSpellId = fields[shieldBase]
+      const shieldName    = stripQuotes(fields[shieldBase + 1])
+      const amount        = parseInt(fields[amountIdx])
+      if (!amount || isNaN(amount)) return null
+
+      const absorberRef: UnitRef = { guid: absorberGuid, name: absorberName, flags: absorberFlags }
+      return {
+        timestamp, type: eventType, source: absorberRef, dest,
+        payload: {
+          type: 'heal',
+          spellId: shieldSpellId,
+          spellName: shieldName,
+          amount,
+          baseAmount: amount,
+          overheal: 0,
+          absorbed: 0,
+          critical: false,
+        }
+      }
+    }
+
+    // Fully-absorbed hits come through as *_MISSED with missType=ABSORB instead of *_DAMAGE.
+    // The combat log still carries the real attacker in the source fields (unlike the
+    // sibling SPELL_ABSORBED event, which often nulls the source for pet AOEs), so this is
+    // the reliable credit path. Other miss types (MISS/DODGE/PARRY/IMMUNE/RESIST/REFLECT/
+    // EVADE) are genuinely zero-damage and stay dropped.
+    //
+    // Field layout after source/dest:
+    //   SPELL_MISSED / SPELL_PERIODIC_MISSED / RANGE_MISSED:
+    //     [9]=spellId [10]=spellName [11]=school [12]=missType
+    //     [13]=isOffHand [14]=amount [15]=baseAmount [16]=critical
+    //   SWING_MISSED:
+    //     [9]=missType [10]=isOffHand [11]=amount [12]=baseAmount [13]=critical
+    case 'SPELL_MISSED':
+    case 'SPELL_PERIODIC_MISSED':
+    case 'RANGE_MISSED':
+    case 'SWING_MISSED': {
       if (!(source.flags & ATTRIBUTABLE_SOURCE_FLAGS)) return null
       if (source.guid === dest.guid) return null
-      const amount = parseInt(fields[19])
+
+      const isSwing = eventType === 'SWING_MISSED'
+      const missType = isSwing ? fields[9] : fields[12]
+      if (missType !== 'ABSORB') return null
+
+      const amountIdx    = isSwing ? 11 : 14
+      const baseIdx      = isSwing ? 12 : 15
+      const criticalIdx  = isSwing ? 13 : 16
+      const amount = parseInt(fields[amountIdx])
       if (!amount || amount <= 0) return null
-      const critical = fields[21] === '1'
+
+      const spellId   = isSwing ? 'swing' : fields[9]
+      const spellName = isSwing ? 'Melee' : stripQuotes(fields[10])
+      const school    = isSwing ? 0x1 : parseInt(fields[11], 16)
+      // SWING_MISSED has no advanced-log block, so no pet-owner bootstrap field.
+      // The aggregator's petToOwner map (populated from SPELL_SUMMON and from prior
+      // SWING_DAMAGE events) is enough to attribute these.
+      const swingOwnerGuid = null
+
       return {
         timestamp, type: eventType, source, dest,
         payload: {
           type: 'damage',
-          spellId: fields[9],
-          spellName: stripQuotes(fields[10]),
+          spellId,
+          spellName,
           amount,
-          baseAmount: amount,
-          overkill: -1,
-          school: parseInt(fields[11], 16),
+          baseAmount: parseInt(fields[baseIdx]) || amount,
+          overkill: 0,
+          school,
           resisted: 0,
           blocked: 0,
-          absorbed: amount, // entire hit went into absorb shield
-          critical,
+          absorbed: amount, // entire hit went into an absorb shield
+          critical: fields[criticalIdx] === '1',
           glancing: false,
           crushing: false,
+          swingOwnerGuid,
         }
       }
     }
@@ -173,9 +250,71 @@ export function parseLine(raw: string): ParsedEvent | null {
     case 'SWING_DAMAGE_LANDED':
       return null // dest-side mirror of SWING_DAMAGE — skip to avoid double-counting
 
+    // Augmentation Evoker support events: damage mechanically dealt through an ally's action
+    // but credited to the supporter (Aug). The trailing field is the supporter's player GUID.
+    // Field layout otherwise matches SPELL_DAMAGE (spellId at [9], spellName at [10]).
+    case 'SPELL_DAMAGE_SUPPORT':
+    case 'SPELL_PERIODIC_DAMAGE_SUPPORT':
+    case 'RANGE_DAMAGE_SUPPORT':
+    case 'SWING_DAMAGE_LANDED_SUPPORT': {
+      const supportSourceGuid = fields[fields.length - 1]
+      if (!supportSourceGuid?.startsWith('Player-')) return null
+      // Strip the trailing supporter GUID so parseDamageSuffix reads the correct positions
+      const damage = parseDamageSuffix(fields.slice(0, -1))
+      if (!damage) return null
+      return {
+        timestamp, type: eventType, source, dest,
+        payload: {
+          type: 'damage',
+          spellId: fields[9],
+          spellName: stripQuotes(fields[10]),
+          supportSourceGuid,
+          ...damage,
+        }
+      }
+    }
+
+    // SPELL_HEAL_ABSORBED fires when a heal lands on a target carrying a heal-absorption
+    // debuff (e.g. Rift Sickness on Chimaerus). The paired SPELL_HEAL event records only the
+    // portion that actually topped the target off; the portion eaten by the heal-absorb shield
+    // comes through here. WCL credits the full original heal to the healer, so we re-emit this
+    // as a heal event on (healer, healSpellId, amount=absorbedAmount, overheal=0).
+    //
+    // Field layout: [1..3] debuff applier, [5..7] target, [9..11] debuff spell,
+    //               [12..14] healer, [16..18] heal spell, [-2] absorbedAmount, [-1] totalAmount
+    case 'SPELL_HEAL_ABSORBED': {
+      if (fields.length < 21) return null
+      const healerGuid  = fields[12]
+      const healerName  = stripQuotes(fields[13])
+      const healerFlags = parseInt(fields[14], 16)
+      if (!(healerFlags & ATTRIBUTABLE_SOURCE_FLAGS)) return null
+
+      const healSpellId = fields[16]
+      const healSpell   = stripQuotes(fields[17])
+      const absorbed    = parseInt(fields[fields.length - 2])
+      if (!absorbed || isNaN(absorbed)) return null
+
+      const healerRef: UnitRef = { guid: healerGuid, name: healerName, flags: healerFlags }
+      return {
+        timestamp, type: eventType, source: healerRef, dest,
+        payload: {
+          type: 'heal',
+          spellId: healSpellId,
+          spellName: healSpell,
+          amount: absorbed,
+          baseAmount: absorbed,
+          overheal: 0,
+          absorbed: 0,
+          critical: false,
+        }
+      }
+    }
+
     case 'SPELL_HEAL':
     case 'SPELL_PERIODIC_HEAL': {
-      if (!(source.flags & PLAYER_FLAG)) return null
+      // Accept guardian/pet sources too (e.g. Yu'lon Soothing Breath, Jade Serpent Statue).
+      // Owner resolution happens in the aggregator, same path as damage.
+      if (!(source.flags & ATTRIBUTABLE_SOURCE_FLAGS)) return null
       const heal = parseHealSuffix(fields)
       if (!heal) return null
       return {

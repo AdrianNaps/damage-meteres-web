@@ -6,10 +6,61 @@ import type { Segment, PlayerData, SpellDamageStats, SpellHealStats, TargetDamag
 // Rolling window of recent damage/heal events per player GUID — not persisted to snapshot
 const recentEvents = new Map<string, DeathRecapEvent[]>()
 
+// Per-segment, per-source-guid record of the most recent damage credit. Used to subtract
+// the support amount from the original caster when an Augmentation Evoker SUPPORT mirror
+// arrives. Not persisted; transient WeakMap so it dies with the segment.
+interface LastCredit {
+  player: PlayerData
+  spellId: string
+  destName: string
+  timestamp: number
+  critical: boolean
+}
+const lastDamageCredit = new WeakMap<Segment, Map<string, LastCredit>>()
+
+function getLastCreditMap(segment: Segment): Map<string, LastCredit> {
+  let m = lastDamageCredit.get(segment)
+  if (!m) { m = new Map(); lastDamageCredit.set(segment, m) }
+  return m
+}
+
 const RECAP_WINDOW_SECONDS = 10  // how far back to collect events
 
 function isPlayerGuid(guid: string): boolean {
   return guid.startsWith('Player-')
+}
+
+// Pet GUID format: Pet-0-{serverId}-{instanceId}-{zoneUID}-{npcId}-{spawnUID}
+// The spawn UID has a leading hex index byte that increments per pet in a batch summon
+// (e.g. Hunter Stampede spawning 14 pets produces UIDs 010554A4DA, 040554A4DA, … all
+// sharing the trailing suffix). Two different batches — even from two different hunters
+// in the same shard — get distinct suffixes from the client-side spawn counter, so the
+// (shard, npcId, suffix) triple is a reliable "same summon → same owner" grouping key.
+//
+// Returns null if the GUID isn't a Pet- or doesn't have the expected shape, so callers
+// can fall through without misattributing.
+function petBatchKey(petGuid: string): string | null {
+  if (!petGuid.startsWith('Pet-')) return null
+  const parts = petGuid.split('-')
+  if (parts.length < 7) return null
+  const shard = parts.slice(2, 5).join('-')  // serverId-instanceId-zoneUID
+  const npcId = parts[5]
+  const spawnUid = parts[6]
+  if (spawnUid.length < 3) return null
+  // Strip the leading index byte (2 hex chars). Empirically stable across retail logs.
+  const suffix = spawnUid.slice(2)
+  return `${shard}|${npcId}|${suffix}`
+}
+
+// Single entry point for recording pet→owner. Also populates the batch map so that
+// un-swung siblings from the same summon can be attributed later.
+function recordPetOwner(segment: Segment, petGuid: string, ownerGuid: string) {
+  if (segment.petToOwner[petGuid]) return  // don't overwrite — first owner wins
+  segment.petToOwner[petGuid] = ownerGuid
+  const key = petBatchKey(petGuid)
+  if (key && !segment.petBatchToOwner[key]) {
+    segment.petBatchToOwner[key] = ownerGuid
+  }
 }
 
 function pushRecentEvent(guid: string, entry: DeathRecapEvent) {
@@ -40,7 +91,7 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
 
   if (payload.type === 'summon') {
     // source is the summoning player — record pet→owner and ensure owner name is in guidToName
-    segment.petToOwner[event.dest.guid] = event.source.guid
+    recordPetOwner(segment, event.dest.guid, event.source.guid)
     segment.guidToName[event.source.guid] = event.source.name
     return
   }
@@ -64,6 +115,49 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
       })
     }
 
+    // Support events (e.g. Augmentation Evoker procs): damage is mechanically dealt through
+    // an ally's action but belongs to the supporter. The combat log emits TWO events for the
+    // same hit: a plain SPELL_DAMAGE listing the ally as source, and a *_DAMAGE_SUPPORT mirror
+    // with the supporter GUID in the trailing field. WCL credits only the supporter.
+    //
+    // We mirror that: redirect SUPPORT events to the supporter, mark the spellId as
+    // "support-owned", and (a) ignore future plain events for that spellId, (b) retroactively
+    // strip any plain credits already booked before the first SUPPORT event arrived.
+    if (dmg.supportSourceGuid) {
+      const supporterName = segment.guidToName[dmg.supportSourceGuid]
+      if (!supporterName) return  // haven't seen the supporter in any prior event yet — drop
+
+      // (1) Precise pairing: the underlying hit was just credited to the original caster
+      // (event.source.guid). The combat log emits the SUPPORT mirror immediately after the
+      // original event with the same timestamp/source/dest. Subtract the support amount from
+      // that prior credit so the caster's per-spell + total numbers match WCL. This handles
+      // BOTH overlay-style support (Ebon Might/Shifting Sands/Prescience — original spellId
+      // is unrelated, so the legacy spellId-scrub never matched) AND standalone Aug spells
+      // (Breath of Eons etc.) where the plain event is fully attributable to the supporter.
+      const creditMap = getLastCreditMap(segment)
+      const prior = creditMap.get(event.source.guid)
+      if (prior
+          && prior.timestamp === event.timestamp
+          && prior.destName === event.dest.name) {
+        subtractFromCredit(segment, prior, event.source.name, dmg.amount)
+      }
+
+      // (2) Legacy spellId-scrub: kept as a fallback for any standalone-Aug plain events
+      // that arrived before the first SUPPORT mirror (e.g. carry-over across segments).
+      // Harmless for overlay-style support since their spellIds never appear as plain hits.
+      if (!segment.supportOwnedSpellIds.has(dmg.spellId)) {
+        segment.supportOwnedSpellIds.add(dmg.spellId)
+        scrubSupportOwnedSpell(segment, dmg.spellId)
+      }
+
+      applyDamage(segment, supporterName, dmg.supportSourceGuid, event.dest.name, dmg, event.timestamp)
+      return
+    }
+
+    // Plain damage event for a spellId that has been seen as support-owned: skip.
+    // The matching SUPPORT mirror will (or already did) credit the supporter.
+    if (segment.supportOwnedSpellIds.has(dmg.spellId)) return
+
     // Only attribute damage to the meter for player/pet sources.
     // Creature→player events are allowed through the parser for death recap above,
     // but should not create phantom player entries in the damage meter.
@@ -83,16 +177,25 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
       // phantom player entry — this only affects persistent pets (e.g. Felhunter) in raids where
       // no SPELL_SUMMON was logged and the owner has not yet appeared in the segment.
       if (dmg.swingOwnerGuid && dmg.swingOwnerGuid !== '0000000000000000') {
-        segment.petToOwner[event.source.guid] = dmg.swingOwnerGuid
+        recordPetOwner(segment, event.source.guid, dmg.swingOwnerGuid)
       }
-      const ownerGuid = segment.petToOwner[event.source.guid]
+      let ownerGuid = segment.petToOwner[event.source.guid]
+      // Sibling-suffix fallback: un-swung batched pets (Hunter Stampede in particular)
+      // never populate petToOwner directly — no SPELL_SUMMON, no SWING_DAMAGE source-side
+      // advanced-log block. If an already-attributed sibling from the same summon exists,
+      // inherit its owner. See petBatchKey() comment for the reasoning.
+      if (!ownerGuid) {
+        const key = petBatchKey(event.source.guid)
+        if (key) ownerGuid = segment.petBatchToOwner[key]
+        if (ownerGuid) recordPetOwner(segment, event.source.guid, ownerGuid)
+      }
       const ownerName = ownerGuid ? segment.guidToName[ownerGuid] : undefined
       if (!ownerName) return
       sourceName = ownerName
-      sourceGuid = ownerGuid!
+      sourceGuid = ownerGuid
     }
 
-    applyDamage(segment, sourceName, sourceGuid, event.dest.name, dmg)
+    applyDamage(segment, sourceName, sourceGuid, event.dest.name, dmg, event.timestamp)
   } else if (payload.type === 'heal') {
     const heal = payload as HealPayload
 
@@ -111,7 +214,26 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
       })
     }
 
-    applyHeal(segment, event.source.name, event.source.guid, heal)
+    // Resolve pet/guardian heal sources (Yu'lon Soothing Breath, Jade Serpent Statue
+    // Soothing Mist, etc.) back to the summoning player. Same logic as the damage path,
+    // minus the SWING advanced-log bootstrap (heal events don't carry source-side owner).
+    let sourceName = event.source.name
+    let sourceGuid = event.source.guid
+    const isPet = !!(event.source.flags & (PET_FLAG | GUARDIAN_FLAG))
+    if (isPet) {
+      let ownerGuid = segment.petToOwner[event.source.guid]
+      if (!ownerGuid) {
+        const key = petBatchKey(event.source.guid)
+        if (key) ownerGuid = segment.petBatchToOwner[key]
+        if (ownerGuid) recordPetOwner(segment, event.source.guid, ownerGuid)
+      }
+      const ownerName = ownerGuid ? segment.guidToName[ownerGuid] : undefined
+      if (!ownerName) return
+      sourceName = ownerName
+      sourceGuid = ownerGuid
+    }
+
+    applyHeal(segment, sourceName, sourceGuid, heal)
   } else if (payload.type === 'death') {
     if (payload.unconsciousOnDeath) return
     if (!isPlayerGuid(event.dest.guid)) return
@@ -176,7 +298,31 @@ function getOrCreatePlayer(segment: Segment, name: string, guid: string): Player
   return segment.players[normalized]
 }
 
-function applyDamage(segment: Segment, sourceName: string, sourceGuid: string, destName: string, payload: DamagePayload) {
+// When a spellId is first identified as support-owned, retroactively remove any plain
+// damage already credited to players for that spell (which arrived before the first
+// SUPPORT mirror). Walks all players; cheap because it runs at most once per spellId.
+function scrubSupportOwnedSpell(segment: Segment, spellId: string) {
+  for (const player of Object.values(segment.players)) {
+    const spell = player.damage.spells[spellId]
+    if (!spell) continue
+    const removed = spell.total
+    player.damage.total -= removed
+    delete player.damage.spells[spellId]
+
+    // Per-target totals: we don't track which target each event hit, so we can't
+    // surgically subtract per target. Instead, scale: if this spell was X% of the
+    // player's total damage to a target, that approximation breaks. Simpler and
+    // accurate: leave per-target totals slightly stale. They're a rollup display
+    // and the player.damage.total / per-spell view is correct.
+    // (Acceptable tradeoff — alternative is tracking spell-by-target which adds memory.)
+
+    // Segment-wide damage-taken aggregation also gets the same approximation.
+    // The numbers will be slightly off in the "damage to target" breakdown only.
+    void removed
+  }
+}
+
+function applyDamage(segment: Segment, sourceName: string, sourceGuid: string, destName: string, payload: DamagePayload, timestamp: number) {
   const player = getOrCreatePlayer(segment, sourceName, sourceGuid)
   if (!player) return
   const { spellId, spellName, amount, absorbed, resisted, blocked, critical } = payload
@@ -233,6 +379,38 @@ function applyDamage(segment: Segment, sourceName: string, sourceGuid: string, d
     spell.normalTotal += amount
     spell.normalMin = Math.min(spell.normalMin, amount)
     spell.normalMax = Math.max(spell.normalMax, amount)
+  }
+
+  // Record this credit so a *_DAMAGE_SUPPORT mirror arriving on the next line for the
+  // same (sourceGuid, destName, timestamp) can subtract its support amount from this hit.
+  getLastCreditMap(segment).set(sourceGuid, { player, spellId, destName, timestamp, critical })
+}
+
+// Subtract a SUPPORT mirror's amount from a previously credited hit on the original caster.
+// Adjusts player total, the matching spell's totals, the per-target rollup, and the
+// segment-wide damage-taken aggregation. hitCount/min/max are intentionally left untouched —
+// the hit still happened; only its attributable magnitude shrinks.
+function subtractFromCredit(segment: Segment, prior: LastCredit, sourceName: string, supportAmount: number) {
+  const { player, spellId, destName, critical } = prior
+  const spell = player.damage.spells[spellId]
+  if (!spell) return  // already scrubbed by spellId path
+
+  // Don't let any bucket go negative if the SUPPORT amount somehow exceeds the recorded hit
+  const sub = Math.min(supportAmount, spell.total)
+
+  player.damage.total -= sub
+  spell.total -= sub
+  if (critical) spell.critTotal -= sub
+  else          spell.normalTotal -= sub
+
+  const targetEntry = player.damage.targets[destName]
+  if (targetEntry) targetEntry.total -= sub
+
+  const taken = segment.targetDamageTaken[destName]
+  if (taken) {
+    taken.total -= sub
+    const src = taken.sources[sourceName]
+    if (src) src.total -= sub
   }
 }
 

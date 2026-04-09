@@ -10,10 +10,20 @@ export type EventType =
   | 'SPELL_SUMMON'
   | 'SPELL_DAMAGE'
   | 'SPELL_PERIODIC_DAMAGE'
+  | 'RANGE_DAMAGE'
+  | 'SPELL_DAMAGE_SUPPORT'
+  | 'SPELL_PERIODIC_DAMAGE_SUPPORT'
+  | 'RANGE_DAMAGE_SUPPORT'
+  | 'SWING_DAMAGE_LANDED_SUPPORT'
   | 'SPELL_ABSORBED'
   | 'SWING_DAMAGE'
+  | 'SPELL_MISSED'
+  | 'SPELL_PERIODIC_MISSED'
+  | 'RANGE_MISSED'
+  | 'SWING_MISSED'
   | 'SPELL_HEAL'
   | 'SPELL_PERIODIC_HEAL'
+  | 'SPELL_HEAL_ABSORBED'
   | 'UNIT_DIED'
 
 export interface UnitRef {
@@ -37,6 +47,7 @@ export interface DamagePayload {
   glancing: boolean
   crushing: boolean
   swingOwnerGuid?: string | null  // set on SWING_DAMAGE from pets/guardians; owner GUID from advanced-log fields
+  supportSourceGuid?: string | null  // set on *_SUPPORT events: GUID of the buffer (e.g. Aug Evoker) who actually owns this damage
 }
 
 export interface HealPayload {

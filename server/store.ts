@@ -77,6 +77,8 @@ export interface Segment {
   guidToSpec: Record<string, number>   // playerGuid → specId, populated by COMBATANT_INFO
   guidToName: Record<string, string>   // playerGuid → playerName
   petToOwner: Record<string, string>   // petGuid → ownerGuid, populated by SPELL_SUMMON and SWING_DAMAGE advanced-log
+  petBatchToOwner: Record<string, string>  // batch-key (shard|npcId|spawnSuffix) → ownerGuid, for sibling-suffix bootstrap of un-swung batched pets (e.g. Hunter Stampede)
+  supportOwnedSpellIds: Set<string>    // spellIds that have fired as *_DAMAGE_SUPPORT; their plain variants are not real source damage
   targetDamageTaken: Record<string, TargetDamageTaken>
 }
 
@@ -86,7 +88,7 @@ export interface PlayerSnapshot extends PlayerData {
   hps: number
 }
 
-export interface SegmentSnapshot extends Omit<Segment, 'players'> {
+export interface SegmentSnapshot extends Omit<Segment, 'players' | 'supportOwnedSpellIds'> {
   type: 'segment'
   duration: number
   players: Record<string, PlayerSnapshot>
@@ -376,7 +378,8 @@ export class SegmentStore {
     }
     this.iconResolver.requestMany(spellIds)
 
-    return { type: 'segment' as const, ...segment, duration, players, spellIcons: this.iconResolver.getAll() }
+    const { supportOwnedSpellIds: _, ...segmentRest } = segment
+    return { type: 'segment' as const, ...segmentRest, duration, players, spellIcons: this.iconResolver.getAll() }
   }
 
   toSummary(segment: Segment): SegmentSummary {

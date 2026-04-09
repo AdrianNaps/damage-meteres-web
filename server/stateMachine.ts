@@ -155,6 +155,8 @@ export class EncounterStateMachine extends EventEmitter {
       guidToSpec: {},
       guidToName: {},
       petToOwner: {},
+      petBatchToOwner: {},
+      supportOwnedSpellIds: new Set(),
       targetDamageTaken: {},
     }
   }
