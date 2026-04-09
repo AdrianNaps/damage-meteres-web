@@ -7,6 +7,7 @@ interface Props {
   player: PlayerSnapshot
   rank: number
   topValue: number
+  totalValue: number
   metric: 'damage' | 'healing'
   onClick: () => void
 }
@@ -58,11 +59,11 @@ function formatNum(n: number): string {
 
 const textShadow = '0 1px 2px rgba(0, 0, 0, 0.85), 0 0 1px rgba(0, 0, 0, 0.9)'
 
-export function PlayerRow({ player, rank, topValue, metric, onClick }: Props) {
+export function PlayerRow({ player, rank, topValue, totalValue, metric, onClick }: Props) {
   const value = metric === 'damage' ? player.dps : player.hps
   const total = metric === 'damage' ? player.damage.total : player.healing.total
   const fillPct = topValue > 0 ? (value / topValue) * 100 : 0
-  const pctOfTop = topValue > 0 ? Math.round((value / topValue) * 100) : 0
+  const pctOfTotal = totalValue > 0 ? ((value / totalValue) * 100).toFixed(2) : '0.00'
   const cachedSpec = useStore(s => resolveSpecId(s.playerSpecs, player.name, player.specId))
   const color = getClassColor(cachedSpec)
   const specIcon = specIconUrl(cachedSpec)
@@ -186,7 +187,7 @@ export function PlayerRow({ player, rank, topValue, metric, onClick }: Props) {
       <span
         style={{
           position: 'relative',
-          width: 40,
+          width: 52,
           textAlign: 'right',
           fontSize: 11,
           fontFamily: 'var(--font-mono)',
@@ -194,7 +195,7 @@ export function PlayerRow({ player, rank, topValue, metric, onClick }: Props) {
           textShadow: textShadow,
         }}
       >
-        {pctOfTop}%
+        {pctOfTotal}%
       </span>
     </div>
   )

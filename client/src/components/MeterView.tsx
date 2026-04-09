@@ -40,6 +40,7 @@ export function MeterView() {
     metric === 'damage' ? b.dps - a.dps : b.hps - a.hps
   )
   const topValue = sorted[0] ? (metric === 'damage' ? sorted[0].dps : sorted[0].hps) : 0
+  const totalValue = sorted.reduce((sum, p) => sum + (metric === 'damage' ? p.dps : p.hps), 0)
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
@@ -63,7 +64,7 @@ export function MeterView() {
         <span className="flex-1">Player</span>
         <span style={{ width: 64, textAlign: 'right' }}>Total</span>
         <span style={{ width: 72, textAlign: 'right' }}>{metric === 'damage' ? 'DPS' : 'HPS'}</span>
-        <span style={{ width: 40, textAlign: 'right' }}>%</span>
+        <span style={{ width: 52, textAlign: 'right' }}>%</span>
       </div>
 
       {/* Rows */}
@@ -79,6 +80,7 @@ export function MeterView() {
               player={player}
               rank={i + 1}
               topValue={topValue}
+              totalValue={totalValue}
               metric={metric as 'damage' | 'healing'}
               onClick={() => setSelectedPlayer(player.name)}
             />
