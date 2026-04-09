@@ -89,6 +89,14 @@ export function SegmentTabs() {
           className="flex gap-0 px-4 pt-0.5 pb-0.5 overflow-x-auto items-end"
           style={{ paddingLeft: 28 }}
         >
+          <TabButton
+            active={selectedId === null && selectedKeyRunId === activeKeyRun?.keyRunId}
+            accentColor="var(--text-secondary)"
+            small
+            onClick={() => activeKeyRun && selectKeyRun(activeKeyRun.keyRunId)}
+          >
+            Overall
+          </TabButton>
           {[...activeSegments].reverse().map(seg => (
             <TabButton
               key={seg.id}
