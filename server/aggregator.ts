@@ -90,9 +90,14 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
   }
 
   if (payload.type === 'summon') {
-    // source is the summoning player — record pet→owner and ensure owner name is in guidToName
+    // source is the summoning player — record pet→owner and ensure owner name is in guidToName.
+    // Synthetic summons bootstrapped from SPELL_CAST_SUCCESS (e.g. Akaari's Soul clones)
+    // don't carry the owner's name; skip the guidToName write when empty so we don't
+    // corrupt an entry populated by a prior player-sourced event or COMBATANT_INFO.
     recordPetOwner(segment, event.dest.guid, event.source.guid)
-    segment.guidToName[event.source.guid] = event.source.name
+    if (event.source.name) {
+      segment.guidToName[event.source.guid] = event.source.name
+    }
     return
   }
 
