@@ -28,6 +28,23 @@ const ALLY_SHIELD_SPELL_IDS = new Set<string>([
   '444741', // Deathbringer Anti-Magic Shell ally proc
 ])
 
+// Hero-talent "time replay" absorb shields that emit SPELL_ABSORBED events with the
+// replay spell in the shield slot but which WCL does NOT credit as healing. These are
+// fantasy shields (e.g. Chronowarden Evoker's Stretch Time, 410355) that mechanically
+// "rewind" a short window of recent mitigation and re-apply it; WCL's attribution
+// model drops them entirely from player healing totals rather than double-counting
+// the replayed absorption. Without this gate our SPELL_ABSORBED heal re-emit path
+// would credit the shield caster for every replayed absorb, which inflates their
+// healing row by exactly the sum of the replay shields' absorbed amounts.
+//
+// Scope is intentionally narrow — one spell ID per confirmed WCL attribution drop.
+//   410355 — Chronowarden Evoker "Stretch Time" (Chimaerus encounter, Darazen pull 15
+//            of 21 in references/WoWCombatLog-041026_194601.txt exhibits a 585,631
+//            exact gap that matches the sum of Stretch Time absorbs on Darazen).
+const REPLAY_HEAL_SPELLS = new Set<string>([
+  '410355', // Chronowarden Evoker - Stretch Time
+])
+
 // Placeholder used for events that have no source/dest (ENCOUNTER_*, CHALLENGE_MODE_*)
 const NULL_UNIT: UnitRef = Object.freeze({ guid: '', name: '', flags: 0 })
 
@@ -224,6 +241,10 @@ export function parseLine(raw: string): ParsedEvent | ParsedEvent[] | null {
       const absorberFlags = parseInt(fields[absorberBase + 2], 16)
       const shieldSpellId = fields[shieldBase]
       const shieldName    = stripQuotes(fields[shieldBase + 1])
+
+      // Time-replay shields (e.g. Chronowarden Stretch Time) — WCL zeroes these
+      // from healing attribution. See REPLAY_HEAL_SPELLS note at the top of file.
+      if (REPLAY_HEAL_SPELLS.has(shieldSpellId)) return null
 
       // Normal path: absorber is the player who cast the shield — credit them.
       //
@@ -483,6 +504,9 @@ export function parseLine(raw: string): ParsedEvent | ParsedEvent[] | null {
       if (fields[12] !== 'BUFF') return null
       const leftover = parseInt(fields[13])
       if (!leftover || isNaN(leftover) || leftover <= 0) return null
+      // Same WCL drop as the SPELL_ABSORBED branch: replay shields are not attributed
+      // as healing (and therefore not as overheal either).
+      if (REPLAY_HEAL_SPELLS.has(fields[9])) return null
       return {
         timestamp, type: eventType, source, dest,
         payload: {
