@@ -13,8 +13,10 @@
  *   --format <fmt>      Output format: json (default) | summary
  */
 
-import { readFileSync } from 'fs'
+import { createReadStream } from 'fs'
+import { createInterface } from 'readline'
 import { resolve } from 'path'
+import { parseArgs } from 'node:util'
 import { parseLine } from '../server/parser.js'
 import { SegmentStore, type Segment, type SegmentSnapshot } from '../server/store.js'
 import { EncounterStateMachine } from '../server/stateMachine.js'
@@ -30,40 +32,37 @@ const stubIconResolver: IconResolver = {
 
 // ── Arg parsing ─────────────────────────────────────────────────────────────
 
-const args = process.argv.slice(2)
+const { values, positionals } = parseArgs({
+  args: process.argv.slice(2),
+  options: {
+    list:      { type: 'boolean', default: false },
+    encounter: { type: 'string' },
+    fight:     { type: 'string' },
+    format:    { type: 'string', default: 'json' },
+  },
+  allowPositionals: true,
+})
 
-function flag(name: string): boolean {
-  const idx = args.indexOf(`--${name}`)
-  if (idx === -1) return false
-  args.splice(idx, 1)
-  return true
-}
+const listMode = values.list!
+const encounterOpt = values.encounter
+const fightOpt = values.fight
+const formatOpt = values.format!
 
-function option(name: string): string | undefined {
-  const idx = args.indexOf(`--${name}`)
-  if (idx === -1 || idx + 1 >= args.length) return undefined
-  const val = args[idx + 1]
-  args.splice(idx, 2)
-  return val
-}
-
-const listMode = flag('list')
-const encounterOpt = option('encounter')
-const fightOpt = option('fight')
-const formatOpt = option('format') ?? 'json'
-
-const logFile = args[0]
+const logFile = positionals[0]
 
 if (!logFile) {
   console.error('Usage: npx tsx tools/local-parse.ts <logFile> [--list] [--encounter <id>] [--fight <n>] [--format json|summary]')
   process.exit(1)
 }
 
+if (formatOpt !== 'json' && formatOpt !== 'summary') {
+  console.error(`Error: unknown format "${formatOpt}" (expected json or summary)`)
+  process.exit(1)
+}
+
 // ── Feed log through pipeline ───────────────────────────────────────────────
 
 const filePath = resolve(logFile)
-const raw = readFileSync(filePath, 'utf8')
-const lines = raw.split('\n')
 
 // Suppress state machine debug logging (console.log calls in stateMachine.ts)
 // so it doesn't pollute structured output.
@@ -74,19 +73,21 @@ resetRecentEvents()
 const store = new SegmentStore(500, stubIconResolver)
 const machine = new EncounterStateMachine(store)
 
-for (const line of lines) {
-  if (!line.trim()) continue
-  const parsed = parseLine(line)
-  if (!parsed) continue
-  if (Array.isArray(parsed)) {
-    for (const event of parsed) machine.handle(event)
-  } else {
-    machine.handle(parsed)
+try {
+  const rl = createInterface({ input: createReadStream(filePath) })
+  for await (const line of rl) {
+    if (!line.trim()) continue
+    const parsed = parseLine(line)
+    if (!parsed) continue
+    if (Array.isArray(parsed)) {
+      for (const event of parsed) machine.handle(event)
+    } else {
+      machine.handle(parsed)
+    }
   }
+} finally {
+  console.log = origLog
 }
-
-// Restore console.log for our own output
-console.log = origLog
 
 const allSegments = store.getAll()
 
@@ -95,7 +96,7 @@ const allSegments = store.getAll()
 if (listMode) {
   if (allSegments.length === 0) {
     console.error('No encounters found in log file.')
-    process.exit(0)
+    process.exit(1)
   }
 
   console.log('')
