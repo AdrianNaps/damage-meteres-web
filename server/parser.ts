@@ -18,6 +18,16 @@ const BOSS_MIRRORED_DAMAGE_SPELLS = new Set<string>([
   '1268666', // Chimaerus - Dissonance (second variant)
 ])
 
+// Hero-talent / class-fantasy procs that place an absorb shield on a friendly NPC
+// ally but should be credited to the casting player. In SPELL_ABSORBED the absorber
+// slot holds the allied creature (no PLAYER_FLAG), but the outer dest is the player
+// who owns the shield buff. WCL credits the player. Gate the dest-fallback on this
+// list so the broader "non-player absorber" case still no-ops.
+//   444741 — Deathbringer DK "Anti-Magic Shell" proc onto an ally (e.g. Nazgrim).
+const ALLY_SHIELD_SPELL_IDS = new Set<string>([
+  '444741', // Deathbringer Anti-Magic Shell ally proc
+])
+
 // Placeholder used for events that have no source/dest (ENCOUNTER_*, CHALLENGE_MODE_*)
 const NULL_UNIT: UnitRef = Object.freeze({ guid: '', name: '', flags: 0 })
 
@@ -125,14 +135,17 @@ export function parseLine(raw: string): ParsedEvent | ParsedEvent[] | null {
       }
     }
 
-    // Some hero-talent / class-fantasy clones cast through a Creature source that
-    // never emits SPELL_SUMMON (e.g. Rogue Subtlety "Akaari's Soul" NPC 144961 that
-    // fires Secret Technique / 282449 as the 5 shadow clones). The advanced-log
+    // Some hero-talent / class-fantasy clones cast through a non-player source
+    // that never emits SPELL_SUMMON (e.g. Rogue Subtlety "Akaari's Soul" NPC 144961
+    // that fires Secret Technique / 282449 as the 5 shadow clones). The advanced-log
     // block on SPELL_CAST_SUCCESS carries the owning player's GUID at fields[13]
-    // (the ownerGUID slot immediately after infoGUID). If source is a creature
-    // and fields[13] is a Player- GUID, re-emit as a synthetic summon so the
-    // aggregator's existing petToOwner bootstrap picks it up and subsequent
-    // SPELL_DAMAGE events from the clone get credited to the owning player.
+    // (the ownerGUID slot immediately after infoGUID in the full advanced block).
+    // If the source carries PET_FLAG or GUARDIAN_FLAG — i.e. it's an owned unit
+    // rather than a boss, environment NPC, or charmed player — re-emit as a
+    // synthetic summon so the aggregator's existing petToOwner bootstrap picks it
+    // up and subsequent SPELL_DAMAGE events from the clone get credited to the
+    // owning player. `recordPetOwner` is idempotent so re-firing on every cast by
+    // an already-registered pet is a no-op.
     //
     // The synthetic summon source has an empty name string because the raw event
     // doesn't carry the owner's name — the aggregator's summon handler is guarded
@@ -140,8 +153,15 @@ export function parseLine(raw: string): ParsedEvent | ParsedEvent[] | null {
     // deal damage the owner's name is already populated via earlier player events
     // or COMBATANT_INFO.
     case 'SPELL_CAST_SUCCESS': {
-      if (!source.guid.startsWith('Creature-')) return null
-      if (fields.length < 14) return null
+      // Narrow to owned units: pets, guardians, and clone-style summons. Filters
+      // out the ~all Creature casts in the log (bosses, environment NPCs, charmed
+      // players) that would otherwise run through the pet-owner bootstrap.
+      if (!(source.flags & (PET_FLAG | GUARDIAN_FLAG))) return null
+      if (source.guid.startsWith('Player-')) return null
+      // Full advanced-log block is 17 fields after the prefix; require the whole
+      // block to be present rather than just enough to read [13], so truncated
+      // rows can't feed garbage into the owner slot.
+      if (fields.length < 25) return null
       const ownerGuid = fields[13]
       if (!ownerGuid?.startsWith('Player-')) return null
       return {
@@ -202,30 +222,31 @@ export function parseLine(raw: string): ParsedEvent | ParsedEvent[] | null {
       const absorberGuid  = fields[absorberBase]
       const absorberName  = stripQuotes(fields[absorberBase + 1])
       const absorberFlags = parseInt(fields[absorberBase + 2], 16)
+      const shieldSpellId = fields[shieldBase]
+      const shieldName    = stripQuotes(fields[shieldBase + 1])
 
       // Normal path: absorber is the player who cast the shield — credit them.
       //
       // Ally-shielded hero-talent proc path (e.g. Deathbringer DK "Anti-Magic Shell"
       // 444741 landing on an Ebon Blade champion like Nazgrim): the absorber slot
       // holds the allied NPC (Creature-...) but the outer SPELL_ABSORBED dest is the
-      // player who owns the shield buff. WCL credits the player in that case. Fall
-      // through to dest-as-credit when absorber is a non-player unit and dest is a
-      // real player.
+      // player who owns the shield buff. Gated on ALLY_SHIELD_SPELL_IDS so we don't
+      // dest-credit unrelated cases (friendly-NPC-cast shields on players, charmed
+      // players, etc.) where the outer dest is the shielded victim rather than the
+      // shield caster. Extend the set as new hero-talent procs are identified.
       const absorberIsPlayer = !!(absorberFlags & PLAYER_FLAG)
       const destIsPlayer = dest.guid.startsWith('Player-')
       let creditRef: UnitRef
       if (absorberIsPlayer) {
         creditRef = { guid: absorberGuid, name: absorberName, flags: absorberFlags }
-      } else if (destIsPlayer) {
+      } else if (destIsPlayer && ALLY_SHIELD_SPELL_IDS.has(shieldSpellId)) {
         creditRef = dest
       } else {
-        // Creature-on-creature absorb — not meter-relevant.
+        // Creature-on-creature absorb, or an un-whitelisted ally-shield pattern.
         return null
       }
 
-      const shieldSpellId = fields[shieldBase]
-      const shieldName    = stripQuotes(fields[shieldBase + 1])
-      const amount        = parseInt(fields[amountIdx])
+      const amount = parseInt(fields[amountIdx])
       if (!amount || isNaN(amount)) return null
 
       return {
@@ -360,6 +381,11 @@ export function parseLine(raw: string): ParsedEvent | ParsedEvent[] | null {
     case 'SPELL_PERIODIC_DAMAGE_SUPPORT':
     case 'RANGE_DAMAGE_SUPPORT':
     case 'SWING_DAMAGE_LANDED_SUPPORT': {
+      // Same deny-list as the non-support damage path: a mirrored boss spell
+      // routed through Aug Evoker support attribution must not leak to the
+      // support player either. No-op today (Chimaerus + Aug is not a real combo)
+      // but closes the parallel path so future entries only need one touch point.
+      if (BOSS_MIRRORED_DAMAGE_SPELLS.has(fields[9])) return null
       const supportSourceGuid = fields[fields.length - 1]
       if (!supportSourceGuid?.startsWith('Player-')) return null
       // Strip the trailing supporter GUID so parseDamageSuffix reads the correct positions
