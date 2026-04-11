@@ -115,9 +115,13 @@ export function parseLine(raw: string): ParsedEvent | ParsedEvent[] | null {
     case 'SPELL_PERIODIC_DAMAGE':
     case 'RANGE_DAMAGE': {
       const destIsPlayer = dest.guid.startsWith('Player-')
-      // Allow creature→player damage through for death recap tracking.
-      // Still drop creature→creature (irrelevant) and self-damage (avoid meter noise).
-      if (!(source.flags & ATTRIBUTABLE_SOURCE_FLAGS) && !destIsPlayer) return null
+      // Pets summoned by Army of the Dead / Apocalypse / similar can emit damage with
+      // flags TYPE_NPC|CONTROL_NPC|AFFILIATION_OUTSIDER instead of the expected GUARDIAN
+      // flag. We can't tell from the event itself whether such a source belongs to a
+      // player, so we pass any "Pet-" / "Creature-" source through and let the aggregator
+      // resolve ownership via its petToOwner map (populated from SPELL_SUMMON events).
+      const srcLooksLikeUnit = source.guid.startsWith('Pet-') || source.guid.startsWith('Creature-')
+      if (!(source.flags & ATTRIBUTABLE_SOURCE_FLAGS) && !destIsPlayer && !srcLooksLikeUnit) return null
       if (source.guid === dest.guid) return null
       const damage = parseDamageSuffix(fields)
       if (!damage) return null
@@ -192,7 +196,10 @@ export function parseLine(raw: string): ParsedEvent | ParsedEvent[] | null {
     case 'SPELL_PERIODIC_MISSED':
     case 'RANGE_MISSED':
     case 'SWING_MISSED': {
-      if (!(source.flags & ATTRIBUTABLE_SOURCE_FLAGS)) return null
+      // Same flag-inconsistency concern as SPELL_DAMAGE: mis-flagged summoned pets
+      // can appear here too. Aggregator resolves ownership via petToOwner.
+      const srcLooksLikeUnit = source.guid.startsWith('Pet-') || source.guid.startsWith('Creature-')
+      if (!(source.flags & ATTRIBUTABLE_SOURCE_FLAGS) && !srcLooksLikeUnit) return null
       if (source.guid === dest.guid) return null
 
       const isSwing = eventType === 'SWING_MISSED'
@@ -235,7 +242,9 @@ export function parseLine(raw: string): ParsedEvent | ParsedEvent[] | null {
     }
 
     case 'SWING_DAMAGE': {
-      if (!(source.flags & ATTRIBUTABLE_SOURCE_FLAGS)) return null
+      // Same flag-inconsistency concern as SPELL_DAMAGE.
+      const srcLooksLikeUnit = source.guid.startsWith('Pet-') || source.guid.startsWith('Creature-')
+      if (!(source.flags & ATTRIBUTABLE_SOURCE_FLAGS) && !srcLooksLikeUnit) return null
       if (source.guid === dest.guid) return null
       const damage = parseDamageSuffix(fields)
       if (!damage) return null
@@ -247,8 +256,28 @@ export function parseLine(raw: string): ParsedEvent | ParsedEvent[] | null {
       }
     }
 
-    case 'SWING_DAMAGE_LANDED':
-      return null // dest-side mirror of SWING_DAMAGE — skip to avoid double-counting
+    case 'SWING_DAMAGE_LANDED': {
+      // Normally a dest-side mirror of SWING_DAMAGE — paired 1:1 and skipped to avoid
+      // double-counting. BUT: pets summoned by Army of the Dead / Apocalypse / similar
+      // sometimes emit ONLY the _LANDED event (no paired SWING_DAMAGE) when their source
+      // flags are TYPE_NPC|AFFILIATION_OUTSIDER rather than GUARDIAN. Recover those here.
+      //
+      // Rule: if the source has any attributable flag (PLAYER/PET/GUARDIAN), a sibling
+      // SWING_DAMAGE was (or will be) emitted and processed — skip. Otherwise emit the
+      // LANDED event as a swing damage event; the aggregator resolves ownership via
+      // petToOwner for mis-flagged creature sources.
+      if (source.flags & ATTRIBUTABLE_SOURCE_FLAGS) return null
+      if (source.guid === dest.guid) return null
+      if (!source.guid.startsWith('Pet-') && !source.guid.startsWith('Creature-')) return null
+      const damage = parseDamageSuffix(fields)
+      if (!damage) return null
+      // LANDED's advanced-log block is dest-side, so no source-owner GUID is available;
+      // petToOwner (from SPELL_SUMMON) is the only attribution path for these hits.
+      return {
+        timestamp, type: eventType, source, dest,
+        payload: { type: 'damage', spellId: 'swing', spellName: 'Melee', swingOwnerGuid: null, ...damage }
+      }
+    }
 
     // Augmentation Evoker support events: damage mechanically dealt through an ally's action
     // but credited to the supporter (Aug). The trailing field is the supporter's player GUID.
@@ -324,6 +353,40 @@ export function parseLine(raw: string): ParsedEvent | ParsedEvent[] | null {
       return {
         timestamp, type: eventType, source, dest,
         payload: { type: 'heal', spellId: fields[9], spellName: stripQuotes(fields[10]), ...heal }
+      }
+    }
+
+    // Absorb shields expiring unused → overheal. WCL's "overheal" column for classes
+    // that cast absorb shields (DK Anti-Magic Shell, Priest Power Word: Shield, etc.)
+    // is dominated by the leftover portion of shields that timed out before being fully
+    // consumed. The leftover amount is carried in the trailing field of SPELL_AURA_REMOVED
+    // for absorb buffs; non-absorb auras omit that field entirely.
+    //
+    // The shield caster's consumed absorption is already credited via SPELL_ABSORBED
+    // (handled above), so here we only emit the unused remainder as pure overheal
+    // (baseAmount = overheal, effective = 0) under the shield spell.
+    //
+    // The aura source may be a pet/creature if the shield was placed on a minion via a
+    // hero-talent proc (e.g. Deathbringer's Anti-Magic Shell on the Four Horsemen). The
+    // aggregator's knownOwnedCreature / petToOwner path resolves these back to the summoner.
+    // Field layout: [9]=spellId [10]=spellName [11]=school [12]=BUFF|DEBUFF [13]=absorbAmount
+    case 'SPELL_AURA_REMOVED': {
+      if (fields.length < 14) return null
+      if (fields[12] !== 'BUFF') return null
+      const leftover = parseInt(fields[13])
+      if (!leftover || isNaN(leftover) || leftover <= 0) return null
+      return {
+        timestamp, type: eventType, source, dest,
+        payload: {
+          type: 'heal',
+          spellId: fields[9],
+          spellName: stripQuotes(fields[10]),
+          amount: 0,
+          baseAmount: leftover,
+          overheal: leftover,
+          absorbed: 0,
+          critical: false,
+        }
       }
     }
 

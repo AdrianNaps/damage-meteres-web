@@ -161,14 +161,20 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
     // Only attribute damage to the meter for player/pet sources.
     // Creature→player events are allowed through the parser for death recap above,
     // but should not create phantom player entries in the damage meter.
-    const sourceIsAttributable = isPlayerGuid(event.source.guid)
-      || !!(event.source.flags & (PET_FLAG | GUARDIAN_FLAG))
-    if (!sourceIsAttributable) return
+    const hasPetFlag = !!(event.source.flags & (PET_FLAG | GUARDIAN_FLAG))
+    const isPlayerSrc = isPlayerGuid(event.source.guid)
+    // Pets summoned by Army of the Dead / Apocalypse / similar can emit with flags
+    // TYPE_NPC|CONTROL_NPC|AFFILIATION_OUTSIDER instead of GUARDIAN. These look like
+    // creatures by flags but are tracked in petToOwner via SPELL_SUMMON — if the
+    // source GUID is in the map, treat it as an owned pet regardless of flags.
+    const knownOwnedCreature = !isPlayerSrc && !hasPetFlag
+      && !!segment.petToOwner[event.source.guid]
+    if (!isPlayerSrc && !hasPetFlag && !knownOwnedCreature) return
 
     let sourceName = event.source.name
     let sourceGuid = event.source.guid
 
-    const isPet = !!(event.source.flags & (PET_FLAG | GUARDIAN_FLAG))
+    const isPet = hasPetFlag || knownOwnedCreature
     if (isPet) {
       // Bootstrap petToOwner from the source-side advanced-log owner GUID embedded in SWING_DAMAGE
       // events (fields[10]). The advanced-log does not carry the owner's name, so this path only
@@ -217,9 +223,18 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
     // Resolve pet/guardian heal sources (Yu'lon Soothing Breath, Jade Serpent Statue
     // Soothing Mist, etc.) back to the summoning player. Same logic as the damage path,
     // minus the SWING advanced-log bootstrap (heal events don't carry source-side owner).
+    const hasPetFlag = !!(event.source.flags & (PET_FLAG | GUARDIAN_FLAG))
+    const isPlayerSrc = isPlayerGuid(event.source.guid)
+    const knownOwnedCreature = !isPlayerSrc && !hasPetFlag
+      && !!segment.petToOwner[event.source.guid]
+    // Drop heals whose source is neither a player nor an owned pet/creature. Matters for
+    // SPELL_AURA_REMOVED synthetic overheal events where the source can be an unrelated
+    // NPC whose shield expired — only player-attributable sources should reach the meter.
+    if (!isPlayerSrc && !hasPetFlag && !knownOwnedCreature) return
+
     let sourceName = event.source.name
     let sourceGuid = event.source.guid
-    const isPet = !!(event.source.flags & (PET_FLAG | GUARDIAN_FLAG))
+    const isPet = hasPetFlag || knownOwnedCreature
     if (isPet) {
       let ownerGuid = segment.petToOwner[event.source.guid]
       if (!ownerGuid) {
@@ -275,7 +290,10 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
     // Resolve pet/guardian source back to owning player, same as damage/heal paths.
     let sourceName = event.source.name
     let sourceGuid = event.source.guid
-    const isPet = !!(event.source.flags & (PET_FLAG | GUARDIAN_FLAG))
+    const hasPetFlag = !!(event.source.flags & (PET_FLAG | GUARDIAN_FLAG))
+    const knownOwnedCreature = !isPlayerGuid(event.source.guid) && !hasPetFlag
+      && !!segment.petToOwner[event.source.guid]
+    const isPet = hasPetFlag || knownOwnedCreature
     if (isPet) {
       let ownerGuid = segment.petToOwner[event.source.guid]
       if (!ownerGuid) {
