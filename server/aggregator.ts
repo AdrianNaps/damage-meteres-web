@@ -223,6 +223,17 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
         sourceName:     event.source.name,
         sourceIsPlayer: isPlayerGuid(event.source.guid),
       })
+    } else {
+      // WCL excludes all healing to non-player targets (pets, guardians, friendly
+      // NPCs) from a healer's totals — both effective and overheal. Raid-wide
+      // heals like Halo, Prayer of Healing, Divine Hymn, Echo of Light, and
+      // Thorn Bloom spray every nearby unit; the pet-target portion can be a
+      // huge chunk of overheal (Halo alone contributed ~6.1M of phantom overheal
+      // on Swamphooker at Chimaerus fight 34). Filtering the aggregator on a
+      // non-player dest is sufficient — the parser's SPELL_HEAL_ABSORBED
+      // negative emission is also keyed on dest, so it drops with the original
+      // heal and the grand total still nets out.
+      return
     }
 
     // Resolve pet/guardian heal sources (Yu'lon Soothing Breath, Jade Serpent Statue

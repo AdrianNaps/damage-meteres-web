@@ -468,7 +468,16 @@ export function parseLine(raw: string): ParsedEvent | ParsedEvent[] | null {
     case 'SPELL_PERIODIC_HEAL': {
       // Accept guardian/pet sources too (e.g. Yu'lon Soothing Breath, Jade Serpent Statue).
       // Owner resolution happens in the aggregator, same path as damage.
-      if (!(source.flags & ATTRIBUTABLE_SOURCE_FLAGS)) return null
+      //
+      // Mis-flagged-pet bypass: the very first heal event from a freshly summoned
+      // guardian can arrive with generic NPC/outsider flags (e.g. 0xa28) instead of
+      // the expected GUARDIAN_FLAG (0x2000). Later ticks from the same creature
+      // carry the correct flag. Divine Image's Healing Light is the known case —
+      // observed on Swamphooker at Chimaerus fight 34. Same permissive pattern we
+      // already use for SPELL_DAMAGE / SPELL_MISSED: let Creature-/Pet- sources
+      // through and let the aggregator's petToOwner map resolve ownership.
+      const srcLooksLikeUnit = source.guid.startsWith('Pet-') || source.guid.startsWith('Creature-')
+      if (!(source.flags & ATTRIBUTABLE_SOURCE_FLAGS) && !srcLooksLikeUnit) return null
       const heal = parseHealSuffix(fields)
       if (!heal) return null
       return {
