@@ -271,6 +271,11 @@ export function parseLine(raw: string): ParsedEvent | ParsedEvent[] | null {
       if (!source.guid.startsWith('Pet-') && !source.guid.startsWith('Creature-')) return null
       const damage = parseDamageSuffix(fields)
       if (!damage) return null
+      // Guard against truncated/non-numeric suffixes — unlike SWING_DAMAGE, we have no
+      // sibling event to fall back on if this one is malformed, so a bad row would feed
+      // NaN straight into the aggregator. parseDamageSuffix only length-checks; the field
+      // values themselves can still be non-numeric.
+      if (!Number.isFinite(damage.amount) || !Number.isFinite(damage.baseAmount)) return null
       // LANDED's advanced-log block is dest-side, so no source-owner GUID is available;
       // petToOwner (from SPELL_SUMMON) is the only attribution path for these hits.
       return {
@@ -369,9 +374,17 @@ export function parseLine(raw: string): ParsedEvent | ParsedEvent[] | null {
     // The aura source may be a pet/creature if the shield was placed on a minion via a
     // hero-talent proc (e.g. Deathbringer's Anti-Magic Shell on the Four Horsemen). The
     // aggregator's knownOwnedCreature / petToOwner path resolves these back to the summoner.
-    // Field layout: [9]=spellId [10]=spellName [11]=school [12]=BUFF|DEBUFF [13]=absorbAmount
+    //
+    // Field layout:
+    //   Non-absorb buff (13 fields): [9]=spellId [10]=spellName [11]=school [12]=BUFF|DEBUFF
+    //   Absorb buff    (14 fields): same + [13]=absorbAmount (leftover when aura expires)
+    //
+    // We require exactly 14 fields — non-absorb buffs never emit the trailing amount, and
+    // any future layout change would push the field we read out of position, so better to
+    // bail than to misinterpret. The BUFF check filters debuff removals (target-side), and
+    // the positive-leftover check filters absorb shields that were fully consumed.
     case 'SPELL_AURA_REMOVED': {
-      if (fields.length < 14) return null
+      if (fields.length !== 14) return null
       if (fields[12] !== 'BUFF') return null
       const leftover = parseInt(fields[13])
       if (!leftover || isNaN(leftover) || leftover <= 0) return null
