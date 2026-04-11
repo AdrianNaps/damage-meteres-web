@@ -498,7 +498,11 @@ export function parseLine(raw: string): ParsedEvent | ParsedEvent[] | null {
     //
     // The aura source may be a pet/creature if the shield was placed on a minion via a
     // hero-talent proc (e.g. Deathbringer's Anti-Magic Shell on the Four Horsemen). The
-    // aggregator's knownOwnedCreature / petToOwner path resolves these back to the summoner.
+    // aggregator's knownOwnedCreature / petToOwner path resolves those back to the summoner
+    // — but only when the aura destination is a player. The aggregator now drops any heal
+    // (including these synthetic aura-expiry overheal events) whose dest is a creature,
+    // matching WCL's behavior of excluding heals that land on pets/guardians/friendly NPCs.
+    // So a shield that expires on a minion dest is filtered by the aggregator, not credited.
     //
     // Field layout:
     //   Non-absorb buff (13 fields): [9]=spellId [10]=spellName [11]=school [12]=BUFF|DEBUFF
