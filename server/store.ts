@@ -91,7 +91,7 @@ export interface PlayerData {
 }
 
 // Gap-stitching threshold — WCL excludes idle gaps longer than this from per-player
-// activeTime. Confirmed against real WCL report data (see c:/tmp/active-time-probe.mts).
+// activeTime. Confirmed byte-perfect against WCL report dpyDWNGb84zFrn3H fight 1.
 export const ACTIVE_TIME_GAP_MS = 10_000
 
 export interface Segment {
@@ -114,8 +114,13 @@ export interface Segment {
   targetDamageTaken: Record<string, TargetDamageTaken>
 }
 
-// Derived values computed at read time, not stored
-export interface PlayerSnapshot extends PlayerData {
+// Derived values computed at read time, not stored.
+// firstDamageTime/lastDamageTime/firstHealTime/lastHealTime are internal
+// bookkeeping for the gap-stitched activeTime merge — not useful to clients,
+// so they're stripped at the snapshot boundary (see toSnapshot / toKeyRunSnapshot).
+// damageActiveMs / healActiveMs are kept on the wire because clients use them
+// as the DPS/HPS divisor (e.g. per-target DPS in BreakdownPanel).
+export interface PlayerSnapshot extends Omit<PlayerData, 'firstDamageTime' | 'lastDamageTime' | 'firstHealTime' | 'lastHealTime'> {
   dps: number
   hps: number
 }
@@ -537,8 +542,11 @@ export class SegmentStore {
       // different divisors for dmg vs heal even on the same player.
       const dmgSec = player.damageActiveMs / 1000
       const healSec = player.healActiveMs / 1000
+      // Strip the internal first*/last* timestamps — they're bookkeeping for the
+      // gap-stitched merge above and don't belong on the wire.
+      const { firstDamageTime: _fdt, lastDamageTime: _ldt, firstHealTime: _fht, lastHealTime: _lht, ...rest } = player
       players[name] = {
-        ...player,
+        ...rest,
         dps: dmgSec > 0 ? player.damage.total / dmgSec : 0,
         hps: healSec > 0 ? player.healing.total / healSec : 0,
       }
@@ -576,8 +584,10 @@ export class SegmentStore {
     for (const [name, player] of Object.entries(segment.players)) {
       const dmgSec = player.damageActiveMs / 1000
       const healSec = player.healActiveMs / 1000
+      // Strip internal first*/last* timestamps (see _mergeSegments for the same spread).
+      const { firstDamageTime: _fdt, lastDamageTime: _ldt, firstHealTime: _fht, lastHealTime: _lht, ...rest } = player
       players[name] = {
-        ...player,
+        ...rest,
         dps: dmgSec > 0 ? player.damage.total / dmgSec : 0,
         hps: healSec > 0 ? player.healing.total / healSec : 0,
       }

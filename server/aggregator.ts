@@ -266,19 +266,19 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
     //       Adrianw's Felhunter Leech all make it onto the meter.
     //
     //   (b) GUARDIAN_FLAG dest (0x2000, temporary summons — DK Dancing Rune Weapon,
-    //       Warlock Doomguard/Dreadstalker, Druid Force-of-Nature / Grove Guardians
-    //       Treants): guardians casting heals on themselves — Rune Weapon mirroring
-    //       Death Strike, Dreadstalkers' Leech procs on their own melees, Grove
-    //       Guardians Treants casting Nourish on themselves, etc.
+    //       Warlock Doomguard/Dreadstalker, Druid Treant summons): guardians casting
+    //       heals on themselves — Rune Weapon mirroring Death Strike, Dreadstalkers'
+    //       Leech procs on their own melees, Treants casting Nourish on themselves,
+    //       etc.
     //
     // DESIGN DECISION — guardian self-heals are INTENTIONALLY dropped:
     //   WCL does credit most guardian self-heals to the owner (empirically verified
     //   on dpyDWNGb84zFrn3H fight 1 — Fatcatjee's Rune Weapon contributes ~954K
-    //   eff; Adrianw's Dreadstalkers ~13K; etc.), but it also credits Druid Grove
-    //   Guardians Treants casting Nourish on themselves — which we consider wrong.
-    //   Distinguishing the two classes requires a fragile "did this pet ever deal
-    //   damage" heuristic with timing dead zones around pet spawn. Treating them
-    //   uniformly (all guardian self-heals excluded) is simpler and more defensible.
+    //   eff; Adrianw's Dreadstalkers ~13K; etc.), but it also credits Druid Treants
+    //   casting Nourish on themselves — which we consider wrong. Distinguishing the
+    //   two classes requires a fragile "did this pet ever deal damage" heuristic with
+    //   timing dead zones around pet spawn. Treating them uniformly (all guardian
+    //   self-heals excluded) is simpler and more defensible.
     //
     //   Beyond parity, there's a semantic argument: a pet healing itself from its
     //   own damage isn't really "healing the player did" — the player never chose
@@ -293,10 +293,11 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
     //     Teeburd (DH/non-pet):    byte-perfect
     //
     //   To REVISIT: if we decide guardian self-heals should be included (matching
-    //   WCL more closely) replace `if (!destIsPet) return` below with
+    //   WCL more closely), replace `if (!destIsPet) return` below with
     //     `if (!destIsPet && event.source.guid !== event.dest.guid) return`
-    //   and add an exclusion for Druid Grove Guardians Treants (npcId 54983,
-    //   spell 102693 / 422090) to keep Moardruid byte-perfect.
+    //   (source.guid and dest.guid are both the raw pet GUID for a self-heal, so
+    //   that allows pet-self-heals through). Then add a spell-based exclusion for
+    //   Druid Treant self-Nourish (spellId 422090) to keep Moardruid byte-perfect.
     if (!isPlayerGuid(event.dest.guid)) {
       const destOwnerGuid = segment.petToOwner[event.dest.guid]
       if (!destOwnerGuid || destOwnerGuid !== sourceGuid) return

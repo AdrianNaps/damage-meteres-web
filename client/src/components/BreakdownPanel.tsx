@@ -55,7 +55,11 @@ export function BreakdownPanel() {
     metric === 'damage' ? player.damage.total
     : metric === 'healing' ? player.healing.total
     : player.interrupts.total
-  const duration = isAggregate ? currentView.activeDurationSec : currentView.duration
+  // TargetTable computes per-target DPS as total / duration and must use the same
+  // divisor as the headline player.dps (which is per-player damageActiveMs). Using
+  // the segment/keyrun wall-clock duration here would disagree with the headline —
+  // see server/store.ts for the gap-stitched active-time scheme.
+  const duration = player.damageActiveMs / 1000
 
   function handleModeChange(mode: 'spells' | 'targets') {
     setViewMode(mode)
