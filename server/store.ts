@@ -118,8 +118,9 @@ export interface Segment {
 // firstDamageTime/lastDamageTime/firstHealTime/lastHealTime are internal
 // bookkeeping for the gap-stitched activeTime merge — not useful to clients,
 // so they're stripped at the snapshot boundary (see toSnapshot / toKeyRunSnapshot).
-// damageActiveMs / healActiveMs are kept on the wire because clients use them
-// as the DPS/HPS divisor (e.g. per-target DPS in BreakdownPanel).
+// damageActiveMs / healActiveMs are kept on the wire for potential future
+// "Active %" display — they are NOT used as the DPS/HPS divisor (WCL uses
+// shared fight duration for that).
 export interface PlayerSnapshot extends Omit<PlayerData, 'firstDamageTime' | 'lastDamageTime' | 'firstHealTime' | 'lastHealTime'> {
   dps: number
   hps: number
@@ -361,7 +362,13 @@ export class SegmentStore {
     const segs = this.segments.filter(s => s.bossSectionId === bossSectionId)
     if (segs.length === 0) return null
 
-    const { players, activeDurationSec } = this._mergeSegments(segs)
+    // Boss section DPS divisor: use the wall-clock span from first segment start
+    // to last segment end, matching WCL's shared fight-duration approach.
+    const lastEnd = segs[segs.length - 1].endTime ?? segs[segs.length - 1].lastEventTime
+    const bossSectionSpanSec = lastEnd
+      ? (lastEnd - meta.startTime) / 1000
+      : undefined   // still in progress — fall back to activeDurationSec
+    const { players, activeDurationSec } = this._mergeSegments(segs, bossSectionSpanSec)
 
     const spellIds = new Set<string>()
     for (const p of Object.values(players)) {
@@ -371,8 +378,6 @@ export class SegmentStore {
       for (const sid of Object.keys(p.interrupts.byKicked)) spellIds.add(sid)
     }
     this.iconResolver.requestMany(spellIds)
-
-    const lastEnd = segs[segs.length - 1].endTime ?? segs[segs.length - 1].lastEventTime
     return {
       type: 'boss_section',
       bossSectionId: meta.bossSectionId,
@@ -389,7 +394,7 @@ export class SegmentStore {
     }
   }
 
-  private _mergeSegments(segs: Segment[]): { players: Record<string, PlayerSnapshot>; activeDurationSec: number } {
+  private _mergeSegments(segs: Segment[], overrideDurationSec?: number): { players: Record<string, PlayerSnapshot>; activeDurationSec: number } {
     const merged: Record<string, PlayerData> = {}
     let activeDurationSec = 0
 
@@ -535,20 +540,23 @@ export class SegmentStore {
       mp.deaths.sort((a, b) => a.timeOfDeath - b.timeOfDeath)
     }
 
+    // DPS/HPS divisor: WCL's table uses the shared fight/key-run duration for all
+    // players, NOT per-player activeTime. The per-player activeTime is accurate
+    // (verified byte-perfect against WCL API) but WCL uses it only for "Active %"
+    // display, not the main DPS column. Callers pass overrideDurationSec when they
+    // have a container-level span (key run duration, boss section span); otherwise
+    // we fall back to the sum-of-segments activeDurationSec.
+    const durationSec = overrideDurationSec ?? activeDurationSec
+
     const players: Record<string, PlayerSnapshot> = {}
     for (const [name, player] of Object.entries(merged)) {
-      // WCL divides damage by the player's damage-view activeTime, and healing by
-      // the player's healing-view activeTime. Different divisors per player, and
-      // different divisors for dmg vs heal even on the same player.
-      const dmgSec = player.damageActiveMs / 1000
-      const healSec = player.healActiveMs / 1000
       // Strip the internal first*/last* timestamps — they're bookkeeping for the
       // gap-stitched merge above and don't belong on the wire.
       const { firstDamageTime: _fdt, lastDamageTime: _ldt, firstHealTime: _fht, lastHealTime: _lht, ...rest } = player
       players[name] = {
         ...rest,
-        dps: dmgSec > 0 ? player.damage.total / dmgSec : 0,
-        hps: healSec > 0 ? player.healing.total / healSec : 0,
+        dps: durationSec > 0 ? player.damage.total / durationSec : 0,
+        hps: durationSec > 0 ? player.healing.total / durationSec : 0,
       }
     }
     return { players, activeDurationSec }
@@ -560,7 +568,13 @@ export class SegmentStore {
     const segs = this.segments.filter(s => s.keyRunId === keyRunId)
     if (segs.length === 0) return null
 
-    const { players, activeDurationSec } = this._mergeSegments(segs)
+    // Key run DPS divisor: use the wall-clock key run span (CHALLENGE_MODE_START
+    // to CHALLENGE_MODE_END) — this matches WCL's "Total Active" / fight duration
+    // shown in the damage table (e.g. 1,126.4s for dpyDWNGb84zFrn3H fight 1).
+    const keyRunSpanSec = meta.endTime
+      ? (meta.endTime - meta.startTime) / 1000
+      : undefined   // key still in progress — fall back to activeDurationSec
+    const { players, activeDurationSec } = this._mergeSegments(segs, keyRunSpanSec)
 
     const spellIds = new Set<string>()
     for (const p of Object.values(players)) {
@@ -582,14 +596,12 @@ export class SegmentStore {
     const players: Record<string, PlayerSnapshot> = {}
 
     for (const [name, player] of Object.entries(segment.players)) {
-      const dmgSec = player.damageActiveMs / 1000
-      const healSec = player.healActiveMs / 1000
       // Strip internal first*/last* timestamps (see _mergeSegments for the same spread).
       const { firstDamageTime: _fdt, lastDamageTime: _ldt, firstHealTime: _fht, lastHealTime: _lht, ...rest } = player
       players[name] = {
         ...rest,
-        dps: dmgSec > 0 ? player.damage.total / dmgSec : 0,
-        hps: healSec > 0 ? player.healing.total / healSec : 0,
+        dps: duration > 0 ? player.damage.total / duration : 0,
+        hps: duration > 0 ? player.healing.total / duration : 0,
       }
     }
 
