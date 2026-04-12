@@ -77,7 +77,22 @@ export interface PlayerData {
   healing: HealData
   deaths: PlayerDeathRecord[]
   interrupts: InterruptData
+  // Per-player "active time" bookkeeping — sum of damage/heal event intervals,
+  // with gaps >10s excluded (matches WCL's view-specific activeTime byte-perfect
+  // as empirically verified against fight dpyDWNGb84zFrn3H). Updated incrementally
+  // in applyDamage/applyHeal, and stitched across segments in _mergeSegments so
+  // a key run rolls up the same way.
+  damageActiveMs: number
+  healActiveMs: number
+  firstDamageTime: number | null
+  lastDamageTime: number | null
+  firstHealTime: number | null
+  lastHealTime: number | null
 }
+
+// Gap-stitching threshold — WCL excludes idle gaps longer than this from per-player
+// activeTime. Confirmed against real WCL report data (see c:/tmp/active-time-probe.mts).
+export const ACTIVE_TIME_GAP_MS = 10_000
 
 export interface Segment {
   id: string
@@ -409,12 +424,48 @@ export class SegmentStore {
                 Object.entries(player.interrupts.byKicked).map(([k, v]) => [k, { ...v }])
               ),
             },
+            damageActiveMs: player.damageActiveMs,
+            healActiveMs: player.healActiveMs,
+            firstDamageTime: player.firstDamageTime,
+            lastDamageTime: player.lastDamageTime,
+            firstHealTime: player.firstHealTime,
+            lastHealTime: player.lastHealTime,
           }
         } else {
           const mp = merged[name]
           mp.damage.total += player.damage.total
           mp.healing.total += player.healing.total
           mp.healing.overheal += player.healing.overheal
+
+          // Merge per-player activeTime: sum the two segments' contributions, then
+          // patch the cross-segment boundary — if (this segment's first event) -
+          // (previous segment's last event) is within the gap threshold, WCL counts
+          // that idle window as "active" too. For a key run, consecutive pulls (trash
+          // → trash) are typically <10s apart; big boss gaps naturally exceed the
+          // threshold and are correctly excluded.
+          if (mp.lastDamageTime !== null && player.firstDamageTime !== null) {
+            const crossGap = player.firstDamageTime - mp.lastDamageTime
+            if (crossGap > 0 && crossGap <= ACTIVE_TIME_GAP_MS) {
+              mp.damageActiveMs += crossGap
+            }
+          }
+          mp.damageActiveMs += player.damageActiveMs
+          if (player.firstDamageTime !== null) {
+            if (mp.firstDamageTime === null) mp.firstDamageTime = player.firstDamageTime
+            mp.lastDamageTime = player.lastDamageTime
+          }
+
+          if (mp.lastHealTime !== null && player.firstHealTime !== null) {
+            const crossGap = player.firstHealTime - mp.lastHealTime
+            if (crossGap > 0 && crossGap <= ACTIVE_TIME_GAP_MS) {
+              mp.healActiveMs += crossGap
+            }
+          }
+          mp.healActiveMs += player.healActiveMs
+          if (player.firstHealTime !== null) {
+            if (mp.firstHealTime === null) mp.firstHealTime = player.firstHealTime
+            mp.lastHealTime = player.lastHealTime
+          }
 
           for (const [sid, spell] of Object.entries(player.damage.spells)) {
             const ms = mp.damage.spells[sid]
@@ -481,10 +532,15 @@ export class SegmentStore {
 
     const players: Record<string, PlayerSnapshot> = {}
     for (const [name, player] of Object.entries(merged)) {
+      // WCL divides damage by the player's damage-view activeTime, and healing by
+      // the player's healing-view activeTime. Different divisors per player, and
+      // different divisors for dmg vs heal even on the same player.
+      const dmgSec = player.damageActiveMs / 1000
+      const healSec = player.healActiveMs / 1000
       players[name] = {
         ...player,
-        dps: activeDurationSec > 0 ? player.damage.total / activeDurationSec : 0,
-        hps: activeDurationSec > 0 ? player.healing.total / activeDurationSec : 0,
+        dps: dmgSec > 0 ? player.damage.total / dmgSec : 0,
+        hps: healSec > 0 ? player.healing.total / healSec : 0,
       }
     }
     return { players, activeDurationSec }
@@ -518,10 +574,12 @@ export class SegmentStore {
     const players: Record<string, PlayerSnapshot> = {}
 
     for (const [name, player] of Object.entries(segment.players)) {
+      const dmgSec = player.damageActiveMs / 1000
+      const healSec = player.healActiveMs / 1000
       players[name] = {
         ...player,
-        dps: duration > 0 ? player.damage.total / duration : 0,
-        hps: duration > 0 ? player.healing.total / duration : 0,
+        dps: dmgSec > 0 ? player.damage.total / dmgSec : 0,
+        hps: healSec > 0 ? player.healing.total / healSec : 0,
       }
     }
 

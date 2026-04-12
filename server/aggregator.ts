@@ -2,6 +2,7 @@ import type { ParsedEvent, DamagePayload, HealPayload, CombatantInfoPayload, Dea
 import { PET_FLAG, GUARDIAN_FLAG } from './types.js'
 
 import type { Segment, PlayerData, SpellDamageStats, SpellHealStats, TargetDamageStats, PlayerDeathRecord } from './store.js'
+import { ACTIVE_TIME_GAP_MS } from './store.js'
 
 // Rolling window of recent damage/heal events per player GUID — not persisted to snapshot
 const recentEvents = new Map<string, DeathRecapEvent[]>()
@@ -210,6 +211,8 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
   } else if (payload.type === 'heal') {
     const heal = payload as HealPayload
 
+    // Death-recap buffer: always record player-dest heals regardless of source
+    // (heals from an NPC onto a player still matter for recap context).
     if (isPlayerGuid(event.dest.guid)) {
       pushRecentEvent(event.dest.guid, {
         timestamp: event.timestamp,
@@ -223,22 +226,11 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
         sourceName:     event.source.name,
         sourceIsPlayer: isPlayerGuid(event.source.guid),
       })
-    } else {
-      // WCL excludes all healing to non-player targets (pets, guardians, friendly
-      // NPCs) from a healer's totals — both effective and overheal. Raid-wide
-      // heals like Halo, Prayer of Healing, Divine Hymn, Echo of Light, and
-      // Thorn Bloom spray every nearby unit; the pet-target portion can be a
-      // huge chunk of overheal (Halo alone contributed ~6.1M of phantom overheal
-      // on Swamphooker at Chimaerus fight 34). Filtering the aggregator on a
-      // non-player dest is sufficient — the parser's SPELL_HEAL_ABSORBED
-      // negative emission is also keyed on dest, so it drops with the original
-      // heal and the grand total still nets out.
-      return
     }
 
-    // Resolve pet/guardian heal sources (Yu'lon Soothing Breath, Jade Serpent Statue
-    // Soothing Mist, etc.) back to the summoning player. Same logic as the damage path,
-    // minus the SWING advanced-log bootstrap (heal events don't carry source-side owner).
+    // Resolve source: player or owned pet/guardian → owning player. Same logic as
+    // the damage path, minus the SWING advanced-log bootstrap (heal events don't
+    // carry source-side owner).
     const hasPetFlag = !!(event.source.flags & (PET_FLAG | GUARDIAN_FLAG))
     const isPlayerSrc = isPlayerGuid(event.source.guid)
     const knownOwnedCreature = !isPlayerSrc && !hasPetFlag
@@ -264,7 +256,55 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
       sourceGuid = ownerGuid
     }
 
-    applyHeal(segment, sourceName, sourceGuid, heal)
+    // Target filter for non-player dest. Two classes of pet-targeted heals matter:
+    //
+    //   (a) PET_FLAG dest (0x1000, persistent combat pets): intentional owner→pet
+    //       heals (Hunter Exhilaration, Warlock Soul Leech shield emitted as a
+    //       SPELL_ABSORBED synthetic heal) and Leech-stat procs on the pet's own
+    //       damage. WCL credits these to the owner, and so do we — this is how
+    //       Fatcatjee's Blood-DK leech procs, Glowrawr's Scalehide shields, and
+    //       Adrianw's Felhunter Leech all make it onto the meter.
+    //
+    //   (b) GUARDIAN_FLAG dest (0x2000, temporary summons — DK Dancing Rune Weapon,
+    //       Warlock Doomguard/Dreadstalker, Druid Force-of-Nature / Grove Guardians
+    //       Treants): guardians casting heals on themselves — Rune Weapon mirroring
+    //       Death Strike, Dreadstalkers' Leech procs on their own melees, Grove
+    //       Guardians Treants casting Nourish on themselves, etc.
+    //
+    // DESIGN DECISION — guardian self-heals are INTENTIONALLY dropped:
+    //   WCL does credit most guardian self-heals to the owner (empirically verified
+    //   on dpyDWNGb84zFrn3H fight 1 — Fatcatjee's Rune Weapon contributes ~954K
+    //   eff; Adrianw's Dreadstalkers ~13K; etc.), but it also credits Druid Grove
+    //   Guardians Treants casting Nourish on themselves — which we consider wrong.
+    //   Distinguishing the two classes requires a fragile "did this pet ever deal
+    //   damage" heuristic with timing dead zones around pet spawn. Treating them
+    //   uniformly (all guardian self-heals excluded) is simpler and more defensible.
+    //
+    //   Beyond parity, there's a semantic argument: a pet healing itself from its
+    //   own damage isn't really "healing the player did" — the player never chose
+    //   to cast a heal. We prefer the cleaner signal and accept the small parity
+    //   cost on this specific sub-category.
+    //
+    //   Impact vs WCL on dpyDWNGb84zFrn3H fight 1 with this filter:
+    //     Fatcatjee (Blood DK):   −954K eff (Rune Weapon self-heals dropped)
+    //     Adrianw (Demo Lock):    −~13K eff (Dreadstalker/Doomguard Leech dropped)
+    //     Glowrawr (Hunter):      −~4K  eff (rare guardian-flagged pet self-heals)
+    //     Moardruid (R Druid):     byte-perfect (Grove Guardians Treants excluded — desired)
+    //     Teeburd (DH/non-pet):    byte-perfect
+    //
+    //   To REVISIT: if we decide guardian self-heals should be included (matching
+    //   WCL more closely) replace `if (!destIsPet) return` below with
+    //     `if (!destIsPet && event.source.guid !== event.dest.guid) return`
+    //   and add an exclusion for Druid Grove Guardians Treants (npcId 54983,
+    //   spell 102693 / 422090) to keep Moardruid byte-perfect.
+    if (!isPlayerGuid(event.dest.guid)) {
+      const destOwnerGuid = segment.petToOwner[event.dest.guid]
+      if (!destOwnerGuid || destOwnerGuid !== sourceGuid) return
+      const destIsPet = !!(event.dest.flags & PET_FLAG)
+      if (!destIsPet) return
+    }
+
+    applyHeal(segment, sourceName, sourceGuid, heal, event.timestamp)
   } else if (payload.type === 'death') {
     if (payload.unconsciousOnDeath) return
     if (!isPlayerGuid(event.dest.guid)) return
@@ -372,6 +412,12 @@ function getOrCreatePlayer(segment: Segment, name: string, guid: string): Player
       healing: { total: 0, overheal: 0, spells: {} },
       deaths: [],
       interrupts: { total: 0, byKicker: {}, byKicked: {} },
+      damageActiveMs: 0,
+      healActiveMs: 0,
+      firstDamageTime: null,
+      lastDamageTime: null,
+      firstHealTime: null,
+      lastHealTime: null,
     }
   } else if (segment.players[normalized].specId === undefined && segment.guidToSpec[guid] !== undefined) {
     segment.players[normalized].specId = segment.guidToSpec[guid]
@@ -412,6 +458,20 @@ function applyDamage(segment: Segment, sourceName: string, sourceGuid: string, d
   const amount = payload.amount - Math.max(payload.overkill, 0)
 
   player.damage.total += amount
+
+  // Per-player damage activeTime: gap-stitched event intervals, gap ≤ 10s.
+  // This matches WCL's damage-view activeTime byte-perfect and is the divisor
+  // WCL uses for damage-view DPS. See references/wcl-parity-review.md.
+  if (player.firstDamageTime === null) {
+    player.firstDamageTime = timestamp
+    player.lastDamageTime = timestamp
+  } else {
+    const gap = timestamp - player.lastDamageTime!
+    if (gap > 0 && gap <= ACTIVE_TIME_GAP_MS) {
+      player.damageActiveMs += gap
+    }
+    player.lastDamageTime = timestamp
+  }
 
   if (!player.damage.spells[spellId]) {
     player.damage.spells[spellId] = {
@@ -510,7 +570,7 @@ const HEAL_SPELL_ALIASES: Record<string, { id: string; name: string }> = {
   '463075': { id: '431907', name: "Sun's Avatar" },
 }
 
-function applyHeal(segment: Segment, sourceName: string, sourceGuid: string, payload: HealPayload) {
+function applyHeal(segment: Segment, sourceName: string, sourceGuid: string, payload: HealPayload, timestamp: number) {
   const player = getOrCreatePlayer(segment, sourceName, sourceGuid)
   if (!player) return
   const alias = HEAL_SPELL_ALIASES[payload.spellId]
@@ -527,6 +587,19 @@ function applyHeal(segment: Segment, sourceName: string, sourceGuid: string, pay
   const effective = baseAmount - overheal
   player.healing.total += effective
   player.healing.overheal += overheal
+
+  // Per-player heal activeTime: same gap-stitch algorithm as damage, tracked
+  // separately so WCL's healing-view HPS divisor matches byte-perfect.
+  if (player.firstHealTime === null) {
+    player.firstHealTime = timestamp
+    player.lastHealTime = timestamp
+  } else {
+    const gap = timestamp - player.lastHealTime!
+    if (gap > 0 && gap <= ACTIVE_TIME_GAP_MS) {
+      player.healActiveMs += gap
+    }
+    player.lastHealTime = timestamp
+  }
 
   if (!player.healing.spells[spellId]) {
     player.healing.spells[spellId] = {
