@@ -546,6 +546,14 @@ export class SegmentStore {
     // display, not the main DPS column. Callers pass overrideDurationSec when they
     // have a container-level span (key run duration, boss section span); otherwise
     // we fall back to the sum-of-segments activeDurationSec.
+    //
+    // NOTE: We previously used per-player activeTime here (commit daaedab) and DPS
+    // was ~20% higher than WCL's table (e.g. 122K vs 102.9K for Adrianw on
+    // dpyDWNGb84zFrn3H). WCL's API *does* return per-player activeTime, so it's
+    // unclear why the website table uses fight duration instead — it may be a
+    // deliberate UX choice, or WCL may do post-processing that changes the divisor
+    // after initial upload. If DPS drifts from WCL again in the future, check
+    // whether WCL has started using activeTime as the divisor.
     const durationSec = overrideDurationSec ?? activeDurationSec
 
     const players: Record<string, PlayerSnapshot> = {}
