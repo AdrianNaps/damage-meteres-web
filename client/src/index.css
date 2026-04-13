@@ -27,6 +27,12 @@
   --status-kill: #22c55e;
   --status-wipe: #ef4444;
 
+  /* Data */
+  --data-group-avg: #f59e0b;
+
+  /* Headers — unified accent for module/section titles */
+  --header-accent: #c9a96a;
+
   /* Font families */
   --font-sans: "Geist Sans", "Geist", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "Geist Mono", ui-monospace, monospace;

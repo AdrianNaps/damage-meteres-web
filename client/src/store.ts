@@ -17,6 +17,8 @@ interface AppState {
   selectedPlayer: string | null
   selectedDeath: PlayerDeathRecord | null
   metric: 'damage' | 'healing' | 'deaths' | 'interrupts'
+  drillMetric: 'damage' | 'healing' | 'deaths' | 'interrupts' | null
+  mode: 'summary' | 'full'
   wsStatus: 'connecting' | 'connected' | 'disconnected'
   targetDetail: TargetDetail | null
   // Per-name spec cache, accumulated across every snapshot we've seen.
@@ -37,9 +39,10 @@ interface AppState {
   setSelectedKeyRun: (s: KeyRunSnapshot | null) => void
   setSelectedBossSectionId: (id: string | null) => void
   setSelectedBossSection: (s: BossSectionSnapshot | null) => void
-  setSelectedPlayer: (name: string | null) => void
+  setSelectedPlayer: (name: string | null, drillMetric?: AppState['metric']) => void
   setSelectedDeath: (record: PlayerDeathRecord | null) => void
   setMetric: (m: AppState['metric']) => void
+  setMode: (m: AppState['mode']) => void
   setWsStatus: (s: AppState['wsStatus']) => void
   setTargetDetail: (d: TargetDetail | null) => void
   setBootInfo: (info: BootInfoState | null) => void
@@ -88,6 +91,8 @@ export const useStore = create<AppState>((set) => ({
   selectedPlayer: null,
   selectedDeath: null,
   metric: 'damage',
+  drillMetric: null,
+  mode: 'summary',
   wsStatus: 'connecting',
   targetDetail: null,
   playerSpecs: {},
@@ -141,9 +146,14 @@ export const useStore = create<AppState>((set) => ({
     playerSpecs: mergeSpecs(state.playerSpecs, s?.players),
     spellIcons: mergeIcons(state.spellIcons, s?.spellIcons),
   })),
-  setSelectedPlayer: (name) => set({ selectedPlayer: name }),
-  setSelectedDeath: (record) => set({ selectedDeath: record }),
-  setMetric: (m) => set({ metric: m, selectedPlayer: null, selectedDeath: null }),
+  setSelectedPlayer: (name, drillMetric) => set(state => ({
+    selectedPlayer: name,
+    selectedDeath: null,
+    drillMetric: name ? (drillMetric ?? state.metric) : null,
+  })),
+  setSelectedDeath: (record) => set({ selectedDeath: record, selectedPlayer: null, drillMetric: 'deaths' }),
+  setMetric: (m) => set({ metric: m, selectedPlayer: null, selectedDeath: null, drillMetric: null }),
+  setMode: (m) => set({ mode: m, selectedPlayer: null, selectedDeath: null, drillMetric: null }),
   setWsStatus: (s) => set({ wsStatus: s }),
   setTargetDetail: (d) => set({ targetDetail: d }),
   setBootInfo: (info) => set({ bootInfo: info }),

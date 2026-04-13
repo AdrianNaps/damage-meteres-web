@@ -7,10 +7,17 @@ import { TargetDrillDown } from './TargetDrillDown'
 import { requestTargetDetail } from '../ws'
 import { formatNum, shortName } from '../utils/format'
 
+const METRIC_LABELS: Record<string, string> = {
+  damage: 'Damage',
+  healing: 'Healing',
+  deaths: 'Deaths',
+  interrupts: 'Interrupts',
+}
+
 export function BreakdownPanel() {
   const selectedPlayer = useStore(s => s.selectedPlayer)
   const currentView = useStore(selectCurrentView)
-  const metric = useStore(s => s.metric)
+  const metric = useStore(s => s.drillMetric ?? s.metric)
   const setSelectedPlayer = useStore(s => s.setSelectedPlayer)
   const [viewMode, setViewMode] = useState<'spells' | 'targets'>('spells')
   const [drillTarget, setDrillTarget] = useState<string | null>(null)
@@ -55,10 +62,6 @@ export function BreakdownPanel() {
     metric === 'damage' ? player.damage.total
     : metric === 'healing' ? player.healing.total
     : player.interrupts.total
-  // TargetTable computes per-target DPS as total / duration — use the same shared
-  // fight duration that the server uses for the headline player.dps (wall-clock
-  // segment duration, not per-player activeTime). Only used when canDrillTargets
-  // is true, which means currentView is a single segment with a .duration field.
   const duration = (currentView as { duration?: number }).duration ?? 0
 
   function handleModeChange(mode: 'spells' | 'targets') {
@@ -72,13 +75,13 @@ export function BreakdownPanel() {
   function renderContent() {
     if (!currentView) return null
     if (metric === 'healing') {
-      return <HealSpellTable spells={player.healing.spells} />
+      return <HealSpellTable spells={player.healing.spells} classColor={color} />
     }
     if (metric === 'interrupts') {
       return (
         <>
-          <InterruptSpellTable spells={player.interrupts.byKicker} heading="Interrupt Ability" />
-          <InterruptSpellTable spells={player.interrupts.byKicked} heading="Spell Interrupted" />
+          <InterruptSpellTable spells={player.interrupts.byKicker} heading="Interrupt Ability" classColor={color} />
+          <InterruptSpellTable spells={player.interrupts.byKicked} heading="Spell Interrupted" classColor={color} />
         </>
       )
     }
@@ -104,79 +107,71 @@ export function BreakdownPanel() {
         />
       )
     }
-    return <DamageSpellTable spells={player.damage.spells} />
+    return <DamageSpellTable spells={player.damage.spells} classColor={color} />
   }
 
   return (
     <>
-      {/* Backdrop */}
+      {/* Header with class color accent */}
       <div
-        className="fixed inset-0 z-40"
-        style={{ background: 'rgba(0, 0, 0, 0.6)' }}
-        onClick={() => setSelectedPlayer(null)}
-      />
-
-      {/* Panel */}
-      <div
-        className="fixed right-0 top-0 h-full w-full max-w-lg z-50 flex flex-col"
+        className="flex items-center justify-between px-4 py-3"
         style={{
-          background: 'var(--bg-elevated)',
-          borderLeft: '1px solid var(--border-default)',
-          boxShadow: '-8px 0 32px rgba(0, 0, 0, 0.4)',
+          borderBottom: '1px solid var(--border-default)',
+          borderLeft: `4px solid ${color}`,
         }}
       >
-        {/* Header with class color accent */}
-        <div
-          className="flex items-center justify-between px-4 py-3"
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontWeight: 600, fontSize: 15, color }}>{shortName(player.name)}</span>
+            <span style={{
+              fontSize: 9, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em',
+              padding: '1px 6px', borderRadius: 2,
+              background: 'var(--bg-active)', color: 'var(--header-accent)',
+            }}>
+              {METRIC_LABELS[metric]}
+            </span>
+          </div>
+          <div style={{ fontSize: 12, fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', marginTop: 2 }}>
+            {metric === 'interrupts'
+              ? `${total} interrupts`
+              : `${formatNum(total)} total \u00b7 ${formatNum(value)} ${metric === 'damage' ? 'DPS' : 'HPS'}`}
+          </div>
+        </div>
+        <button
+          onClick={() => setSelectedPlayer(null)}
           style={{
-            borderBottom: '1px solid var(--border-default)',
-            borderLeft: `4px solid ${color}`,
+            background: 'none',
+            border: 'none',
+            color: 'var(--text-muted)',
+            cursor: 'pointer',
+            fontSize: 20,
+            lineHeight: 1,
+            padding: '4px 8px',
+            transition: 'color 0.15s',
           }}
+          onMouseEnter={e => { e.currentTarget.style.color = 'var(--text-primary)' }}
+          onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)' }}
         >
-          <div>
-            <div style={{ fontWeight: 600, fontSize: 15, color }}>{shortName(player.name)}</div>
-            <div style={{ fontSize: 12, fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', marginTop: 2 }}>
-              {metric === 'interrupts'
-                ? `${total} interrupts`
-                : `${formatNum(total)} total \u00b7 ${formatNum(value)} ${metric === 'damage' ? 'DPS' : 'HPS'}`}
-            </div>
-          </div>
-          <button
-            onClick={() => setSelectedPlayer(null)}
-            style={{
-              background: 'none',
-              border: 'none',
-              color: 'var(--text-muted)',
-              cursor: 'pointer',
-              fontSize: 20,
-              lineHeight: 1,
-              padding: '4px 8px',
-              transition: 'color 0.15s',
-            }}
-            onMouseEnter={e => { e.currentTarget.style.color = 'var(--text-primary)' }}
-            onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)' }}
-          >
-            &times;
-          </button>
-        </div>
+          &times;
+        </button>
+      </div>
 
-        {/* View mode toggle */}
-        {metric === 'damage' && canDrillTargets && (
-          <div className="px-4 pt-2.5">
-            <SegmentedControl
-              options={[
-                { key: 'spells', label: 'Spells' },
-                { key: 'targets', label: 'Targets' },
-              ]}
-              active={viewMode}
-              onChange={handleModeChange}
-            />
-          </div>
-        )}
-
-        <div className="flex-1 overflow-y-auto px-4 py-3">
-          {renderContent()}
+      {/* View mode toggle */}
+      {metric === 'damage' && canDrillTargets && (
+        <div className="px-4 pt-2.5">
+          <SegmentedControl
+            options={[
+              { key: 'spells', label: 'Spells' },
+              { key: 'targets', label: 'Targets' },
+            ]}
+            active={viewMode}
+            onChange={handleModeChange}
+          />
         </div>
+      )}
+
+      <div className="flex-1 overflow-y-auto px-4 py-3">
+        {renderContent()}
       </div>
     </>
   )

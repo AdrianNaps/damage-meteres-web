@@ -12,7 +12,7 @@ export function EncounterHeader() {
 
   return (
     <div
-      className="flex items-center justify-between px-4 py-2.5"
+      className="flex items-center justify-between px-5 py-2.5"
       style={{
         borderBottom: '1px solid var(--border-default)',
         background: disconnected ? 'rgba(239, 68, 68, 0.06)' : 'transparent',

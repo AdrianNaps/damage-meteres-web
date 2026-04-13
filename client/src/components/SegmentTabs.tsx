@@ -52,7 +52,7 @@ export function SegmentTabs() {
   return (
     <div className="flex flex-col" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
       {/* Top tier — runs and standalone encounters */}
-      <div className="flex gap-0 px-4 pt-2 overflow-x-auto items-end">
+      <div className="flex gap-0 px-5 pt-2 overflow-x-auto items-end">
         {reversedHistory.map(item => {
           if (item.type === 'key_run') {
             return (
@@ -112,7 +112,7 @@ export function SegmentTabs() {
       {/* Bottom tier — segments within the active container */}
       {activeSegments.length > 0 && (
         <div
-          className="flex gap-0 px-4 pt-0.5 pb-0.5 overflow-x-auto items-end"
+          className="flex gap-0 px-5 pt-0.5 pb-0.5 overflow-x-auto items-end"
           style={{ paddingLeft: 28 }}
         >
           <TabButton

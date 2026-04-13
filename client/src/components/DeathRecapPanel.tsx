@@ -79,101 +79,93 @@ export function DeathRecapPanel() {
   )
   const color = getClassColor(specId)
 
-  const events = selectedDeath.recap
-  const hpFractions = computeHpFractions(events)
+  const events = [...selectedDeath.recap].reverse()
+  const hpFractions = computeHpFractions(selectedDeath.recap).reverse()
   const kb = selectedDeath.killingBlow
 
   return (
     <>
-      {/* Backdrop */}
+      {/* Header */}
       <div
-        className="fixed inset-0 z-40"
-        style={{ background: 'rgba(0, 0, 0, 0.6)' }}
-        onClick={() => setSelectedDeath(null)}
-      />
-
-      {/* Panel */}
-      <div
-        className="fixed right-0 top-0 h-full w-full max-w-lg z-50 flex flex-col"
+        className="flex items-center justify-between px-4 py-3"
         style={{
-          background: 'var(--bg-elevated)',
-          borderLeft: '1px solid var(--border-default)',
-          boxShadow: '-8px 0 32px rgba(0, 0, 0, 0.4)',
+          borderBottom: '1px solid var(--border-default)',
+          borderLeft: `4px solid ${color}`,
         }}
       >
-        {/* Header */}
-        <div
-          className="flex items-center justify-between px-4 py-3"
-          style={{
-            borderBottom: '1px solid var(--border-default)',
-            borderLeft: `4px solid ${color}`,
-          }}
-        >
-          <div>
-            <div style={{ fontWeight: 600, fontSize: 15, color }}>{shortName(selectedDeath.playerName)}</div>
-            <div style={{ fontSize: 12, fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', marginTop: 2 }}>
-              Died at {formatElapsedFull(selectedDeath.combatElapsed)}
-              {kb && (
-                <span style={{ color: 'var(--text-muted)', marginLeft: 8 }}>
-                  &middot; {kb.spellName} by {kb.sourceName}
-                </span>
-              )}
-            </div>
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontWeight: 600, fontSize: 15, color }}>{shortName(selectedDeath.playerName)}</span>
+            <span style={{
+              fontSize: 9, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em',
+              padding: '1px 6px', borderRadius: 2,
+              background: 'var(--bg-active)', color: 'var(--header-accent)',
+            }}>
+              Deaths
+            </span>
           </div>
-          <button
-            onClick={() => setSelectedDeath(null)}
-            style={{
-              background: 'none',
-              border: 'none',
-              color: 'var(--text-muted)',
-              cursor: 'pointer',
-              fontSize: 20,
-              lineHeight: 1,
-              padding: '4px 8px',
-              transition: 'color 0.15s',
-            }}
-            onMouseEnter={e => { e.currentTarget.style.color = 'var(--text-primary)' }}
-            onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)' }}
-          >
-            &times;
-          </button>
+          <div style={{ fontSize: 12, fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', marginTop: 2 }}>
+            Died at {formatElapsedFull(selectedDeath.combatElapsed)}
+            {kb && (
+              <span style={{ color: 'var(--text-muted)', marginLeft: 8 }}>
+                &middot; {kb.spellName} by {kb.sourceName}
+              </span>
+            )}
+          </div>
         </div>
-
-        {/* Column headers */}
-        <div
-          className="flex items-center px-4 pt-3 pb-1.5 gap-2"
+        <button
+          onClick={() => setSelectedDeath(null)}
           style={{
-            fontSize: 10,
-            fontWeight: 500,
-            textTransform: 'uppercase',
-            letterSpacing: '0.06em',
+            background: 'none',
+            border: 'none',
             color: 'var(--text-muted)',
-            borderBottom: '1px solid var(--border-subtle)',
+            cursor: 'pointer',
+            fontSize: 20,
+            lineHeight: 1,
+            padding: '4px 8px',
+            transition: 'color 0.15s',
           }}
+          onMouseEnter={e => { e.currentTarget.style.color = 'var(--text-primary)' }}
+          onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)' }}
         >
-          <span style={{ width: 48, flexShrink: 0 }}>Time</span>
-          <span className="flex-1">Spell</span>
-          <span style={{ width: 112, textAlign: 'right', flexShrink: 0 }}>Source</span>
-          <span style={{ width: 64, textAlign: 'right', flexShrink: 0 }}>Amount</span>
-        </div>
+          &times;
+        </button>
+      </div>
 
-        {/* Event rows */}
-        <div className="flex-1 overflow-y-auto pb-3">
-          {events.length === 0 ? (
-            <div className="text-center py-8" style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-              No events in recap window
-            </div>
-          ) : (
-            events.map((e, i) => (
-              <RecapRow
-                key={`${e.timestamp}-${e.spellId}-${e.kind}`}
-                event={e}
-                death={selectedDeath}
-                hpFraction={hpFractions[i]}
-              />
-            ))
-          )}
-        </div>
+      {/* Column headers */}
+      <div
+        className="flex items-center px-4 pt-3 pb-1.5 gap-2"
+        style={{
+          fontSize: 10,
+          fontWeight: 500,
+          textTransform: 'uppercase',
+          letterSpacing: '0.06em',
+          color: 'var(--text-muted)',
+          borderBottom: '1px solid var(--border-subtle)',
+        }}
+      >
+        <span style={{ width: 48, flexShrink: 0 }}>Time</span>
+        <span className="flex-1">Spell</span>
+        <span style={{ width: 112, textAlign: 'right', flexShrink: 0 }}>Source</span>
+        <span style={{ width: 64, textAlign: 'right', flexShrink: 0 }}>Amount</span>
+      </div>
+
+      {/* Event rows */}
+      <div className="flex-1 overflow-y-auto pb-3">
+        {events.length === 0 ? (
+          <div className="text-center py-8" style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+            No events in recap window
+          </div>
+        ) : (
+          events.map((e, i) => (
+            <RecapRow
+              key={`${e.timestamp}-${e.spellId}-${e.kind}`}
+              event={e}
+              death={selectedDeath}
+              hpFraction={hpFractions[i]}
+            />
+          ))
+        )}
       </div>
     </>
   )
