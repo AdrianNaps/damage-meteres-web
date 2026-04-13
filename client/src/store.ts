@@ -110,6 +110,7 @@ export const useStore = create<AppState>((set) => ({
     selectedSegmentId: id,
     selectedPlayer: null,
     selectedDeath: null,
+    drillMetric: null,
     selectedKeyRunId: null,
     selectedKeyRun: null,
     selectedBossSectionId: null,
@@ -125,6 +126,7 @@ export const useStore = create<AppState>((set) => ({
     selectedBossSection: null,
     selectedPlayer: null,
     selectedDeath: null,
+    drillMetric: null,
   }),
   setSelectedKeyRun: (s) => set(state => ({
     selectedKeyRun: s,
@@ -140,6 +142,7 @@ export const useStore = create<AppState>((set) => ({
     selectedKeyRun: null,
     selectedPlayer: null,
     selectedDeath: null,
+    drillMetric: null,
   }),
   setSelectedBossSection: (s) => set(state => ({
     selectedBossSection: s,
@@ -151,8 +154,14 @@ export const useStore = create<AppState>((set) => ({
     selectedDeath: null,
     drillMetric: name ? (drillMetric ?? state.metric) : null,
   })),
-  setSelectedDeath: (record) => set({ selectedDeath: record, selectedPlayer: null, drillMetric: 'deaths' }),
-  setMetric: (m) => set({ metric: m, selectedPlayer: null, selectedDeath: null, drillMetric: null }),
+  setSelectedDeath: (record) => set({
+    selectedDeath: record,
+    selectedPlayer: null,
+    drillMetric: record ? 'deaths' : null,
+  }),
+  // Changing the focused metric keeps the existing drill panel open — the panel
+  // shows whatever was clicked (tracked via drillMetric), not whatever is focused.
+  setMetric: (m) => set({ metric: m }),
   setMode: (m) => set({ mode: m, selectedPlayer: null, selectedDeath: null, drillMetric: null }),
   setWsStatus: (s) => set({ wsStatus: s }),
   setTargetDetail: (d) => set({ targetDetail: d }),

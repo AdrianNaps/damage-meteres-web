@@ -312,10 +312,13 @@ function DeathsModuleBody({
     )
   }
 
+  // Build a name → player lookup once so each death row is O(1) instead of O(players).
+  const playerByName = new Map(playerList.map(p => [p.name, p]))
+
   return (
     <>
       {deaths.map((d, i) => {
-        const player = playerList.find(p => p.name === d.playerName)
+        const player = playerByName.get(d.playerName)
         const specId = resolveSpecId(playerSpecs, d.playerName, player?.specId)
         const color = getClassColor(specId)
         const elapsed = `${Math.floor(d.combatElapsed / 60)}:${String(Math.floor(d.combatElapsed % 60)).padStart(2, '0')}`

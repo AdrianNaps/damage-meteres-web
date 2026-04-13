@@ -1,4 +1,4 @@
-import { useRef, useEffect, useCallback } from 'react'
+import { useRef, useEffect, useCallback, useMemo } from 'react'
 import type { PlayerSnapshot, PlayerDeathRecord } from '../types'
 import { getClassColor } from './PlayerRow'
 import { useStore, resolveSpecId } from '../store'
@@ -11,6 +11,10 @@ interface Props {
 }
 
 const PAD = { top: 4, right: 8, bottom: 16, left: 40 }
+
+// Canvas ctx.font does NOT resolve CSS custom properties — use concrete font families.
+const MONO_FONT = '9px "Geist Mono", ui-monospace, monospace'
+const SANS_FONT = '11px "Geist Sans", ui-sans-serif, system-ui, sans-serif'
 
 function hashStr(str: string): number {
   let h = 0
@@ -41,7 +45,9 @@ export function GraphContainer({ metric, players, duration }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const playerSpecs = useStore(s => s.playerSpecs)
 
-  const playerList = Object.values(players)
+  // Memoize so the draw callback and the ResizeObserver effect stay stable
+  // across renders where players hasn't changed.
+  const playerList = useMemo(() => Object.values(players), [players])
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current
@@ -192,9 +198,8 @@ function drawLineGraph(
   drawGrid(ctx, plotW, plotH, 4)
 
   // Y-axis labels
-  const monoFont = '9px var(--font-mono)'
   ctx.fillStyle = '#55565e'
-  ctx.font = monoFont
+  ctx.font = MONO_FONT
   ctx.textAlign = 'right'
   for (let i = 0; i <= 4; i++) {
     const y = PAD.top + plotH * (1 - i / 4)
@@ -345,9 +350,8 @@ function drawBars(
   drawGrid(ctx, plotW, plotH, ySteps)
 
   // Y labels
-  const monoFont = '9px var(--font-mono)'
   ctx.fillStyle = '#55565e'
-  ctx.font = monoFont
+  ctx.font = MONO_FONT
   ctx.textAlign = 'right'
   for (let i = 0; i <= ySteps; i++) {
     const y = PAD.top + plotH * (1 - i / ySteps)
@@ -403,7 +407,7 @@ function drawGrid(ctx: CanvasRenderingContext2D, plotW: number, plotH: number, s
 
 function drawXLabels(ctx: CanvasRenderingContext2D, h: number, plotW: number, duration: number, count: number) {
   ctx.fillStyle = '#55565e'
-  ctx.font = '9px var(--font-mono)'
+  ctx.font = MONO_FONT
   ctx.textAlign = 'center'
   for (let i = 0; i <= count; i++) {
     const x = PAD.left + plotW * i / count
@@ -414,7 +418,7 @@ function drawXLabels(ctx: CanvasRenderingContext2D, h: number, plotW: number, du
 
 function drawEmptyState(ctx: CanvasRenderingContext2D, w: number, h: number) {
   ctx.fillStyle = '#55565e'
-  ctx.font = '11px var(--font-sans)'
+  ctx.font = SANS_FONT
   ctx.textAlign = 'center'
   ctx.fillText('None', w / 2, h / 2 + 4)
 }
