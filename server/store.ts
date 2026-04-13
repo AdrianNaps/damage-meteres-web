@@ -443,6 +443,9 @@ export class SegmentStore {
           }
         } else {
           const mp = merged[name]
+          if (mp.specId === undefined && player.specId !== undefined) {
+            mp.specId = player.specId
+          }
           mp.damage.total += player.damage.total
           mp.healing.total += player.healing.total
           mp.healing.overheal += player.healing.overheal
@@ -536,6 +539,19 @@ export class SegmentStore {
       }
     }
 
+    // Backfill specId from guidToSpec/guidToName for any players still missing it.
+    // This covers the case where a player's damage events arrived before COMBATANT_INFO
+    // in every segment they appeared in, but guidToSpec was populated later in that
+    // segment (or in a different segment entirely).
+    for (const seg of segs) {
+      for (const [guid, specId] of Object.entries(seg.guidToSpec)) {
+        const name = seg.guidToName[guid]
+        if (name && merged[name] && merged[name].specId === undefined) {
+          merged[name].specId = specId
+        }
+      }
+    }
+
     for (const mp of Object.values(merged)) {
       mp.deaths.sort((a, b) => a.timeOfDeath - b.timeOfDeath)
     }
@@ -602,6 +618,15 @@ export class SegmentStore {
     const end   = segment.endTime ?? segment.lastEventTime ?? start
     const duration = (end - start) / 1000
     const players: Record<string, PlayerSnapshot> = {}
+
+    // Resolve specId from guidToSpec for any players still missing it
+    // (e.g. damage events arrived before COMBATANT_INFO in this segment).
+    for (const [guid, specId] of Object.entries(segment.guidToSpec)) {
+      const name = segment.guidToName[guid]
+      if (name && segment.players[name] && segment.players[name].specId === undefined) {
+        segment.players[name].specId = specId
+      }
+    }
 
     for (const [name, player] of Object.entries(segment.players)) {
       // Strip internal first*/last* timestamps (see _mergeSegments for the same spread).
