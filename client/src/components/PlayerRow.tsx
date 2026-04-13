@@ -29,11 +29,11 @@ const SPEC_TO_CLASS: Record<number, number> = {
 }
 
 const CLASS_COLORS: Record<number, string> = {
-  1: '#C69B3A',  // Warrior
+  1: '#C79C6E',  // Warrior
   2: '#F48CBA',  // Paladin
   3: '#AAD372',  // Hunter
   4: '#FFF468',  // Rogue
-  5: '#E8D5A3',  // Priest
+  5: '#FFFFFF',  // Priest
   6: '#C41E3A',  // Death Knight
   7: '#0070DD',  // Shaman
   8: '#3FC7EB',  // Mage

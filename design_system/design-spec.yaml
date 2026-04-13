@@ -35,6 +35,7 @@ tokens:
       damage:      { $value: "#f87171", $type: color }
       killing-blow: { $value: "#fca5a5", $type: color }
       crit:        { $value: "#eab308", $type: color }
+      group-avg:   { $value: "#f59e0b", $type: color }
 
     health:
       high:   { $value: "#22c55e", $type: color }
@@ -42,11 +43,11 @@ tokens:
       low:    { $value: "#ef4444", $type: color }
 
     class:
-      warrior:      { $value: "#C69B3A", $type: color }
+      warrior:      { $value: "#C79C6E", $type: color }
       paladin:      { $value: "#F48CBA", $type: color }
       hunter:       { $value: "#AAD372", $type: color }
       rogue:        { $value: "#FFF468", $type: color }
-      priest:       { $value: "#E8D5A3", $type: color }
+      priest:       { $value: "#FFFFFF", $type: color }
       death-knight: { $value: "#C41E3A", $type: color }
       shaman:       { $value: "#0070DD", $type: color }
       mage:         { $value: "#3FC7EB", $type: color }
@@ -807,6 +808,37 @@ components:
       - "Title: font-size 14, weight 600, text-primary; total shown inline in mono text-secondary, margin-left 8"
       - "Margin-bottom 12 between title and table"
       - "Table columns: Source, Total (mono weight 600 right), % (mono text-muted right)"
+
+  # ── Graph ─────────────────────────────────────────────────────────
+
+  GraphContainer:
+    archetype: generic
+    category: "Data"
+    description: "Canvas-based graph area that sits above the main content. Renders DPS/HPS line graphs or vertical bar graphs depending on the active metric."
+
+    slots:
+      header: { accepts: [any], required: true }
+      canvas: { accepts: [generic], required: true }
+
+    base:
+      flex-shrink: 0
+      padding: "{spacing.8} {spacing.16} {spacing.4}"
+      border-bottom: { width: "1px", style: solid, color: "{colors.border.subtle}" }
+      background: "{colors.surface.panel}"
+
+    rules:
+      - "Header row: flex, space-between, margin-bottom 4px"
+      - "Title: label typography (10px, weight 500, uppercase, letter-spacing 0.06em), text-muted"
+      - "Legend: flex row, gap 12px; each item has an 8×2px color swatch + 10px text-secondary label"
+      - "Canvas: width 100%, height 120px, block display"
+      - "Line graph mode (Damage, Healing): smooth cubic bezier curves per player, class-colored, 1.5px stroke, 0.8 opacity"
+      - "Group average line: {colors.data.group-avg}, 2px stroke, dashed (6px dash, 4px gap), 0.9 opacity, drawn on top of player lines"
+      - "Bar graph mode (Deaths, Interrupts): vertical grouped bars per time bucket, class-colored, 0.85 opacity, rounded top corners"
+      - "Y-axis: mono 9px, text-muted, right-aligned labels at 4 grid steps"
+      - "X-axis: mono 9px, text-muted, centered time labels (m:ss format)"
+      - "Grid lines: rgba(255,255,255,0.04), 1px"
+      - "Hides entirely when no data is available for the metric"
+      - "Redraws on resize and when the inline drill panel opens/closes (after transition completes)"
 
 globals:
   body:
