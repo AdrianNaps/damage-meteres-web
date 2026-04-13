@@ -18,6 +18,15 @@ const BOSS_MIRRORED_DAMAGE_SPELLS = new Set<string>([
   '1268666', // Chimaerus - Dissonance (second variant)
 ])
 
+// Damage redistribution abilities (e.g. Tempered in Battle, Spirit Link Totem).
+// Player→player damage from these spells must NOT be dropped by the self-damage
+// filter (source.guid === dest.guid) because the aggregator needs them to compute
+// the spiritLinkDamage-style healing offset. The aggregator handles the actual
+// damage exclusion and healing offset for all player→player damage.
+const REDISTRIBUTION_DAMAGE_SPELLS = new Set<string>([
+  '469704', // Tempered in Battle (Prot Paladin hero talent)
+])
+
 // Hero-talent / class-fantasy procs that place an absorb shield on a friendly NPC
 // ally but should be credited to the casting player. In SPELL_ABSORBED the absorber
 // slot holds the allied creature (no PLAYER_FLAG), but the outer dest is the player
@@ -204,7 +213,9 @@ export function parseLine(raw: string): ParsedEvent | ParsedEvent[] | null {
       // resolve ownership via its petToOwner map (populated from SPELL_SUMMON events).
       const srcLooksLikeUnit = source.guid.startsWith('Pet-') || source.guid.startsWith('Creature-')
       if (!(source.flags & ATTRIBUTABLE_SOURCE_FLAGS) && !destIsPlayer && !srcLooksLikeUnit) return null
-      if (source.guid === dest.guid) return null
+      // Self-damage is dropped (Blessing of Dawn, Shadow Mend, etc.) UNLESS it's a
+      // redistribution ability — those need to reach the aggregator for the healing offset.
+      if (source.guid === dest.guid && !REDISTRIBUTION_DAMAGE_SPELLS.has(fields[9])) return null
       const damage = parseDamageSuffix(fields)
       if (!damage) return null
       return {
@@ -305,9 +316,13 @@ export function parseLine(raw: string): ParsedEvent | ParsedEvent[] | null {
       // can appear here too. Aggregator resolves ownership via petToOwner.
       const srcLooksLikeUnit = source.guid.startsWith('Pet-') || source.guid.startsWith('Creature-')
       if (!(source.flags & ATTRIBUTABLE_SOURCE_FLAGS) && !srcLooksLikeUnit) return null
-      if (source.guid === dest.guid) return null
 
       const isSwing = eventType === 'SWING_MISSED'
+      // Same self-damage exception as SPELL_DAMAGE: redistribution spells must pass
+      // through so the aggregator can apply the healing offset.
+      const spellIdForMiss = isSwing ? null : fields[9]
+      if (source.guid === dest.guid
+          && !(spellIdForMiss && REDISTRIBUTION_DAMAGE_SPELLS.has(spellIdForMiss))) return null
       // Spell-absorbed miss path also carries the boss-mirrored damage mechanics that
       // SPELL_DAMAGE drops via BOSS_MIRRORED_DAMAGE_SPELLS. Drop the same spell IDs here
       // before re-emitting as synthetic damage, otherwise absorbed Dissonance (etc.)

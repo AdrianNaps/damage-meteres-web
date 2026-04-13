@@ -27,6 +27,16 @@ function getLastCreditMap(segment: Segment): Map<string, LastCredit> {
 
 const RECAP_WINDOW_SECONDS = 10  // how far back to collect events
 
+// Damage redistribution abilities (e.g. Tempered in Battle, Spirit Link Totem).
+// WCL treats these as "spiritLinkDamage": the damage events are excluded from the
+// damage meter, and their base hit amount is subtracted from the source's healing
+// total as a negative healing offset. Player→player damage from these spells is
+// the redistribution cost; the corresponding SPELL_HEAL events carry the positive
+// healing credit. The net (heal - cost) is what WCL shows.
+const REDISTRIBUTION_DAMAGE_SPELLS = new Set([
+  '469704', // Tempered in Battle (Prot Paladin hero talent)
+])
+
 function isPlayerGuid(guid: string): boolean {
   return guid.startsWith('Player-')
 }
@@ -163,6 +173,22 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
     // Plain damage event for a spellId that has been seen as support-owned: skip.
     // The matching SUPPORT mirror will (or already did) credit the supporter.
     if (segment.supportOwnedSpellIds.has(dmg.spellId)) return
+
+    // Player→player damage is a redistribution ability (e.g. Tempered in Battle,
+    // Spirit Link Totem). WCL excludes these from the damage meter and instead
+    // subtracts the amount from the source's healing total (spiritLinkDamage).
+    // The events are still recorded in the death-recap buffer above.
+    if (isPlayerGuid(event.source.guid) && isPlayerGuid(event.dest.guid)) {
+      if (REDISTRIBUTION_DAMAGE_SPELLS.has(dmg.spellId)) {
+        // The full redistribution cost is the base hit (pre-absorb amount).
+        // For partial absorbs, baseAmount ≈ amount + absorbed. For fully-absorbed
+        // hits (SPELL_MISSED ABSORB path), amount = absorbed so we can't add them.
+        // baseAmount works correctly for both cases.
+        const player = getOrCreatePlayer(segment, event.source.name, event.source.guid)
+        if (player) player.healing.total -= dmg.baseAmount
+      }
+      return
+    }
 
     // Only attribute damage to the meter for player/pet sources.
     // Creature→player events are allowed through the parser for death recap above,
