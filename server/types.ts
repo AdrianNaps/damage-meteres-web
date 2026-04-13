@@ -1,6 +1,15 @@
 export const PET_FLAG      = 0x1000  // WoW unit flag: TYPE_PET (persistent player-owned pet)
 export const GUARDIAN_FLAG = 0x2000  // WoW unit flag: TYPE_GUARDIAN (temporary summoned guardian)
 
+// Damage redistribution abilities (e.g. Tempered in Battle, Spirit Link Totem).
+// WCL treats these as "spiritLinkDamage": damage events are excluded from the
+// damage meter, and their base hit amount is subtracted from the source's healing
+// total as a negative offset. Used by both parser (self-damage filter exception)
+// and aggregator (healing offset calculation).
+export const REDISTRIBUTION_DAMAGE_SPELLS = new Set<string>([
+  '469704', // Tempered in Battle (Prot Paladin hero talent)
+])
+
 export type EventType =
   | 'ENCOUNTER_START'
   | 'ENCOUNTER_END'

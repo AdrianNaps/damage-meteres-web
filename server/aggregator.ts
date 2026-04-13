@@ -1,5 +1,5 @@
 import type { ParsedEvent, DamagePayload, HealPayload, CombatantInfoPayload, DeathPayload, DeathRecapEvent } from './types.js'
-import { PET_FLAG, GUARDIAN_FLAG } from './types.js'
+import { PET_FLAG, GUARDIAN_FLAG, REDISTRIBUTION_DAMAGE_SPELLS } from './types.js'
 
 import type { Segment, PlayerData, SpellDamageStats, SpellHealStats, TargetDamageStats, PlayerDeathRecord } from './store.js'
 import { ACTIVE_TIME_GAP_MS } from './store.js'
@@ -27,15 +27,6 @@ function getLastCreditMap(segment: Segment): Map<string, LastCredit> {
 
 const RECAP_WINDOW_SECONDS = 10  // how far back to collect events
 
-// Damage redistribution abilities (e.g. Tempered in Battle, Spirit Link Totem).
-// WCL treats these as "spiritLinkDamage": the damage events are excluded from the
-// damage meter, and their base hit amount is subtracted from the source's healing
-// total as a negative healing offset. Player→player damage from these spells is
-// the redistribution cost; the corresponding SPELL_HEAL events carry the positive
-// healing credit. The net (heal - cost) is what WCL shows.
-const REDISTRIBUTION_DAMAGE_SPELLS = new Set([
-  '469704', // Tempered in Battle (Prot Paladin hero talent)
-])
 
 function isPlayerGuid(guid: string): boolean {
   return guid.startsWith('Player-')
@@ -174,19 +165,18 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
     // The matching SUPPORT mirror will (or already did) credit the supporter.
     if (segment.supportOwnedSpellIds.has(dmg.spellId)) return
 
-    // Player→player damage is a redistribution ability (e.g. Tempered in Battle,
-    // Spirit Link Totem). WCL excludes these from the damage meter and instead
-    // subtracts the amount from the source's healing total (spiritLinkDamage).
+    // Redistribution abilities (e.g. Tempered in Battle, Spirit Link Totem) deal
+    // player→player damage that WCL excludes from the damage meter. WCL also
+    // subtracts the pre-mitigation hit (baseAmount) from the source's healing
+    // total as a negative offset (spiritLinkDamage). baseAmount is used because
+    // it includes the absorbed portion: for partial absorbs baseAmount ≈ amount +
+    // absorbed, and for fully-absorbed SPELL_MISSED hits amount already equals
+    // absorbed so adding them would double-count.
     // The events are still recorded in the death-recap buffer above.
-    if (isPlayerGuid(event.source.guid) && isPlayerGuid(event.dest.guid)) {
-      if (REDISTRIBUTION_DAMAGE_SPELLS.has(dmg.spellId)) {
-        // The full redistribution cost is the base hit (pre-absorb amount).
-        // For partial absorbs, baseAmount ≈ amount + absorbed. For fully-absorbed
-        // hits (SPELL_MISSED ABSORB path), amount = absorbed so we can't add them.
-        // baseAmount works correctly for both cases.
-        const player = getOrCreatePlayer(segment, event.source.name, event.source.guid)
-        if (player) player.healing.total -= dmg.baseAmount
-      }
+    if (isPlayerGuid(event.source.guid) && isPlayerGuid(event.dest.guid)
+        && REDISTRIBUTION_DAMAGE_SPELLS.has(dmg.spellId)) {
+      const player = getOrCreatePlayer(segment, event.source.name, event.source.guid)
+      if (player) player.healing.total -= dmg.baseAmount
       return
     }
 

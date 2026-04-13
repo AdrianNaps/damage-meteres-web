@@ -18,14 +18,10 @@ const BOSS_MIRRORED_DAMAGE_SPELLS = new Set<string>([
   '1268666', // Chimaerus - Dissonance (second variant)
 ])
 
-// Damage redistribution abilities (e.g. Tempered in Battle, Spirit Link Totem).
-// Player→player damage from these spells must NOT be dropped by the self-damage
-// filter (source.guid === dest.guid) because the aggregator needs them to compute
-// the spiritLinkDamage-style healing offset. The aggregator handles the actual
-// damage exclusion and healing offset for all player→player damage.
-const REDISTRIBUTION_DAMAGE_SPELLS = new Set<string>([
-  '469704', // Tempered in Battle (Prot Paladin hero talent)
-])
+// Re-exported from types.ts. Player→player damage from these spells must NOT be
+// dropped by the self-damage filter (source.guid === dest.guid) because the
+// aggregator needs them to compute the spiritLinkDamage-style healing offset.
+import { REDISTRIBUTION_DAMAGE_SPELLS } from './types.js'
 
 // Hero-talent / class-fantasy procs that place an absorb shield on a friendly NPC
 // ally but should be credited to the casting player. In SPELL_ABSORBED the absorber
