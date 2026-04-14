@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { connectWs } from './ws'
-import { useStore, selectCurrentView } from './store'
+import { useStore, selectCurrentView, selectCurrentScopeKey } from './store'
 import { EncounterHeader } from './components/EncounterHeader'
 import { SegmentTabs } from './components/SegmentTabs'
 import { MeterView } from './components/MeterView'
@@ -13,11 +13,20 @@ import { LogsBanner } from './components/LogsBanner'
 
 export default function App() {
   const refreshBootInfo = useStore(s => s.refreshBootInfo)
+  const scopeKey = useStore(selectCurrentScopeKey)
+  const syncGraphScope = useStore(s => s.syncGraphScope)
 
   useEffect(() => {
     connectWs()
     refreshBootInfo()
   }, [refreshBootInfo])
+
+  // Reset graph focus when the parent dungeon/encounter changes. Lives on App
+  // so the reset fires even while GraphContainer is unmounted between a tab
+  // click and the server's snapshot response.
+  useEffect(() => {
+    syncGraphScope(scopeKey)
+  }, [scopeKey, syncGraphScope])
 
   return (
     <div className="h-screen flex flex-col overflow-hidden" style={{ background: 'var(--bg-root)', color: 'var(--text-primary)' }}>

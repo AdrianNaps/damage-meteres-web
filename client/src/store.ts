@@ -6,6 +6,10 @@ export interface BootInfoState {
   logsDirExists: boolean
 }
 
+// Sentinel used in graphFocused to mark the group-average line. Kept here so the
+// reset helpers and the graph component share a single source of truth.
+export const GRAPH_GROUP_AVG_KEY = '__group_avg__'
+
 interface AppState {
   selectedSegment: SegmentSnapshot | null
   segmentHistory: HistoryItem[]
@@ -31,6 +35,10 @@ interface AppState {
   // Boot info from the Electron main process. null in pure-browser dev mode.
   bootInfo: BootInfoState | null
   settingsOpen: boolean
+  // Focused series on the DPS/HPS line graph. Survives metric toggles and
+  // sub-category tabs; reset by resetGraphFocus when the encounter changes.
+  graphFocused: Set<string>
+  graphScopeKey: string | null
 
   setSelectedSegment: (s: SegmentSnapshot | null) => void
   setSegmentHistory: (list: HistoryItem[]) => void
@@ -47,6 +55,8 @@ interface AppState {
   setTargetDetail: (d: TargetDetail | null) => void
   setBootInfo: (info: BootInfoState | null) => void
   setSettingsOpen: (open: boolean) => void
+  toggleGraphFocus: (key: string) => void
+  syncGraphScope: (scopeKey: string | null) => void
   refreshBootInfo: () => Promise<void>
 }
 
@@ -99,6 +109,8 @@ export const useStore = create<AppState>((set) => ({
   spellIcons: {},
   bootInfo: null,
   settingsOpen: false,
+  graphFocused: new Set([GRAPH_GROUP_AVG_KEY]),
+  graphScopeKey: null,
 
   setSelectedSegment: (s) => set(state => ({
     selectedSegment: s,
@@ -167,6 +179,22 @@ export const useStore = create<AppState>((set) => ({
   setTargetDetail: (d) => set({ targetDetail: d }),
   setBootInfo: (info) => set({ bootInfo: info }),
   setSettingsOpen: (open) => set({ settingsOpen: open }),
+  toggleGraphFocus: (key) => set(state => {
+    const next = new Set(state.graphFocused)
+    if (next.has(key)) next.delete(key); else next.add(key)
+    return { graphFocused: next }
+  }),
+  // Called on every render with the current scope key; resets focus only when
+  // the parent encounter actually changes (null → non-null transitions, e.g.
+  // initial load into a scope, are ignored so the default stays intact).
+  syncGraphScope: (scopeKey) => set(state => {
+    if (state.graphScopeKey === scopeKey) return {}
+    const scopeChanged = state.graphScopeKey !== null && scopeKey !== state.graphScopeKey
+    return {
+      graphScopeKey: scopeKey,
+      ...(scopeChanged ? { graphFocused: new Set([GRAPH_GROUP_AVG_KEY]) } : {}),
+    }
+  }),
   refreshBootInfo: async () => {
     if (!window.api?.getBootInfo) return
     try {
@@ -180,6 +208,43 @@ export const useStore = create<AppState>((set) => ({
 
 export const selectCurrentView = (s: AppState): SegmentSnapshot | KeyRunSnapshot | BossSectionSnapshot | null =>
   s.selectedKeyRun ?? s.selectedBossSection ?? s.selectedSegment
+
+// Seconds to add to x-axis time labels on the line graph so M+ segments show
+// their position within the dungeon run ("20:00 – 23:00") instead of restarting
+// at 0:00. Only applies when the current segment sits inside a key run; raid
+// boss-section pulls and standalone segments return 0.
+export const selectGraphTimeOffset = (s: AppState): number => {
+  const seg = s.selectedSegment
+  const segId = s.selectedSegmentId
+  if (!seg || !segId) return 0
+  for (const item of s.segmentHistory) {
+    if (item.type === 'key_run' && item.segments.some(x => x.id === segId)) {
+      return (seg.startTime - item.startTime) / 1000
+    }
+  }
+  return 0
+}
+
+// Stable id for the current "dungeon/encounter" scope. Navigating between segments
+// within the same key run or boss section returns the same key; switching to a
+// different run/encounter returns a new one. Used by views that should persist
+// UI state across sub-category tabs but reset across top-level tabs.
+export const selectCurrentScopeKey = (s: AppState): string | null => {
+  if (s.selectedKeyRunId) return `kr:${s.selectedKeyRunId}`
+  if (s.selectedBossSectionId) return `bs:${s.selectedBossSectionId}`
+  if (s.selectedSegmentId) {
+    for (const item of s.segmentHistory) {
+      if (item.type === 'key_run' && item.segments.some(seg => seg.id === s.selectedSegmentId)) {
+        return `kr:${item.keyRunId}`
+      }
+      if (item.type === 'boss_section' && item.segments.some(seg => seg.id === s.selectedSegmentId)) {
+        return `bs:${item.bossSectionId}`
+      }
+    }
+    return `seg:${s.selectedSegmentId}`
+  }
+  return null
+}
 
 // Resolve a player's spec via the cross-segment cache, falling back to whatever the
 // current view's player record happens to carry. Use this everywhere a class color is rendered.

@@ -1,6 +1,12 @@
 /* Geist font family */
 @import url('https://cdn.jsdelivr.net/npm/geist@1.3.1/dist/fonts/geist-sans/style.min.css');
+/* Geist Mono is only used by the graph canvas (GraphContainer axis labels),
+   which hardcodes the family because canvas ctx.font can't read CSS vars. */
 @import url('https://cdn.jsdelivr.net/npm/geist@1.3.1/dist/fonts/geist-mono/style.min.css');
+
+/* Numeric-cell weight. Sites that set an explicit fontWeight (e.g. 600 on
+   emphasized DPS values) still win via inline-style specificity. */
+[style*="var(--font-mono)"] { font-weight: 500; }
 
 @import "tailwindcss";
 
@@ -35,7 +41,11 @@
 
   /* Font families */
   --font-sans: "Geist Sans", "Geist", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "Geist Mono", ui-monospace, monospace;
+  /* --font-mono is a misnomer kept for continuity: it's the typeface for
+     numeric/tabular cells (DPS, totals, timestamps, ranks). Proportional
+     Geist Sans with tabular figures via the body-level "tnum" feature —
+     more readable than true mono at small sizes while staying column-aligned. */
+  --font-mono: "Geist Sans", "Geist", ui-sans-serif, system-ui, sans-serif;
 }
 
 * { box-sizing: border-box; }
