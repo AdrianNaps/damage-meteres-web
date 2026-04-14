@@ -177,6 +177,91 @@ test('two sequential packs: closes pack 1 on last death, opens pack 2 on next pu
   assert.equal(segs[1].encounterName, 'Pack 2: Sand Cleric')
 })
 
+test('partial pack deaths: pack stays open while any tracked mob is still alive', () => {
+  // Exercises activeMobs.size > 0 keeping the pack open across partial deaths.
+  const { sm, store } = makeSm()
+  const tank = makeMob('Creature-0-1-1-1-111-000A', 'Sand Guardian')
+  const caster = makeMob('Creature-0-1-1-1-222-000B', 'Dune Cleric')
+
+  sm.handle(challengeStart('Ara-Kara', 0))
+  sm.handle(mobDamage(tank, 3_000_000, 3_000_000, 100))
+  sm.handle(mobDamage(caster,  500_000, 1_000_000, 200))
+  sm.handle(mobDied(caster, 300))   // one mob dies — pack stays open since tank is still alive
+  sm.handle(mobDamage(tank, 1_000_000, 3_000_000, 400))  // tank still being fought
+  sm.handle(mobDied(tank, 500))     // now the pack closes
+  sm.handle(challengeEnd(true, 600))
+
+  const segs = store.getAll()
+  assert.equal(segs.length, 1)
+  // Highest-max-HP mob is Sand Guardian (3M) → pack name reflects it
+  assert.equal(segs[0].encounterName, 'Pack 1: Sand Guardian')
+  assert.equal(segs[0].success, true)
+})
+
+test('mob-source-only pack: mob hitting players opens and closes a pack via UNIT_DIED', () => {
+  // Exercises the sourceIsMob && !destIsMob branch — mob events where the mob is
+  // the attacker and the player is the destination. These carry no HP snapshot
+  // (advanced log is dest-side) but must still open a pack and close it on death.
+  const { sm, store } = makeSm()
+  const mob = makeMob('Creature-0-1-1-1-111-000A', 'Silent Stalker')
+  const player = makePlayer()
+
+  // Build a mob→player damage event (no HP info, since HP is only populated when
+  // the mob is the dest of a damage event).
+  const mobAttacksPlayer: ParsedEvent = {
+    timestamp: t(100),
+    type: 'SPELL_DAMAGE',
+    source: mob,
+    dest: player,
+    payload: {
+      type: 'damage', spellId: '9999', spellName: 'Ambush',
+      amount: 1000, baseAmount: 1000, overkill: -1, school: 1,
+      resisted: 0, blocked: 0, absorbed: 0, critical: false, glancing: false, crushing: false,
+    },
+  }
+
+  sm.handle(challengeStart('Ara-Kara', 0))
+  sm.handle(mobAttacksPlayer)
+  sm.handle(mobDied(mob, 200))
+  sm.handle(challengeEnd(true, 300))
+
+  const segs = store.getAll()
+  assert.equal(segs.length, 1)
+  // No maxHP ever observed (HP snapshot only comes from dest-side events) — falls
+  // back to the placeholder name, not "Pack 1: Silent Stalker"
+  assert.equal(segs[0].encounterName, 'Pack 1')
+  assert.equal(segs[0].success, true)
+})
+
+test('sequential resets: wipe → re-engage → wipe produces three packs', () => {
+  // Two consecutive wipes on the same mob should produce three distinct packs:
+  // two failed and one in-flight (still open until the key ends).
+  const { sm, store } = makeSm()
+  const mob = makeMob('Creature-0-1-1-1-111-000A', 'Dreadstalker')
+
+  sm.handle(challengeStart('Ara-Kara', 0))
+  // Pack 1: pull → wipe
+  sm.handle(mobDamage(mob, 4_000_000, 4_000_000, 100))   // 100%
+  sm.handle(mobDamage(mob,   800_000, 4_000_000, 500))   // 20% — armed
+  // Leash → heal to full → re-engage
+  sm.handle(mobDamage(mob, 4_000_000, 4_000_000, 5_000)) // reset #1
+  // Pack 2: fight it down → wipe again
+  sm.handle(mobDamage(mob,   600_000, 4_000_000, 10_000)) // 15%
+  sm.handle(mobDamage(mob, 4_000_000, 4_000_000, 15_000)) // reset #2
+  // Pack 3: kill it
+  sm.handle(mobDied(mob, 20_000))
+  sm.handle(challengeEnd(true, 25_000))
+
+  const segs = store.getAll()
+  assert.equal(segs.length, 3)
+  assert.equal(segs[0].success, false)  // first wipe
+  assert.equal(segs[1].success, false)  // second wipe
+  assert.equal(segs[2].success, true)   // final kill
+  assert.equal(segs[0].encounterName, 'Pack 1: Dreadstalker')
+  assert.equal(segs[1].encounterName, 'Pack 2: Dreadstalker')
+  assert.equal(segs[2].encounterName, 'Pack 3: Dreadstalker')
+})
+
 test('reset detection: HP jump to 95%+ closes pack as wipe and opens a new one', () => {
   const { sm, store } = makeSm()
 

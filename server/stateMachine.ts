@@ -78,7 +78,7 @@ export class EncounterStateMachine extends EventEmitter {
         // Open an initial pack segment so early events (COMBATANT_INFO, pre-pull buffs)
         // have somewhere to land. It'll be renamed from the placeholder to
         // "Pack 1: <highest-HP mob>" when finalized — see _applyFinalPackName.
-        const segment = this._makeSegment(this._packPlaceholderName(1), event.timestamp)
+        const segment = this._makeSegment(this._packPlaceholderName(this.packCount), event.timestamp)
         this.store.push(segment)
         this.activeTrashSegment = segment
         this.currentSegment = segment
@@ -100,16 +100,15 @@ export class EncounterStateMachine extends EventEmitter {
           this.currentSegment.success = false
           this.emit('encounter_end', this.currentSegment)
         }
-        // Only finalize the trash segment if it's still open — i.e. currentSegment
-        // still points to it. If it was already closed at a prior UNIT_DIED, reset,
-        // or ENCOUNTER_START, its endTime is already set and we leave it alone.
-        const trashStillOpen = this.activeTrashSegment && this.currentSegment === this.activeTrashSegment
-        if (trashStillOpen && this.activeTrashSegment) {
-          this.activeTrashSegment.endTime = event.timestamp
-          this.activeTrashSegment.success = p.success ?? false
-          this._applyFinalPackName(this.activeTrashSegment)
-        }
         if (this.activeTrashSegment) {
+          // Only finalize the trash segment if it's still open — i.e. currentSegment
+          // still points to it. If it was already closed at a prior UNIT_DIED, reset,
+          // or ENCOUNTER_START, its endTime is already set and we leave it alone.
+          if (this.currentSegment === this.activeTrashSegment) {
+            this.activeTrashSegment.endTime = event.timestamp
+            this.activeTrashSegment.success = p.success ?? false
+            this._applyFinalPackName(this.activeTrashSegment)
+          }
           console.log(`[key] END (${p.success ? 'timed' : 'depleted'}, ${((p.durationMs ?? 0) / 60000).toFixed(1)}m)`)
         }
         // Finalize key run metadata now that we have end time and outcome
@@ -227,6 +226,10 @@ export class EncounterStateMachine extends EventEmitter {
   //
   // Only runs inside M+ keys (currentKeyRunId set). Raid trash is left as a single
   // blob under the boss section as before.
+  //
+  // Invariant: activeMobs is empty whenever currentSegment is null. Violating this
+  // would cause reset detection to fire against stale pre-pack state. All paths
+  // that null currentSegment also clear activeMobs (or leave it already empty).
   private _trackTrashMobs(event: ParsedEvent): void {
     if (!this.currentKeyRunId) return
 
@@ -287,6 +290,10 @@ export class EncounterStateMachine extends EventEmitter {
     // catches wipes where the group died, mobs leashed back, and the group re-engaged.
     //
     // NOTE: May need expansion if edge cases surface:
+    //   - Known blind spot: if a mob never drops below 90% before a wipe (e.g. very
+    //     short/one-shot pulls, or phases where the mob is briefly untargetable), the
+    //     detector never arms and the reset goes undetected. Narrowing the gap to
+    //     e.g. <0.95 would help but increases Bolstering-heal false positives.
     //   - Partial-increase resets (none observed yet; leash always heals to full)
     //   - Bolstering affix / mob self-heals — legitimate HP increases; reconcile with
     //     SPELL_HEAL events on the same GUID if false positives emerge

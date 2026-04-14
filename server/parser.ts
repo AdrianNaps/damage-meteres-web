@@ -215,10 +215,16 @@ export function parseLine(raw: string): ParsedEvent | ParsedEvent[] | null {
       const damage = parseDamageSuffix(fields)
       if (!damage) return null
       // Advanced-log block is dest-side on SPELL/RANGE damage: fields[12]=infoGUID,
-      // [13]=ownerGUID, [14]=currentHP, [15]=maxHP. Skip extraction if the layout
-      // looks off (non-numeric or clearly too short) so we never emit bad HP snapshots.
-      const destCurrentHP = parseInt(fields[14])
-      const destMaxHP = parseInt(fields[15])
+      // [13]=ownerGUID, [14]=currentHP, [15]=maxHP. Verified in real logs: a full
+      // advanced-enabled SPELL_DAMAGE row has ~42 fields. Without ADVANCED_LOG_EVENTS
+      // the 10-field damage suffix starts at fields[12], which would make [14]
+      // overkill and [15] the damage-school bitmask — feeding garbage into reset
+      // detection. Threshold of 38 cleanly separates advanced (~42) from non-
+      // advanced (~22-23). Also require a GUID-shaped infoGUID at [12] as a
+      // second guard.
+      const hasAdvanced = fields.length >= 38 && fields[12]?.includes('-')
+      const destCurrentHP = hasAdvanced ? parseInt(fields[14]) : NaN
+      const destMaxHP     = hasAdvanced ? parseInt(fields[15]) : NaN
       const hpOk = Number.isFinite(destCurrentHP) && Number.isFinite(destMaxHP) && destMaxHP > 0
       return {
         timestamp, type: eventType, source, dest,
