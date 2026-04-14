@@ -95,6 +95,11 @@ export function send(msg: object) {
   }
 }
 
-export function requestTargetDetail(segmentId: string, targetName: string) {
-  send({ type: 'get_target_detail', segmentId, targetName })
+export function requestTargetDetail(
+  viewType: 'segment' | 'key_run' | 'boss_section',
+  viewId: string,
+  targetName: string,
+  metric: 'damage' | 'healing',
+) {
+  send({ type: 'get_target_detail', viewType, viewId, targetName, metric })
 }

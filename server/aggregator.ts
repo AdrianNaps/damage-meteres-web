@@ -321,7 +321,7 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
       if (!destIsPet) return
     }
 
-    applyHeal(segment, sourceName, sourceGuid, heal, event.timestamp)
+    applyHeal(segment, sourceName, sourceGuid, event.dest.name, heal, event.timestamp)
   } else if (payload.type === 'death') {
     if (payload.unconsciousOnDeath) return
     if (!isPlayerGuid(event.dest.guid)) return
@@ -441,7 +441,7 @@ function getOrCreatePlayer(segment: Segment, name: string, guid: string): Player
       name: normalized,
       specId: segment.guidToSpec[guid],
       damage: { total: 0, spells: {}, targets: {} },
-      healing: { total: 0, overheal: 0, spells: {} },
+      healing: { total: 0, overheal: 0, spells: {}, targets: {} },
       deaths: [],
       interrupts: { total: 0, byKicker: {}, byKicked: {}, records: [] },
       damageActiveMs: 0,
@@ -602,7 +602,7 @@ const HEAL_SPELL_ALIASES: Record<string, { id: string; name: string }> = {
   '463075': { id: '431907', name: "Sun's Avatar" },
 }
 
-function applyHeal(segment: Segment, sourceName: string, sourceGuid: string, payload: HealPayload, timestamp: number) {
+function applyHeal(segment: Segment, sourceName: string, sourceGuid: string, destName: string, payload: HealPayload, timestamp: number) {
   const player = getOrCreatePlayer(segment, sourceName, sourceGuid)
   if (!player) return
   const alias = HEAL_SPELL_ALIASES[payload.spellId]
@@ -619,6 +619,24 @@ function applyHeal(segment: Segment, sourceName: string, sourceGuid: string, pay
   const effective = baseAmount - overheal
   player.healing.total += effective
   player.healing.overheal += overheal
+
+  // Per-target heal aggregate on the player, and per-target heal-received
+  // aggregate on the segment. Parallels damage.targets / segment.targetDamageTaken
+  // so the healing detail pane can surface a Targets view and drill down into
+  // who else healed this same target.
+  const targetEntry = player.healing.targets[destName]
+  if (!targetEntry) {
+    player.healing.targets[destName] = { targetName: destName, total: effective, overheal }
+  } else {
+    targetEntry.total += effective
+    targetEntry.overheal += overheal
+  }
+
+  const received = segment.healingReceived[destName] ?? (segment.healingReceived[destName] = { total: 0, sources: {} })
+  received.total += effective
+  const src = received.sources[sourceName]
+  if (!src) received.sources[sourceName] = { sourceName, total: effective }
+  else      src.total += effective
 
   // Per-player heal activeTime: same gap-stitch algorithm as damage, tracked
   // separately so WCL's healing-view HPS divisor matches byte-perfect.

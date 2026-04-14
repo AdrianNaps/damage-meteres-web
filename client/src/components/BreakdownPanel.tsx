@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useStore, selectCurrentView, resolveSpecId } from '../store'
 import { getClassColor } from './PlayerRow'
 import { DamageSpellTable, HealSpellTable, InterruptSpellTable } from './SpellTable'
-import { TargetTable } from './TargetTable'
+import { TargetTable, type TargetRowStyle } from './TargetTable'
 import { TargetDrillDown } from './TargetDrillDown'
 import { requestTargetDetail } from '../ws'
 import { formatNum, shortName } from '../utils/format'
@@ -24,9 +24,6 @@ export function BreakdownPanel() {
   const targetDetail = useStore(s => s.targetDetail)
   const setTargetDetail = useStore(s => s.setTargetDetail)
   const playerSpecs = useStore(s => s.playerSpecs)
-
-  const isAggregate = currentView?.type === 'key_run' || currentView?.type === 'boss_section'
-  const canDrillTargets = !isAggregate
 
   useEffect(() => {
     setDrillTarget(null)
@@ -74,9 +71,6 @@ export function BreakdownPanel() {
 
   function renderContent() {
     if (!currentView) return null
-    if (metric === 'healing') {
-      return <HealSpellTable spells={player.healing.spells} classColor={color} />
-    }
     if (metric === 'interrupts') {
       return (
         <>
@@ -85,29 +79,52 @@ export function BreakdownPanel() {
         </>
       )
     }
-    if (canDrillTargets && drillTarget && targetDetail?.targetName === drillTarget) {
+    const isHealing = metric === 'healing'
+    // Player-aware row decorator: resolves healing sources/targets to their own
+    // class color, spec icon, and short name. Reused by both the list and the
+    // drill-down heading so the whole healing flow reads consistently.
+    const playerRowStyle = (name: string): TargetRowStyle | null => {
+      const specId = resolveSpecId(playerSpecs, name)
+      if (specId === undefined) return null
+      return { displayName: shortName(name), color: getClassColor(specId), specId }
+    }
+
+    if (drillTarget && targetDetail?.targetName === drillTarget) {
       return (
         <TargetDrillDown
           detail={targetDetail}
+          classColor={color}
+          resolveRow={isHealing ? playerRowStyle : undefined}
+          headingStyle={isHealing ? playerRowStyle(targetDetail.targetName) : undefined}
           onBack={() => { setDrillTarget(null); setTargetDetail(null) }}
         />
       )
     }
-    if (canDrillTargets && viewMode === 'targets') {
-      const segmentId = (currentView as { id: string }).id
+    if (viewMode === 'targets') {
+      const viewType = currentView.type
+      const viewId =
+        currentView.type === 'segment' ? currentView.id
+        : currentView.type === 'key_run' ? currentView.keyRunId
+        : currentView.bossSectionId
+      const resolveRow = isHealing ? playerRowStyle : undefined
       return (
         <TargetTable
-          targets={player.damage.targets}
-          totalDamage={player.damage.total}
+          targets={isHealing ? player.healing.targets : player.damage.targets}
+          totalAmount={isHealing ? player.healing.total : player.damage.total}
           duration={duration}
+          rateLabel={isHealing ? 'HPS' : 'DPS'}
+          classColor={color}
+          resolveRow={resolveRow}
           onSelect={(name) => {
             setDrillTarget(name)
-            requestTargetDetail(segmentId, name)
+            requestTargetDetail(viewType, viewId, name, isHealing ? 'healing' : 'damage')
           }}
         />
       )
     }
-    return <DamageSpellTable spells={player.damage.spells} classColor={color} />
+    return isHealing
+      ? <HealSpellTable spells={player.healing.spells} classColor={color} />
+      : <DamageSpellTable spells={player.damage.spells} classColor={color} />
   }
 
   return (
@@ -157,7 +174,7 @@ export function BreakdownPanel() {
       </div>
 
       {/* View mode toggle */}
-      {metric === 'damage' && canDrillTargets && (
+      {(metric === 'damage' || metric === 'healing') && (
         <div className="px-4 pt-2.5">
           <SegmentedControl
             options={[

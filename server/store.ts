@@ -34,6 +34,12 @@ export interface TargetDamageStats {
   total: number
 }
 
+export interface TargetHealStats {
+  targetName: string
+  total: number      // effective heal
+  overheal: number
+}
+
 export interface SourceDamageStats {
   sourceName: string
   total: number
@@ -41,6 +47,11 @@ export interface SourceDamageStats {
 
 export interface TargetDamageTaken {
   total: number
+  sources: Record<string, SourceDamageStats>
+}
+
+export interface TargetHealingReceived {
+  total: number     // effective heal received
   sources: Record<string, SourceDamageStats>
 }
 
@@ -54,6 +65,7 @@ export interface HealData {
   total: number
   overheal: number
   spells: Record<string, SpellHealStats>
+  targets: Record<string, TargetHealStats>
 }
 
 export interface InterruptSpellStats {
@@ -116,6 +128,7 @@ export interface Segment {
   petBatchToOwner: Record<string, string>  // batch-key (shard|npcId|spawnSuffix) → ownerGuid, for sibling-suffix bootstrap of un-swung batched pets (e.g. Hunter Stampede)
   supportOwnedSpellIds: Set<string>    // spellIds that have fired as *_DAMAGE_SUPPORT; their plain variants are not real source damage
   targetDamageTaken: Record<string, TargetDamageTaken>
+  healingReceived: Record<string, TargetHealingReceived>  // dest → effective heal + source breakdown
 }
 
 // Derived values computed at read time, not stored.
@@ -427,6 +440,9 @@ export class SegmentStore {
               spells: Object.fromEntries(
                 Object.entries(player.healing.spells).map(([k, v]) => [k, { ...v }])
               ),
+              targets: Object.fromEntries(
+                Object.entries(player.healing.targets).map(([k, v]) => [k, { ...v }])
+              ),
             },
             deaths: [...player.deaths],
             interrupts: {
@@ -515,6 +531,16 @@ export class SegmentStore {
               ms.absorbed += spell.absorbed
               ms.hitCount += spell.hitCount
               ms.critCount += spell.critCount
+            }
+          }
+
+          for (const [tname, target] of Object.entries(player.healing.targets)) {
+            const mt = mp.healing.targets[tname]
+            if (!mt) {
+              mp.healing.targets[tname] = { ...target }
+            } else {
+              mt.total += target.total
+              mt.overheal += target.overheal
             }
           }
 

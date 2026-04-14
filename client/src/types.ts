@@ -28,6 +28,12 @@ export interface TargetDamageStats {
   total: number
 }
 
+export interface TargetHealStats {
+  targetName: string
+  total: number
+  overheal: number
+}
+
 export interface TargetDetail {
   targetName: string
   total: number
@@ -93,7 +99,7 @@ export interface PlayerSnapshot {
   dps: number
   hps: number
   damage: { total: number; spells: Record<string, SpellDamageStats>; targets: Record<string, TargetDamageStats> }
-  healing: { total: number; overheal: number; spells: Record<string, SpellHealStats> }
+  healing: { total: number; overheal: number; spells: Record<string, SpellHealStats>; targets: Record<string, TargetHealStats> }
   deaths: PlayerDeathRecord[]
   interrupts: InterruptData
 }

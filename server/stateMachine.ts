@@ -395,6 +395,7 @@ export class EncounterStateMachine extends EventEmitter {
       petBatchToOwner: {},
       supportOwnedSpellIds: new Set(),
       targetDamageTaken: {},
+      healingReceived: {},
     }
   }
 }

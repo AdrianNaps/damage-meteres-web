@@ -79,17 +79,43 @@ export function attachWsHandlers(
           ws.send(JSON.stringify({ type: 'boss_section_detail', bossSectionId: msg.bossSectionId, snapshot }))
         }
       } else if (msg.type === 'get_target_detail') {
-        const seg = store.getById(msg.segmentId)
-        const entry = seg?.targetDamageTaken[msg.targetName]
-        if (entry) {
-          ws.send(JSON.stringify({
-            type: 'target_detail',
-            targetName: msg.targetName,
-            total: entry.total,
-            sources: Object.values(entry.sources).sort((a, b) => b.total - a.total),
-          }))
+        // viewType is 'segment' | 'key_run' | 'boss_section'. For aggregate views
+        // we merge per-target rollups across every segment in the container so the
+        // Overview's detail pane drills down the same way per-segment panes do.
+        // metric selects which rollup to query: damage→targetDamageTaken,
+        // healing→healingReceived. Both share the {total, sources[]} shape so
+        // the client renderer can stay metric-agnostic.
+        const { viewType, viewId, targetName, metric } = msg
+        let segs: Segment[] = []
+        if (viewType === 'segment') {
+          const seg = store.getById(viewId)
+          if (seg) segs = [seg]
+        } else if (viewType === 'key_run') {
+          segs = store.getAll().filter(s => s.keyRunId === viewId)
+        } else if (viewType === 'boss_section') {
+          segs = store.getAll().filter(s => s.bossSectionId === viewId)
+        }
+
+        let total = 0
+        const sourceTotals: Record<string, number> = {}
+        for (const seg of segs) {
+          const entry = metric === 'healing'
+            ? seg.healingReceived[targetName]
+            : seg.targetDamageTaken[targetName]
+          if (!entry) continue
+          total += entry.total
+          for (const src of Object.values(entry.sources)) {
+            sourceTotals[src.sourceName] = (sourceTotals[src.sourceName] ?? 0) + src.total
+          }
+        }
+
+        if (total > 0) {
+          const sources = Object.entries(sourceTotals)
+            .map(([sourceName, t]) => ({ sourceName, total: t }))
+            .sort((a, b) => b.total - a.total)
+          ws.send(JSON.stringify({ type: 'target_detail', targetName, total, sources }))
         } else {
-          ws.send(JSON.stringify({ type: 'target_detail_not_found', targetName: msg.targetName }))
+          ws.send(JSON.stringify({ type: 'target_detail_not_found', targetName }))
         }
       }
     })
