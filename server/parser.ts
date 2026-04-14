@@ -214,9 +214,21 @@ export function parseLine(raw: string): ParsedEvent | ParsedEvent[] | null {
       if (source.guid === dest.guid && !REDISTRIBUTION_DAMAGE_SPELLS.has(fields[9])) return null
       const damage = parseDamageSuffix(fields)
       if (!damage) return null
+      // Advanced-log block is dest-side on SPELL/RANGE damage: fields[12]=infoGUID,
+      // [13]=ownerGUID, [14]=currentHP, [15]=maxHP. Skip extraction if the layout
+      // looks off (non-numeric or clearly too short) so we never emit bad HP snapshots.
+      const destCurrentHP = parseInt(fields[14])
+      const destMaxHP = parseInt(fields[15])
+      const hpOk = Number.isFinite(destCurrentHP) && Number.isFinite(destMaxHP) && destMaxHP > 0
       return {
         timestamp, type: eventType, source, dest,
-        payload: { type: 'damage', spellId: fields[9], spellName: stripQuotes(fields[10]), ...damage }
+        payload: {
+          type: 'damage',
+          spellId: fields[9],
+          spellName: stripQuotes(fields[10]),
+          ...damage,
+          ...(hpOk ? { destCurrentHP, destMaxHP } : {}),
+        }
       }
     }
 

@@ -60,6 +60,12 @@ export interface DamagePayload {
   crushing: boolean
   swingOwnerGuid?: string | null  // set on SWING_DAMAGE from pets/guardians; owner GUID from advanced-log fields
   supportSourceGuid?: string | null  // set on *_SUPPORT events: GUID of the buffer (e.g. Aug Evoker) who actually owns this damage
+  // Dest unit's HP snapshot from the advanced-log block. Populated on SPELL_DAMAGE,
+  // SPELL_PERIODIC_DAMAGE, and RANGE_DAMAGE (dest-side advanced-log). Used by the
+  // state machine's M+ trash pull detection to spot mob resets (HP jumps back to ~full
+  // without a death), which signals the group wiped and the mob leashed back.
+  destCurrentHP?: number
+  destMaxHP?: number
 }
 
 export interface HealPayload {
