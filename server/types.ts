@@ -158,3 +158,16 @@ export interface PlayerDeathRecord {
   } | null
   recap: DeathRecapEvent[]   // up to RECAP_WINDOW_SECONDS before death
 }
+
+export interface PlayerInterruptRecord {
+  kickerName: string
+  kickerGuid: string
+  timeOfInterrupt: number    // absolute ms timestamp
+  combatElapsed: number      // seconds since segment.firstEventTime
+  kickerSpellId: string
+  kickerSpellName: string
+  kickedSpellId: string
+  kickedSpellName: string
+  targetName: string         // the mob whose cast was interrupted
+  targetGuid: string
+}

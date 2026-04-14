@@ -408,6 +408,21 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
     } else {
       kicked.count++
     }
+
+    player.interrupts.records.push({
+      kickerName: sourceName,
+      kickerGuid: sourceGuid,
+      timeOfInterrupt: event.timestamp,
+      combatElapsed: segment.firstEventTime != null
+        ? (event.timestamp - segment.firstEventTime) / 1000
+        : 0,
+      kickerSpellId: payload.spellId,
+      kickerSpellName: payload.spellName,
+      kickedSpellId: payload.extraSpellId,
+      kickedSpellName: payload.extraSpellName,
+      targetName: event.dest.name,
+      targetGuid: event.dest.guid,
+    })
   }
 
   if (segment.firstEventTime === null) segment.firstEventTime = event.timestamp
@@ -428,7 +443,7 @@ function getOrCreatePlayer(segment: Segment, name: string, guid: string): Player
       damage: { total: 0, spells: {}, targets: {} },
       healing: { total: 0, overheal: 0, spells: {} },
       deaths: [],
-      interrupts: { total: 0, byKicker: {}, byKicked: {} },
+      interrupts: { total: 0, byKicker: {}, byKicked: {}, records: [] },
       damageActiveMs: 0,
       healActiveMs: 0,
       firstDamageTime: null,

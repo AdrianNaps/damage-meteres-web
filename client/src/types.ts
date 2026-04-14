@@ -67,10 +67,24 @@ export interface InterruptSpellStats {
   count: number
 }
 
+export interface PlayerInterruptRecord {
+  kickerName: string
+  kickerGuid: string
+  timeOfInterrupt: number
+  combatElapsed: number
+  kickerSpellId: string
+  kickerSpellName: string
+  kickedSpellId: string
+  kickedSpellName: string
+  targetName: string
+  targetGuid: string
+}
+
 export interface InterruptData {
   total: number
   byKicker: Record<string, InterruptSpellStats>
   byKicked: Record<string, InterruptSpellStats>
+  records: PlayerInterruptRecord[]
 }
 
 export interface PlayerSnapshot {

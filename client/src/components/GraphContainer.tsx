@@ -1,5 +1,5 @@
 import { useRef, useEffect, useCallback, useMemo, useState } from 'react'
-import type { PlayerSnapshot, PlayerDeathRecord } from '../types'
+import type { PlayerSnapshot } from '../types'
 import { getClassColor } from './PlayerRow'
 import { useStore, resolveSpecId, GRAPH_GROUP_AVG_KEY, selectGraphTimeOffset } from '../store'
 import { formatNum, shortName } from '../utils/format'
@@ -72,6 +72,30 @@ interface LineData {
 
 interface HoverState { slice: number; xCss: number }
 
+interface BarTooltipRow {
+  combatElapsed: number
+  playerName: string
+  color: string
+  // deaths
+  killingSpellName?: string
+  sourceName?: string
+  // interrupts (populated once server provides per-event records)
+  kickerSpellName?: string
+  kickedSpellName?: string
+  targetName?: string
+}
+
+interface BarSeries { playerName: string; color: string; buckets: number[] }
+
+interface BarData {
+  series: BarSeries[]
+  bucketRecords: BarTooltipRow[][]
+  bucketCount: number
+  bucketSec: number
+}
+
+interface BarHoverState { bucket: number; seriesIndex: number; xCss: number }
+
 export function GraphContainer({ metric, players, duration }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -88,8 +112,78 @@ export function GraphContainer({ metric, players, duration }: Props) {
   const timeOffset = useStore(selectGraphTimeOffset)
 
   const [hover, setHover] = useState<HoverState | null>(null)
+  const [barHover, setBarHover] = useState<BarHoverState | null>(null)
 
   const isBar = metric === 'deaths' || metric === 'interrupts'
+
+  // Bar data — bucketed counts plus per-bucket tooltip records. Computed once
+  // per metric/players/duration change so the renderer and the hover tooltip
+  // share the same bucketing. Deaths use real PlayerDeathRecord timestamps;
+  // interrupts still produce synthetic counts (no per-event records yet) and
+  // therefore have empty record arrays — tooltip is suppressed for those buckets.
+  const barData = useMemo<BarData | null>(() => {
+    if (!isBar) return null
+
+    const bucketSec = duration > 400 ? 60 : 30
+    const bucketCount = Math.max(1, Math.ceil(duration / bucketSec))
+    const bucketRecords: BarTooltipRow[][] = Array.from({ length: bucketCount }, () => [])
+
+    const playerMap = new Map<string, BarSeries>()
+
+    if (metric === 'deaths') {
+      playerList.forEach(p => {
+        const specId = resolveSpecId(playerSpecs, p.name, p.specId)
+        const color = getClassColor(specId)
+        p.deaths.forEach(d => {
+          let series = playerMap.get(d.playerName)
+          if (!series) {
+            series = { playerName: d.playerName, color, buckets: new Array(bucketCount).fill(0) }
+            playerMap.set(d.playerName, series)
+          }
+          const bucket = Math.min(Math.floor(d.combatElapsed / bucketSec), bucketCount - 1)
+          series.buckets[bucket]++
+          bucketRecords[bucket].push({
+            combatElapsed: d.combatElapsed,
+            playerName: d.playerName,
+            color,
+            killingSpellName: d.killingBlow?.spellName ?? 'Unknown',
+            sourceName: d.killingBlow?.sourceName ?? 'Unknown',
+          })
+        })
+      })
+    } else {
+      // interrupts — one row per PlayerInterruptRecord, bucketed by combatElapsed.
+      playerList.forEach(p => {
+        const specId = resolveSpecId(playerSpecs, p.name, p.specId)
+        const color = getClassColor(specId)
+        p.interrupts.records.forEach(r => {
+          let series = playerMap.get(r.kickerName)
+          if (!series) {
+            series = { playerName: r.kickerName, color, buckets: new Array(bucketCount).fill(0) }
+            playerMap.set(r.kickerName, series)
+          }
+          const bucket = Math.min(Math.floor(r.combatElapsed / bucketSec), bucketCount - 1)
+          series.buckets[bucket]++
+          bucketRecords[bucket].push({
+            combatElapsed: r.combatElapsed,
+            playerName: r.kickerName,
+            color,
+            kickerSpellName: r.kickerSpellName,
+            kickedSpellName: r.kickedSpellName,
+            targetName: r.targetName,
+          })
+        })
+      })
+    }
+
+    if (playerMap.size === 0) return null
+
+    bucketRecords.forEach(rs => rs.sort((a, b) => a.combatElapsed - b.combatElapsed))
+    const series = [...playerMap.values()].sort(
+      (a, b) => b.buckets.reduce((s, v) => s + v, 0) - a.buckets.reduce((s, v) => s + v, 0)
+    )
+    return { series, bucketRecords, bucketCount, bucketSec }
+  }, [isBar, metric, playerList, playerSpecs, duration])
 
   // Line data — generated once per metric/players/duration change and shared
   // between the canvas renderer and the hover tooltip so both read identical
@@ -128,10 +222,13 @@ export function GraphContainer({ metric, players, duration }: Props) {
   }, [isBar, metric, playerList, playerSpecs, duration])
 
   // Clear hover state when the underlying data goes away (e.g. switching to a
-  // bar metric). The slice index would otherwise point into a stale series.
+  // bar metric). The slice/bucket index would otherwise point into a stale series.
   useEffect(() => {
     if (!lineData) setHover(null)
   }, [lineData])
+  useEffect(() => {
+    if (!barData) setBarHover(null)
+  }, [barData])
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current
@@ -151,13 +248,14 @@ export function GraphContainer({ metric, players, duration }: Props) {
     const plotH = h - PAD.top - PAD.bottom
 
     if (isBar) {
-      drawBarGraph(ctx, w, h, plotW, plotH, playerList, playerSpecs, metric as 'deaths' | 'interrupts', duration, timeOffset)
+      if (barData) drawBars(ctx, h, plotW, plotH, barData, timeOffset, barHover?.bucket ?? null, barHover?.seriesIndex ?? null)
+      else drawEmptyState(ctx, w, h)
     } else if (lineData) {
       drawLineGraph(ctx, w, h, plotW, plotH, lineData, focused, duration, timeOffset, hover?.slice ?? null)
     } else {
       drawEmptyState(ctx, w, h)
     }
-  }, [isBar, metric, playerList, playerSpecs, duration, lineData, focused, timeOffset, hover])
+  }, [isBar, barData, lineData, focused, duration, timeOffset, hover, barHover])
 
   useEffect(() => {
     draw()
@@ -177,21 +275,67 @@ export function GraphContainer({ metric, players, duration }: Props) {
     : 'Interrupts Over Time'
 
   function handleMouseMove(e: React.MouseEvent<HTMLCanvasElement>) {
-    if (!lineData) return
     const rect = e.currentTarget.getBoundingClientRect()
     const plotW = rect.width - PAD.left - PAD.right
     const xInPlot = e.clientX - rect.left - PAD.left
-    if (xInPlot < 0 || xInPlot > plotW) {
-      if (hover) setHover(null)
+
+    if (lineData) {
+      if (xInPlot < 0 || xInPlot > plotW) {
+        if (hover) setHover(null)
+        return
+      }
+      const slice = Math.max(0, Math.min(lineData.points, Math.round((xInPlot / plotW) * lineData.points)))
+      const anchorX = PAD.left + (slice / lineData.points) * plotW
+      if (!hover || hover.slice !== slice) setHover({ slice, xCss: anchorX })
       return
     }
-    const slice = Math.max(0, Math.min(lineData.points, Math.round((xInPlot / plotW) * lineData.points)))
-    const anchorX = PAD.left + (slice / lineData.points) * plotW
-    if (!hover || hover.slice !== slice) setHover({ slice, xCss: anchorX })
+
+    if (barData) {
+      if (xInPlot < 0 || xInPlot > plotW) {
+        if (barHover) setBarHover(null)
+        return
+      }
+      const groupW = plotW / barData.bucketCount
+      const bucket = Math.min(barData.bucketCount - 1, Math.max(0, Math.floor(xInPlot / groupW)))
+      if (barData.bucketRecords[bucket].length === 0) {
+        if (barHover) setBarHover(null)
+        return
+      }
+
+      // Within the hovered bucket, snap to the closest drawn bar (player series
+      // with non-zero count in this bucket). Mirrors drawBars' layout math so
+      // the hit point lines up with what's on screen, including the 2-px min
+      // bar width used when many players fit into a cluster.
+      const nSeries = barData.series.length
+      const groupPad = Math.max(1, groupW * 0.15)
+      const usableW = groupW - groupPad * 2
+      const barW = Math.max(2, usableW / nSeries)
+      const barGap = nSeries > 1 ? Math.max(1, (usableW - barW * nSeries) / (nSeries - 1)) : 0
+      const groupX = bucket * groupW + groupPad
+
+      let bestPi = -1
+      let bestDist = Infinity
+      for (let pi = 0; pi < nSeries; pi++) {
+        if (barData.series[pi].buckets[bucket] === 0) continue
+        const cx = groupX + pi * (barW + barGap) + barW / 2
+        const d = Math.abs(xInPlot - cx)
+        if (d < bestDist) { bestDist = d; bestPi = pi }
+      }
+      if (bestPi === -1) {
+        if (barHover) setBarHover(null)
+        return
+      }
+
+      const anchorX = PAD.left + groupX + bestPi * (barW + barGap) + barW / 2
+      if (!barHover || barHover.bucket !== bucket || barHover.seriesIndex !== bestPi) {
+        setBarHover({ bucket, seriesIndex: bestPi, xCss: anchorX })
+      }
+    }
   }
 
   function handleMouseLeave() {
     if (hover) setHover(null)
+    if (barHover) setBarHover(null)
   }
 
   // Tooltip content — only focused series plus group avg when focused.
@@ -210,11 +354,17 @@ export function GraphContainer({ metric, players, duration }: Props) {
     return { rows, timeLabel: formatTime(seconds) }
   })() : null
 
+  const barTooltip = barHover && barData
+    ? barData.bucketRecords[barHover.bucket]
+        .filter(r => r.playerName === barData.series[barHover.seriesIndex].playerName)
+    : null
+
   // Position tooltip on the opposite side of the cursor when it would crowd
   // the right edge. Measured against container width rather than canvas to
   // match the wrapper's absolute positioning context.
   const canvasCssW = canvasRef.current?.offsetWidth ?? 0
-  const flipLeft = tooltip && canvasCssW > 0 && hover!.xCss > canvasCssW * 0.6
+  const activeXCss = tooltip ? hover!.xCss : barTooltip ? barHover!.xCss : 0
+  const flipLeft = (tooltip || barTooltip) && canvasCssW > 0 && activeXCss > canvasCssW * 0.6
 
   return (
     <div
@@ -299,8 +449,61 @@ export function GraphContainer({ metric, players, duration }: Props) {
             ))}
           </div>
         )}
+        {barTooltip && barHover && (
+          <div
+            style={{
+              position: 'absolute',
+              top: 0,
+              left: barHover.xCss,
+              transform: flipLeft ? 'translateX(calc(-100% - 8px))' : 'translateX(8px)',
+              pointerEvents: 'none',
+              background: 'rgba(16,17,20,0.94)',
+              border: '1px solid var(--border-default)',
+              padding: '8px 10px',
+              fontSize: 12,
+              whiteSpace: 'nowrap',
+              boxShadow: '0 2px 8px rgba(0,0,0,0.4)',
+              zIndex: 2,
+            }}
+          >
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: 'auto auto auto auto',
+              columnGap: 10,
+              rowGap: 2,
+              alignItems: 'baseline',
+            }}>
+              {barTooltip.map((r, i) => (
+                <BarTooltipRowView key={i} row={r} timeOffset={timeOffset} metric={metric as 'deaths' | 'interrupts'} />
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
+  )
+}
+
+function BarTooltipRowView({
+  row,
+  timeOffset,
+  metric,
+}: {
+  row: BarTooltipRow
+  timeOffset: number
+  metric: 'deaths' | 'interrupts'
+}) {
+  const time = formatTime(Math.round(timeOffset + row.combatElapsed))
+  const isDeath = metric === 'deaths'
+  const ability = isDeath ? row.killingSpellName : row.kickedSpellName
+  const target = isDeath ? row.sourceName : row.targetName
+  return (
+    <>
+      <span style={{ fontFamily: 'var(--font-mono)', color: '#a8aab4' }}>{time}</span>
+      <span style={{ color: row.color }}>{shortName(row.playerName)}</span>
+      <span style={{ color: 'var(--text-primary)' }}>{ability ?? '—'}</span>
+      <span style={{ color: '#a8aab4' }}>{target ?? '—'}</span>
+    </>
   )
 }
 
@@ -449,90 +652,16 @@ function drawDot(ctx: CanvasRenderingContext2D, x: number, y: number, color: str
   ctx.stroke()
 }
 
-function drawBarGraph(
-  ctx: CanvasRenderingContext2D,
-  w: number, h: number,
-  plotW: number, plotH: number,
-  playerList: PlayerSnapshot[],
-  playerSpecs: Record<string, number>,
-  metric: 'deaths' | 'interrupts',
-  duration: number,
-  timeOffset: number,
-) {
-  const isDeath = metric === 'deaths'
-
-  if (isDeath) {
-    // Deaths have real timestamps — bucket by combatElapsed
-    const allDeaths: { record: PlayerDeathRecord; specId?: number }[] = []
-    playerList.forEach(p => {
-      const specId = resolveSpecId(playerSpecs, p.name, p.specId)
-      p.deaths.forEach(d => allDeaths.push({ record: d, specId }))
-    })
-
-    if (allDeaths.length === 0) {
-      drawEmptyState(ctx, w, h)
-      return
-    }
-
-    const bucketSec = duration > 400 ? 60 : 30
-    const bucketCount = Math.max(1, Math.ceil(duration / bucketSec))
-
-    // Group deaths by player within buckets
-    const playerMap = new Map<string, { color: string; buckets: number[] }>()
-    allDeaths.forEach(({ record, specId }) => {
-      const name = record.playerName
-      if (!playerMap.has(name)) {
-        playerMap.set(name, {
-          color: getClassColor(specId),
-          buckets: new Array(bucketCount).fill(0),
-        })
-      }
-      const bucket = Math.min(Math.floor(record.combatElapsed / bucketSec), bucketCount - 1)
-      playerMap.get(name)!.buckets[bucket]++
-    })
-
-    const activePlayers = [...playerMap.entries()]
-      .sort((a, b) => b[1].buckets.reduce((s, v) => s + v, 0) - a[1].buckets.reduce((s, v) => s + v, 0))
-
-    drawBars(ctx, w, h, plotW, plotH, activePlayers.map(([, v]) => v), bucketCount, bucketSec, timeOffset)
-  } else {
-    // Interrupts: no timestamps available, generate synthetic bucketed data
-    const valFn = (p: PlayerSnapshot) => p.interrupts.total
-    const active = [...playerList].filter(p => valFn(p) > 0).sort((a, b) => valFn(b) - valFn(a))
-
-    if (active.length === 0) {
-      drawEmptyState(ctx, w, h)
-      return
-    }
-
-    const bucketSec = duration > 400 ? 60 : 30
-    const bucketCount = Math.max(1, Math.ceil(duration / bucketSec))
-
-    const bucketData = active.map(p => {
-      const total = valFn(p)
-      const buckets = new Array(bucketCount).fill(0)
-      let seed = hashStr(p.name + 'interrupts')
-      for (let i = 0; i < total; i++) {
-        seed = (seed * 16807 + 12345) & 0x7fffffff
-        buckets[seed % bucketCount]++
-      }
-      const specId = resolveSpecId(playerSpecs, p.name, p.specId)
-      return { color: getClassColor(specId), buckets }
-    })
-
-    drawBars(ctx, w, h, plotW, plotH, bucketData, bucketCount, bucketSec, timeOffset)
-  }
-}
-
 function drawBars(
   ctx: CanvasRenderingContext2D,
-  w: number, h: number,
+  h: number,
   plotW: number, plotH: number,
-  data: { color: string; buckets: number[] }[],
-  bucketCount: number,
-  bucketSec: number,
+  barData: BarData,
   timeOffset: number,
+  hoverBucket: number | null,
+  hoverSeriesIndex: number | null,
 ) {
+  const { series: data, bucketCount, bucketSec } = barData
   // Find max
   let maxBucket = 0
   for (let b = 0; b < bucketCount; b++) {
@@ -569,6 +698,16 @@ function drawBars(
   const usableW = groupW - groupPad * 2
   const barW = Math.max(2, usableW / data.length)
   const barGap = data.length > 1 ? Math.max(1, (usableW - barW * data.length) / (data.length - 1)) : 0
+
+  // Hover highlight — a single bar wide, so only the hovered player's bar in
+  // the hovered bucket is lit (not neighbours in the same cluster).
+  if (hoverBucket !== null && hoverSeriesIndex !== null) {
+    const groupX = PAD.left + hoverBucket * groupW + groupPad
+    const x0 = groupX + hoverSeriesIndex * (barW + barGap)
+    const highlightPad = 2
+    ctx.fillStyle = 'rgba(255,255,255,0.06)'
+    ctx.fillRect(x0 - highlightPad, PAD.top, barW + highlightPad * 2, plotH)
+  }
 
   for (let b = 0; b < bucketCount; b++) {
     const groupX = PAD.left + b * groupW + groupPad

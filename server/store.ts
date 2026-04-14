@@ -1,6 +1,6 @@
-import type { PlayerDeathRecord } from './types.js'
+import type { PlayerDeathRecord, PlayerInterruptRecord } from './types.js'
 import type { IconResolver } from './iconResolver.js'
-export type { PlayerDeathRecord }
+export type { PlayerDeathRecord, PlayerInterruptRecord }
 
 export interface SpellDamageStats {
   spellId: string
@@ -68,6 +68,10 @@ export interface InterruptData {
   byKicker: Record<string, InterruptSpellStats>
   // Enemy spells that got interrupted
   byKicked: Record<string, InterruptSpellStats>
+  // Per-event records for time-series views (graph tooltips, timeline).
+  // Parallels PlayerData.deaths — aggregates above stay as the fast path for
+  // breakdown panels that only need counts.
+  records: PlayerInterruptRecord[]
 }
 
 export interface PlayerData {
@@ -433,6 +437,7 @@ export class SegmentStore {
               byKicked: Object.fromEntries(
                 Object.entries(player.interrupts.byKicked).map(([k, v]) => [k, { ...v }])
               ),
+              records: [...player.interrupts.records],
             },
             damageActiveMs: player.damageActiveMs,
             healActiveMs: player.healActiveMs,
@@ -535,6 +540,7 @@ export class SegmentStore {
             if (!existing) mp.interrupts.byKicked[sid] = { ...s }
             else existing.count += s.count
           }
+          mp.interrupts.records.push(...player.interrupts.records)
         }
       }
     }
@@ -554,6 +560,7 @@ export class SegmentStore {
 
     for (const mp of Object.values(merged)) {
       mp.deaths.sort((a, b) => a.timeOfDeath - b.timeOfDeath)
+      mp.interrupts.records.sort((a, b) => a.timeOfInterrupt - b.timeOfInterrupt)
     }
 
     // DPS/HPS divisor: WCL's table uses the shared fight/key-run duration for all
