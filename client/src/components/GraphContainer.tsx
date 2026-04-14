@@ -251,7 +251,7 @@ export function GraphContainer({ metric, players, duration }: Props) {
       if (barData) drawBars(ctx, h, plotW, plotH, barData, timeOffset, barHover?.bucket ?? null, barHover?.seriesIndex ?? null)
       else drawEmptyState(ctx, w, h)
     } else if (lineData) {
-      drawLineGraph(ctx, w, h, plotW, plotH, lineData, focused, duration, timeOffset, hover?.slice ?? null)
+      drawLineGraph(ctx, h, plotW, plotH, lineData, focused, duration, timeOffset, hover?.slice ?? null)
     } else {
       drawEmptyState(ctx, w, h)
     }
@@ -541,7 +541,7 @@ function buildLegend(
 
 function drawLineGraph(
   ctx: CanvasRenderingContext2D,
-  w: number, h: number,
+  h: number,
   plotW: number, plotH: number,
   lineData: LineData,
   focused: Set<string>,

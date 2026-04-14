@@ -45,7 +45,6 @@ export function SummaryView() {
   const setMetric = useStore(s => s.setMetric)
   const setSelectedPlayer = useStore(s => s.setSelectedPlayer)
   const setSelectedDeath = useStore(s => s.setSelectedDeath)
-  const setMode = useStore(s => s.setMode)
   const playerSpecs = useStore(s => s.playerSpecs)
 
   if (!currentView) {
@@ -78,7 +77,6 @@ export function SummaryView() {
           allDeaths={allDeaths}
           playerSpecs={playerSpecs}
           onSelect={() => {}}
-          onExpand={() => setMode('full')}
           onPlayerClick={(name) => setSelectedPlayer(name, focused)}
           onDeathClick={setSelectedDeath}
         />
@@ -96,7 +94,6 @@ export function SummaryView() {
             allDeaths={allDeaths}
             playerSpecs={playerSpecs}
             onSelect={() => setMetric(key)}
-            onExpand={() => { setMetric(key); setMode('full') }}
             onPlayerClick={(name) => setSelectedPlayer(name, key)}
             onDeathClick={setSelectedDeath}
           />
@@ -114,7 +111,6 @@ function OverviewModule({
   allDeaths,
   playerSpecs,
   onSelect,
-  onExpand,
   onPlayerClick,
   onDeathClick,
 }: {
@@ -125,7 +121,6 @@ function OverviewModule({
   allDeaths: PlayerDeathRecord[]
   playerSpecs: Record<string, number>
   onSelect: () => void
-  onExpand: () => void
   onPlayerClick: ((name: string) => void) | undefined
   onDeathClick: ((record: PlayerDeathRecord) => void) | undefined
 }) {
