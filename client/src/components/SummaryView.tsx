@@ -1,7 +1,27 @@
 import { useStore, selectCurrentView, resolveSpecId } from '../store'
 import { getClassColor } from './PlayerRow'
 import { formatNum, shortName } from '../utils/format'
+import { specIconUrl } from '../utils/icons'
 import type { PlayerSnapshot, PlayerDeathRecord } from '../types'
+
+function SpecIcon({ specId }: { specId: number | undefined }) {
+  const src = specIconUrl(specId)
+  if (!src) return null
+  return (
+    <img
+      src={src}
+      alt=""
+      width={18}
+      height={18}
+      style={{
+        flexShrink: 0,
+        border: '1px solid rgba(0, 0, 0, 0.7)',
+        borderRadius: 2,
+      }}
+      onError={e => { e.currentTarget.style.display = 'none' }}
+    />
+  )
+}
 
 const MODULE_ORDER = ['damage', 'healing', 'deaths', 'interrupts'] as const
 type ModuleKey = (typeof MODULE_ORDER)[number]
@@ -257,10 +277,13 @@ function RankedModuleBody({
               {i + 1}
             </div>
             <div style={{
-              width: 100, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-              fontSize: 12, color,
+              width: 100, display: 'flex', alignItems: 'center', gap: 6,
+              fontSize: 12, color, minWidth: 0,
             }}>
-              {shortName(p.name)}
+              <SpecIcon specId={specId} />
+              <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {shortName(p.name)}
+              </span>
             </div>
             <div style={{ flex: 1, padding: '0 8px' }}>
               <div style={{
@@ -342,6 +365,7 @@ function DeathsModuleBody({
               <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--status-wipe)', fontSize: 11 }}>
                 {elapsed}
               </span>
+              <SpecIcon specId={specId} />
               <span style={{ fontWeight: 500, color }}>
                 {shortName(d.playerName)}
               </span>
