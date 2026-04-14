@@ -632,11 +632,15 @@ function applyHeal(segment: Segment, sourceName: string, sourceGuid: string, des
     targetEntry.overheal += overheal
   }
 
-  const received = segment.healingReceived[destName] ?? (segment.healingReceived[destName] = { total: 0, sources: {} })
+  if (!segment.healingReceived[destName]) {
+    segment.healingReceived[destName] = { total: 0, sources: {} }
+  }
+  const received = segment.healingReceived[destName]
   received.total += effective
-  const src = received.sources[sourceName]
-  if (!src) received.sources[sourceName] = { sourceName, total: effective }
-  else      src.total += effective
+  if (!received.sources[sourceName]) {
+    received.sources[sourceName] = { sourceName, total: 0 }
+  }
+  received.sources[sourceName].total += effective
 
   // Per-player heal activeTime: same gap-stitch algorithm as damage, tracked
   // separately so WCL's healing-view HPS divisor matches byte-perfect.

@@ -85,7 +85,13 @@ export function attachWsHandlers(
         // metric selects which rollup to query: damage→targetDamageTaken,
         // healing→healingReceived. Both share the {total, sources[]} shape so
         // the client renderer can stay metric-agnostic.
-        const { viewType, viewId, targetName, metric } = msg
+        const viewType: unknown = msg.viewType
+        const viewId: unknown = msg.viewId
+        const targetName: unknown = msg.targetName
+        if (typeof viewId !== 'string' || typeof targetName !== 'string') return
+        if (viewType !== 'segment' && viewType !== 'key_run' && viewType !== 'boss_section') return
+        const metric: 'damage' | 'healing' = msg.metric === 'healing' ? 'healing' : 'damage'
+
         let segs: Segment[] = []
         if (viewType === 'segment') {
           const seg = store.getById(viewId)
@@ -97,19 +103,24 @@ export function attachWsHandlers(
         }
 
         let total = 0
+        let found = false
         const sourceTotals: Record<string, number> = {}
         for (const seg of segs) {
           const entry = metric === 'healing'
             ? seg.healingReceived[targetName]
             : seg.targetDamageTaken[targetName]
           if (!entry) continue
+          found = true
           total += entry.total
           for (const src of Object.values(entry.sources)) {
             sourceTotals[src.sourceName] = (sourceTotals[src.sourceName] ?? 0) + src.total
           }
         }
 
-        if (total > 0) {
+        // Existence-based detection — a legitimately zero-total row (e.g. a
+        // target that was fully overhealed across the view) still exists in
+        // the outer Targets list and must not collapse to "not found" here.
+        if (found) {
           const sources = Object.entries(sourceTotals)
             .map(([sourceName, t]) => ({ sourceName, total: t }))
             .sort((a, b) => b.total - a.total)

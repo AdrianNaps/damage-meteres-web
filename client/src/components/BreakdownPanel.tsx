@@ -6,12 +6,28 @@ import { TargetTable, type TargetRowStyle } from './TargetTable'
 import { TargetDrillDown } from './TargetDrillDown'
 import { requestTargetDetail } from '../ws'
 import { formatNum, shortName } from '../utils/format'
+import type { SegmentSnapshot, KeyRunSnapshot, BossSectionSnapshot } from '../types'
 
 const METRIC_LABELS: Record<string, string> = {
   damage: 'Damage',
   healing: 'Healing',
   deaths: 'Deaths',
   interrupts: 'Interrupts',
+}
+
+// Exhaustive container-id resolver — the `never` fallthrough will fail the
+// build if a new SegmentSnapshot/KeyRunSnapshot/BossSectionSnapshot variant is
+// added without wiring its id here.
+function resolveViewId(view: SegmentSnapshot | KeyRunSnapshot | BossSectionSnapshot): string {
+  switch (view.type) {
+    case 'segment':       return view.id
+    case 'key_run':       return view.keyRunId
+    case 'boss_section':  return view.bossSectionId
+    default: {
+      const _exhaustive: never = view
+      return _exhaustive
+    }
+  }
 }
 
 export function BreakdownPanel() {
@@ -25,10 +41,13 @@ export function BreakdownPanel() {
   const setTargetDetail = useStore(s => s.setTargetDetail)
   const playerSpecs = useStore(s => s.playerSpecs)
 
+  // Reset drill state when the player OR the metric changes — switching
+  // damage→healing on the same player would otherwise leave stale damage-world
+  // sources visible under a "Healing" heading.
   useEffect(() => {
     setDrillTarget(null)
     setTargetDetail(null)
-  }, [selectedPlayer, setTargetDetail])
+  }, [selectedPlayer, metric, setTargetDetail])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -102,10 +121,7 @@ export function BreakdownPanel() {
     }
     if (viewMode === 'targets') {
       const viewType = currentView.type
-      const viewId =
-        currentView.type === 'segment' ? currentView.id
-        : currentView.type === 'key_run' ? currentView.keyRunId
-        : currentView.bossSectionId
+      const viewId = resolveViewId(currentView)
       const resolveRow = isHealing ? playerRowStyle : undefined
       return (
         <TargetTable

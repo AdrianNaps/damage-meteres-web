@@ -50,9 +50,14 @@ export interface TargetDamageTaken {
   sources: Record<string, SourceDamageStats>
 }
 
+export interface SourceHealStats {
+  sourceName: string
+  total: number     // effective heal from this source
+}
+
 export interface TargetHealingReceived {
   total: number     // effective heal received
-  sources: Record<string, SourceDamageStats>
+  sources: Record<string, SourceHealStats>
 }
 
 export interface DamageData {
