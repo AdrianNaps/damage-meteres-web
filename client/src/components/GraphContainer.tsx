@@ -250,9 +250,8 @@ export function GraphContainer({ metric, players, duration }: Props) {
                 }}
               >
                 <div style={{
-                  width: 8, height: e.dashed ? 2 : (isBar ? 6 : 2),
+                  width: 8, height: isBar ? 6 : 2,
                   background: e.color, borderRadius: 1,
-                  ...(e.dashed ? { borderTop: `1px dashed ${e.color}`, background: 'transparent' } : {}),
                 }} />
                 {e.label}
               </div>
@@ -305,7 +304,7 @@ export function GraphContainer({ metric, players, duration }: Props) {
   )
 }
 
-interface LegendEntry { key: string; label: string; color: string; dashed?: boolean }
+interface LegendEntry { key: string; label: string; color: string }
 
 function buildLegend(
   playerList: PlayerSnapshot[],
@@ -331,7 +330,7 @@ function buildLegend(
       const specId = resolveSpecId(playerSpecs, p.name, p.specId)
       entries.push({ key: p.name, label: shortName(p.name), color: getClassColor(specId) })
     })
-    entries.push({ key: GRAPH_GROUP_AVG_KEY, label: 'Group Avg', color: 'var(--data-group-avg)', dashed: true })
+    entries.push({ key: GRAPH_GROUP_AVG_KEY, label: 'Group Avg', color: 'var(--data-group-avg)' })
   }
 
   return entries
@@ -367,6 +366,37 @@ function drawLineGraph(
   const xOf = (i: number) => PAD.left + (i / points) * plotW
   const yOf = (v: number) => PAD.top + plotH * (1 - v / maxVal)
 
+  // Group average (solid amber with gradient fill) — drawn first so player lines sit on top.
+  const avgFocused = focused.has(GRAPH_GROUP_AVG_KEY)
+  const avgAlpha = avgFocused ? 0.9 : UNFOCUSED_ALPHA
+  const tracePath = () => {
+    ctx.beginPath()
+    ctx.moveTo(xOf(0), yOf(avgData[0]))
+    for (let i = 1; i <= points; i++) {
+      const x0 = xOf(i - 1), y0 = yOf(avgData[i - 1])
+      const x1 = xOf(i), y1 = yOf(avgData[i])
+      const cpx = (x0 + x1) / 2
+      ctx.bezierCurveTo(cpx, y0, cpx, y1, x1, y1)
+    }
+  }
+
+  const gradient = ctx.createLinearGradient(0, PAD.top, 0, PAD.top + plotH)
+  gradient.addColorStop(0, `rgba(245, 158, 11, ${0.22 * avgAlpha})`)
+  gradient.addColorStop(1, 'rgba(245, 158, 11, 0)')
+  ctx.fillStyle = gradient
+  tracePath()
+  ctx.lineTo(xOf(points), PAD.top + plotH)
+  ctx.lineTo(xOf(0), PAD.top + plotH)
+  ctx.closePath()
+  ctx.fill()
+
+  ctx.strokeStyle = GROUP_AVG_COLOR
+  ctx.lineWidth = 2
+  ctx.globalAlpha = avgAlpha
+  tracePath()
+  ctx.stroke()
+  ctx.globalAlpha = 1
+
   // Player lines (smooth cubic bezier). Draw unfocused first so focused lines sit on top.
   const ordered = series
     .map(s => ({ ...s, focused: focused.has(s.name) }))
@@ -387,24 +417,6 @@ function drawLineGraph(
     ctx.stroke()
     ctx.globalAlpha = 1
   })
-
-  // Group average (dashed amber)
-  const avgFocused = focused.has(GRAPH_GROUP_AVG_KEY)
-  ctx.strokeStyle = GROUP_AVG_COLOR
-  ctx.lineWidth = 2
-  ctx.globalAlpha = avgFocused ? 0.9 : UNFOCUSED_ALPHA
-  ctx.setLineDash([6, 4])
-  ctx.beginPath()
-  ctx.moveTo(xOf(0), yOf(avgData[0]))
-  for (let i = 1; i <= points; i++) {
-    const x0 = xOf(i - 1), y0 = yOf(avgData[i - 1])
-    const x1 = xOf(i), y1 = yOf(avgData[i])
-    const cpx = (x0 + x1) / 2
-    ctx.bezierCurveTo(cpx, y0, cpx, y1, x1, y1)
-  }
-  ctx.stroke()
-  ctx.setLineDash([])
-  ctx.globalAlpha = 1
 
   // Hover marker: thin vertical line + dots on each focused series at the slice.
   if (hoverSlice !== null) {

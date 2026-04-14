@@ -176,6 +176,7 @@ function OverviewModule({
             playerSpecs={playerSpecs}
             playerList={playerList}
             onDeathClick={onDeathClick}
+            isFocused={isFocused}
           />
         ) : (
           <RankedModuleBody
@@ -321,11 +322,13 @@ function DeathsModuleBody({
   playerSpecs,
   playerList,
   onDeathClick,
+  isFocused,
 }: {
   deaths: PlayerDeathRecord[]
   playerSpecs: Record<string, number>
   playerList: PlayerSnapshot[]
   onDeathClick: ((record: PlayerDeathRecord) => void) | undefined
+  isFocused: boolean
 }) {
   if (deaths.length === 0) {
     return (
@@ -345,7 +348,8 @@ function DeathsModuleBody({
         const specId = resolveSpecId(playerSpecs, d.playerName, player?.specId)
         const color = getClassColor(specId)
         const elapsed = `${Math.floor(d.combatElapsed / 60)}:${String(Math.floor(d.combatElapsed % 60)).padStart(2, '0')}`
-        const bossName = d.killingBlow?.sourceName ?? 'Unknown'
+        const spellName = d.killingBlow?.spellName ?? 'Unknown'
+        const sourceName = d.killingBlow?.sourceName ?? 'Unknown'
 
         return (
           <div
@@ -369,8 +373,8 @@ function DeathsModuleBody({
               <span style={{ fontWeight: 500, color }}>
                 {shortName(d.playerName)}
               </span>
-              <span style={{ color: 'var(--text-secondary)', fontSize: 11 }}>
-                on {bossName}
+              <span style={{ color: 'var(--text-secondary)', fontSize: 11, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {isFocused ? <>killed by <span style={{ color: 'var(--text-primary)' }}>{spellName}</span> from {sourceName}</> : <>to {spellName}</>}
               </span>
             </div>
           </div>
