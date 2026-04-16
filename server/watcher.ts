@@ -72,12 +72,6 @@ export class LogWatcher extends EventEmitter {
     }
 
     const latest = files[0]
-    const ageMs = Date.now() - latest.mtime
-    if (ageMs > 24 * 60 * 60 * 1000) {
-      console.log(`[watcher] Most recent log is ${Math.round(ageMs / 3600000)}h old — skipping. Waiting for a new session...`)
-      return
-    }
-
     const latestPath = path.join(this.logsDir, latest.name)
     if (latestPath !== this.activeFile) {
       this._switchToFile(latestPath)

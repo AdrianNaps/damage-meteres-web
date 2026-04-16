@@ -12,6 +12,18 @@ export const GRAPH_GROUP_AVG_KEY = '__group_avg__'
 
 export type Metric = 'damage' | 'healing' | 'deaths' | 'interrupts'
 export type Mode = 'summary' | 'full'
+export type Perspective = 'allies' | 'enemies'
+export type FilterAxis = 'Source' | 'Target' | 'Ability'
+
+export interface FilterState {
+  Source?: string[]
+  Target?: string[]
+  Ability?: string[]
+}
+
+// Empty filter object shared for equality checks and defaults. The store always
+// stores a fresh object after mutations so React subscribers re-render.
+export const EMPTY_FILTERS: FilterState = {}
 
 interface AppState {
   selectedSegment: SegmentSnapshot | null
@@ -43,6 +55,11 @@ interface AppState {
   graphFocused: Set<string>
   graphScopeKey: string | null
 
+  // Full-mode filter bar. Perspective flips which units are "sources" vs "targets";
+  // filters are AND-composed subsets that narrow the event stream before rendering.
+  perspective: Perspective
+  filters: FilterState
+
   setSelectedSegment: (s: SegmentSnapshot | null) => void
   setSegmentHistory: (list: HistoryItem[]) => void
   setSelectedSegmentId: (id: string | null) => void  // clears selectedPlayer, key run state, and (when null) selectedSegment
@@ -60,6 +77,10 @@ interface AppState {
   setSettingsOpen: (open: boolean) => void
   toggleGraphFocus: (key: string) => void
   syncGraphScope: (scopeKey: string | null) => void
+  setPerspective: (p: Perspective) => void
+  setFilter: (axis: FilterAxis, names: string[] | undefined) => void
+  toggleFilterValue: (axis: FilterAxis, name: string) => void
+  clearAllFilters: () => void
   refreshBootInfo: () => Promise<void>
 }
 
@@ -75,6 +96,17 @@ function mergeIcons(
       next[id] = name
     }
   }
+  return next
+}
+
+// Segment/key-run/boss-section switches drop Source and Target — the name sets
+// may no longer make sense in the new scope (e.g. "Commander Venel" doesn't
+// exist in a different dungeon). Ability survives because spell names often
+// persist across fights; if they don't, they drop silently during aggregation.
+function clearUnitFiltersOnScopeChange(filters: FilterState): FilterState {
+  if (!filters.Source && !filters.Target) return filters
+  const next: FilterState = {}
+  if (filters.Ability) next.Ability = filters.Ability
   return next
 }
 
@@ -114,6 +146,8 @@ export const useStore = create<AppState>((set) => ({
   settingsOpen: false,
   graphFocused: new Set([GRAPH_GROUP_AVG_KEY]),
   graphScopeKey: null,
+  perspective: 'allies',
+  filters: EMPTY_FILTERS,
 
   setSelectedSegment: (s) => set(state => ({
     selectedSegment: s,
@@ -121,7 +155,7 @@ export const useStore = create<AppState>((set) => ({
     spellIcons: mergeIcons(state.spellIcons, s?.spellIcons),
   })),
   setSegmentHistory: (list) => set({ segmentHistory: list }),
-  setSelectedSegmentId: (id) => set({
+  setSelectedSegmentId: (id) => set(state => ({
     selectedSegmentId: id,
     selectedPlayer: null,
     selectedDeath: null,
@@ -130,9 +164,10 @@ export const useStore = create<AppState>((set) => ({
     selectedKeyRun: null,
     selectedBossSectionId: null,
     selectedBossSection: null,
+    filters: clearUnitFiltersOnScopeChange(state.filters),
     ...(id === null ? { selectedSegment: null } : {}),
-  }),
-  setSelectedKeyRunId: (id) => set({
+  })),
+  setSelectedKeyRunId: (id) => set(state => ({
     selectedKeyRunId: id,
     selectedKeyRun: null,
     selectedSegmentId: null,
@@ -142,13 +177,14 @@ export const useStore = create<AppState>((set) => ({
     selectedPlayer: null,
     selectedDeath: null,
     drillMetric: null,
-  }),
+    filters: clearUnitFiltersOnScopeChange(state.filters),
+  })),
   setSelectedKeyRun: (s) => set(state => ({
     selectedKeyRun: s,
     playerSpecs: mergeSpecs(state.playerSpecs, s?.players),
     spellIcons: mergeIcons(state.spellIcons, s?.spellIcons),
   })),
-  setSelectedBossSectionId: (id) => set({
+  setSelectedBossSectionId: (id) => set(state => ({
     selectedBossSectionId: id,
     selectedBossSection: null,
     selectedSegmentId: null,
@@ -158,7 +194,8 @@ export const useStore = create<AppState>((set) => ({
     selectedPlayer: null,
     selectedDeath: null,
     drillMetric: null,
-  }),
+    filters: clearUnitFiltersOnScopeChange(state.filters),
+  })),
   setSelectedBossSection: (s) => set(state => ({
     selectedBossSection: s,
     playerSpecs: mergeSpecs(state.playerSpecs, s?.players),
@@ -198,6 +235,28 @@ export const useStore = create<AppState>((set) => ({
       ...(scopeChanged ? { graphFocused: new Set([GRAPH_GROUP_AVG_KEY]) } : {}),
     }
   }),
+  // Flipping perspective inverts the source/target universes (allies ↔ enemies),
+  // so keeping the old Source/Target/Ability names would reference units that
+  // no longer exist on the active side. Spec says clear all three.
+  setPerspective: (p) => set(state => (
+    state.perspective === p ? {} : { perspective: p, filters: EMPTY_FILTERS }
+  )),
+  setFilter: (axis, names) => set(state => {
+    const next = { ...state.filters }
+    if (!names || names.length === 0) delete next[axis]
+    else next[axis] = names
+    return { filters: next }
+  }),
+  toggleFilterValue: (axis, name) => set(state => {
+    const current = state.filters[axis] ?? []
+    const idx = current.indexOf(name)
+    const nextList = idx === -1 ? [...current, name] : current.filter((_, i) => i !== idx)
+    const next = { ...state.filters }
+    if (nextList.length === 0) delete next[axis]
+    else next[axis] = nextList
+    return { filters: next }
+  }),
+  clearAllFilters: () => set({ filters: EMPTY_FILTERS }),
   refreshBootInfo: async () => {
     if (!window.api?.getBootInfo) return
     try {

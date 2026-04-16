@@ -1,13 +1,20 @@
+import { useMemo } from 'react'
 import { useStore, selectCurrentView, resolveSpecId } from '../store'
-import type { PlayerSnapshot, PlayerDeathRecord } from '../types'
+import type { PlayerSnapshot } from '../types'
+import {
+  computeUnitRows,
+  computeDeathRows,
+  hasMatchingData,
+  type UnitRow,
+  type DeathRow,
+} from '../utils/filters'
 import { formatNum, shortName } from '../utils/format'
 import { specIconUrl } from '../utils/icons'
-import { SPEC_NAMES } from '../data/specIcons'
 import { getClassColor } from './PlayerRow'
+import { FilterEmptyState } from './FilterEmptyState'
 
-// Per-player table grid (damage/healing/interrupts). Mirrors staging mock
-// ordering: rank | player | bar+% | spec | stat1 | stat2 | stat3.
-const PLAYER_GRID_COLUMNS = '32px 180px minmax(140px, 1fr) 110px 90px 90px 80px'
+// Per-player table grid: rank | player | bar+% | active% | stat1 | stat2 | stat3.
+const PLAYER_GRID_COLUMNS = '32px 180px minmax(140px, 1fr) 70px 90px 90px 80px'
 
 // Deaths grid — per-death rows, different shape. Mirrors staging mock:
 // rank | time | player | killing blow | source | overkill.
@@ -17,40 +24,34 @@ type StatFormat = 'shorthand' | 'integer'
 type NumericStat = { label: string; value: number; format: StatFormat; bold?: boolean }
 
 interface MetricConfig {
-  // Drives sort order, the bar fill, and the % of total cell.
-  sortValue: (p: PlayerSnapshot) => number
   labels: [string, string, string]
-  // Three right-aligned numeric columns.
-  stats: (p: PlayerSnapshot) => [NumericStat, NumericStat, NumericStat]
+  stats: (row: UnitRow) => [NumericStat, NumericStat, NumericStat]
 }
 
 const DAMAGE_CONFIG: MetricConfig = {
-  sortValue: p => p.dps,
   labels: ['Total', 'DPS', 'Casts'],
-  stats: p => [
-    { label: 'Total', value: p.damage.total, format: 'shorthand' },
-    { label: 'DPS', value: p.dps, format: 'shorthand', bold: true },
-    { label: 'Casts', value: Object.values(p.damage.spells).reduce((n, s) => n + s.hitCount, 0), format: 'integer' },
+  stats: r => [
+    { label: 'Total', value: r.total, format: 'shorthand' },
+    { label: 'DPS', value: r.value, format: 'shorthand', bold: true },
+    { label: 'Casts', value: r.casts ?? 0, format: 'integer' },
   ],
 }
 
 const HEALING_CONFIG: MetricConfig = {
-  sortValue: p => p.hps,
   labels: ['Total', 'HPS', 'Overheal'],
-  stats: p => [
-    { label: 'Total', value: p.healing.total, format: 'shorthand' },
-    { label: 'HPS', value: p.hps, format: 'shorthand', bold: true },
-    { label: 'Overheal', value: p.healing.overheal, format: 'shorthand' },
+  stats: r => [
+    { label: 'Total', value: r.total, format: 'shorthand' },
+    { label: 'HPS', value: r.value, format: 'shorthand', bold: true },
+    { label: 'Overheal', value: r.overheal ?? 0, format: 'shorthand' },
   ],
 }
 
 const INTERRUPTS_CONFIG: MetricConfig = {
-  sortValue: p => p.interrupts.total,
-  labels: ['Count', 'Spells', 'Records'],
-  stats: p => [
-    { label: 'Count', value: p.interrupts.total, format: 'integer', bold: true },
-    { label: 'Spells', value: Object.keys(p.interrupts.byKicked).length, format: 'integer' },
-    { label: 'Records', value: p.interrupts.records.length, format: 'integer' },
+  labels: ['Count', 'Spells', '—'],
+  stats: r => [
+    { label: 'Count', value: r.value, format: 'integer', bold: true },
+    { label: 'Spells', value: r.distinctAbilities ?? 0, format: 'integer' },
+    { label: '—', value: 0, format: 'integer' },
   ],
 }
 
@@ -67,6 +68,8 @@ function formatStat(stat: NumericStat): string {
 
 export function FullMeterView() {
   const currentView = useStore(selectCurrentView)
+  const perspective = useStore(s => s.perspective)
+  const filters = useStore(s => s.filters)
   const metric = useStore(s => s.metric)
 
   if (!currentView) {
@@ -79,36 +82,77 @@ export function FullMeterView() {
     )
   }
 
+  const events = currentView.events ?? []
+  const allies = currentView.players
+
+  const duration =
+    'duration' in currentView ? currentView.duration
+    : 'activeDurationSec' in currentView ? currentView.activeDurationSec
+    : 0
+
+  const matches = hasMatchingData(events, perspective, filters, metric, allies)
+  if (!matches) return <FilterEmptyState />
+
   if (metric === 'deaths') {
-    return <FullDeathsTable players={currentView.players} />
+    return <FilteredDeathsTable events={events} perspective={perspective} filters={filters} allies={allies} />
   }
 
-  return <FullPlayerTable players={Object.values(currentView.players)} config={METRIC_CONFIG[metric]} />
+  return (
+    <FilteredPlayerTable
+      events={events}
+      perspective={perspective}
+      filters={filters}
+      category={metric}
+      allies={allies}
+      duration={duration}
+    />
+  )
 }
 
-function FullPlayerTable({ players, config }: { players: PlayerSnapshot[]; config: MetricConfig }) {
+function FilteredPlayerTable({
+  events,
+  perspective,
+  filters,
+  category,
+  allies,
+  duration,
+}: {
+  events: Parameters<typeof computeUnitRows>[0]
+  perspective: Parameters<typeof computeUnitRows>[1]
+  filters: Parameters<typeof computeUnitRows>[2]
+  category: 'damage' | 'healing' | 'interrupts'
+  allies: Record<string, PlayerSnapshot>
+  duration: number
+}) {
   const playerSpecs = useStore(s => s.playerSpecs)
 
-  const sorted = [...players].sort((a, b) => config.sortValue(b) - config.sortValue(a))
-  const topValue = sorted[0] ? config.sortValue(sorted[0]) : 0
-  const totalValue = sorted.reduce((sum, p) => sum + config.sortValue(p), 0)
+  const rows = useMemo(
+    () => computeUnitRows(events, perspective, filters, category, allies, duration),
+    [events, perspective, filters, category, allies, duration]
+  )
+
+  const config = METRIC_CONFIG[category]
+  const topValue = rows[0]?.value ?? 0
+  const totalValue = rows.reduce((sum, r) => sum + r.value, 0)
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      <PlayerColumnHeader labels={config.labels} />
+      <PlayerColumnHeader labels={config.labels} showActive={perspective === 'allies'} />
       <div className="flex-1 overflow-y-auto">
-        {sorted.length === 0 ? (
+        {rows.length === 0 ? (
           <EmptyState text="No player data yet" />
         ) : (
-          sorted.map((player, i) => (
+          rows.map((row, i) => (
             <FullPlayerRow
-              key={player.name}
-              player={player}
+              key={row.name}
+              row={row}
               rank={i + 1}
               topValue={topValue}
               totalValue={totalValue}
+              activePct={perspective === 'allies' ? computeActivePct(allies[row.name], duration) : null}
               config={config}
-              specId={resolveSpecId(playerSpecs, player.name, player.specId)}
+              specId={resolveSpecId(playerSpecs, row.name, row.specId)}
+              showActive={perspective === 'allies'}
             />
           ))
         )}
@@ -117,7 +161,19 @@ function FullPlayerTable({ players, config }: { players: PlayerSnapshot[]; confi
   )
 }
 
-function PlayerColumnHeader({ labels }: { labels: [string, string, string] }) {
+// Percentage of the fight the player was contributing. Without resurrect data,
+// we treat the latest death as the moment they stopped helping — accurate for
+// single-segment views and a conservative lower bound for aggregated key runs
+// where `combatElapsed` is relative to an individual segment.
+function computeActivePct(player: PlayerSnapshot | undefined, duration: number): number | null {
+  if (!player || duration <= 0) return null
+  if (player.deaths.length === 0) return 100
+  const last = player.deaths.reduce((a, b) => (a.timeOfDeath > b.timeOfDeath ? a : b))
+  const pct = (last.combatElapsed / duration) * 100
+  return Math.max(0, Math.min(100, pct))
+}
+
+function PlayerColumnHeader({ labels, showActive }: { labels: [string, string, string]; showActive: boolean }) {
   return (
     <div
       style={{
@@ -130,9 +186,9 @@ function PlayerColumnHeader({ labels }: { labels: [string, string, string] }) {
       }}
     >
       <HeaderCell align="center">#</HeaderCell>
-      <HeaderCell>Player</HeaderCell>
+      <HeaderCell>Unit</HeaderCell>
       <HeaderCell />
-      <HeaderCell>Spec</HeaderCell>
+      <HeaderCell align="right">{showActive ? 'Active' : ''}</HeaderCell>
       <HeaderCell align="right">{labels[0]}</HeaderCell>
       <HeaderCell align="right">{labels[1]}</HeaderCell>
       <HeaderCell align="right">{labels[2]}</HeaderCell>
@@ -141,28 +197,30 @@ function PlayerColumnHeader({ labels }: { labels: [string, string, string] }) {
 }
 
 function FullPlayerRow({
-  player,
+  row,
   rank,
   topValue,
   totalValue,
+  activePct,
   config,
   specId,
+  showActive,
 }: {
-  player: PlayerSnapshot
+  row: UnitRow
   rank: number
   topValue: number
   totalValue: number
+  activePct: number | null
   config: MetricConfig
   specId: number | undefined
+  showActive: boolean
 }) {
   const color = getClassColor(specId)
   const specIcon = specIconUrl(specId)
-  const specLabel = specId !== undefined ? SPEC_NAMES[specId] ?? '—' : '—'
 
-  const value = config.sortValue(player)
-  const fillPct = topValue > 0 ? (value / topValue) * 100 : 0
-  const shareOfTotal = totalValue > 0 ? (value / totalValue) * 100 : 0
-  const stats = config.stats(player)
+  const fillPct = topValue > 0 ? (row.value / topValue) * 100 : 0
+  const shareOfTotal = totalValue > 0 ? (row.value / totalValue) * 100 : 0
+  const stats = config.stats(row)
 
   return (
     <div
@@ -177,9 +235,9 @@ function FullPlayerRow({
       }}
     >
       <RankCell rank={rank} />
-      <PlayerNameCell name={player.name} color={color} specIcon={specIcon} />
+      <PlayerNameCell name={row.name} color={color} specIcon={specIcon} />
       <BarCell color={color} fillPct={fillPct} shareOfTotal={shareOfTotal} />
-      <SpecCell label={specLabel} />
+      {showActive ? <ActiveCell pct={activePct} /> : <span />}
       {stats.map((s, i) => (
         <StatCell key={i} stat={s} />
       ))}
@@ -187,26 +245,43 @@ function FullPlayerRow({
   )
 }
 
-function FullDeathsTable({ players }: { players: Record<string, PlayerSnapshot> }) {
+function FilteredDeathsTable({
+  events,
+  perspective,
+  filters,
+  allies,
+}: {
+  events: Parameters<typeof computeDeathRows>[0]
+  perspective: Parameters<typeof computeDeathRows>[1]
+  filters: Parameters<typeof computeDeathRows>[2]
+  allies: Record<string, PlayerSnapshot>
+}) {
   const playerSpecs = useStore(s => s.playerSpecs)
 
-  const allDeaths = Object.values(players)
-    .flatMap(p => p.deaths)
-    .sort((a, b) => a.timeOfDeath - b.timeOfDeath)
+  const rows = useMemo(
+    () => computeDeathRows(events, perspective, filters, allies),
+    [events, perspective, filters, allies]
+  )
+
+  // Elapsed reference: for the first death, firstEventTime is unknown to the
+  // engine, so compute it here from the earliest known event instead.
+  const firstEventT = events.length > 0 ? events[0].t : rows[0]?.t ?? 0
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
       <DeathsColumnHeader />
       <div className="flex-1 overflow-y-auto">
-        {allDeaths.length === 0 ? (
+        {rows.length === 0 ? (
           <EmptyState text="No deaths recorded" />
         ) : (
-          allDeaths.map((record, i) => (
+          rows.map((row, i) => (
             <FullDeathRow
-              key={`${record.playerGuid}-${record.timeOfDeath}`}
-              record={record}
+              key={`${row.victimName}-${row.t}-${i}`}
+              row={row}
               rank={i + 1}
-              specId={resolveSpecId(playerSpecs, record.playerName, players[record.playerName]?.specId)}
+              specId={resolveSpecId(playerSpecs, row.victimName, row.victimSpecId)}
+              killerSpecId={allies[row.killerName] ? resolveSpecId(playerSpecs, row.killerName, allies[row.killerName]?.specId) : undefined}
+              elapsedSec={(row.t - firstEventT) / 1000}
             />
           ))
         )}
@@ -229,7 +304,7 @@ function DeathsColumnHeader() {
     >
       <HeaderCell align="center">#</HeaderCell>
       <HeaderCell align="right">Time</HeaderCell>
-      <HeaderCell>Player</HeaderCell>
+      <HeaderCell>Victim</HeaderCell>
       <HeaderCell>Killing Blow</HeaderCell>
       <HeaderCell>Source</HeaderCell>
       <HeaderCell align="right">Overkill</HeaderCell>
@@ -238,17 +313,23 @@ function DeathsColumnHeader() {
 }
 
 function FullDeathRow({
-  record,
+  row,
   rank,
   specId,
+  killerSpecId,
+  elapsedSec,
 }: {
-  record: PlayerDeathRecord
+  row: DeathRow
   rank: number
   specId: number | undefined
+  killerSpecId: number | undefined
+  elapsedSec: number
 }) {
   const color = getClassColor(specId)
   const specIcon = specIconUrl(specId)
-  const kb = record.killingBlow
+  const killerIsPlayer = killerSpecId !== undefined
+  const killerColor = killerIsPlayer ? getClassColor(killerSpecId) : 'var(--text-secondary)'
+  const killerIcon = killerIsPlayer ? specIconUrl(killerSpecId) : null
 
   return (
     <div
@@ -269,22 +350,26 @@ function FullDeathRow({
         color: 'var(--status-wipe)',
         textAlign: 'right',
       }}>
-        {formatElapsed(record.combatElapsed)}
+        {formatElapsed(elapsedSec)}
       </span>
-      <PlayerNameCell name={record.playerName} color={color} specIcon={specIcon} />
+      <PlayerNameCell name={row.victimName} color={color} specIcon={specIcon} />
       <span className="truncate" style={{ fontSize: 12, color: 'var(--text-secondary)', minWidth: 0 }}>
-        {kb?.spellName ?? '—'}
+        {row.ability || '—'}
       </span>
-      <span className="truncate" style={{ fontSize: 12, color: 'var(--text-secondary)', minWidth: 0 }}>
-        {kb?.sourceName ?? '—'}
-      </span>
+      {killerIsPlayer ? (
+        <PlayerNameCell name={row.killerName} color={killerColor} specIcon={killerIcon} />
+      ) : (
+        <span className="truncate" style={{ fontSize: 12, color: 'var(--text-secondary)', minWidth: 0 }}>
+          {row.killerName || '—'}
+        </span>
+      )}
       <span style={{
         fontSize: 12,
         fontFamily: 'var(--font-mono)',
         textAlign: 'right',
-        color: kb && kb.overkill > 0 ? 'var(--status-wipe)' : 'var(--text-muted)',
+        color: row.overkill && row.overkill > 0 ? 'var(--status-wipe)' : 'var(--text-muted)',
       }}>
-        {kb && kb.overkill > 0 ? kb.overkill.toLocaleString() : '—'}
+        {row.overkill && row.overkill > 0 ? row.overkill.toLocaleString() : '—'}
       </span>
     </div>
   )
@@ -399,16 +484,15 @@ function BarCell({
   )
 }
 
-function SpecCell({ label }: { label: string }) {
+function ActiveCell({ pct }: { pct: number | null }) {
   return (
     <span style={{
-      fontSize: 11,
+      fontSize: 12,
+      fontFamily: 'var(--font-mono)',
+      textAlign: 'right',
       color: 'var(--text-secondary)',
-      whiteSpace: 'nowrap',
-      overflow: 'hidden',
-      textOverflow: 'ellipsis',
     }}>
-      {label}
+      {pct === null ? '—' : `${Math.round(pct)}%`}
     </span>
   )
 }
@@ -436,7 +520,8 @@ function EmptyState({ text }: { text: string }) {
 }
 
 function formatElapsed(sec: number): string {
-  const m = Math.floor(sec / 60)
-  const s = Math.floor(sec % 60)
+  const safe = Math.max(0, sec)
+  const m = Math.floor(safe / 60)
+  const s = Math.floor(safe % 60)
   return `${m}:${String(s).padStart(2, '0')}`
 }

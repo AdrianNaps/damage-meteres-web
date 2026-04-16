@@ -1,6 +1,6 @@
-import type { PlayerDeathRecord, PlayerInterruptRecord } from './types.js'
+import type { PlayerDeathRecord, PlayerInterruptRecord, ClientEvent } from './types.js'
 import type { IconResolver } from './iconResolver.js'
-export type { PlayerDeathRecord, PlayerInterruptRecord }
+export type { PlayerDeathRecord, PlayerInterruptRecord, ClientEvent }
 
 export interface SpellDamageStats {
   spellId: string
@@ -134,6 +134,11 @@ export interface Segment {
   supportOwnedSpellIds: Set<string>    // spellIds that have fired as *_DAMAGE_SUPPORT; their plain variants are not real source damage
   targetDamageTaken: Record<string, TargetDamageTaken>
   healingReceived: Record<string, TargetHealingReceived>  // dest → effective heal + source breakdown
+  // Pared-down event log for client-side filtering. Populated by aggregator on
+  // every damage/heal/interrupt/death that makes it to a player. Shipped wholesale
+  // in the snapshot so the Full-mode filter bar can re-aggregate under arbitrary
+  // Source/Target/Ability combos without server round-trips.
+  events: ClientEvent[]
 }
 
 // Derived values computed at read time, not stored.
@@ -153,6 +158,9 @@ export interface SegmentSnapshot extends Omit<Segment, 'players' | 'supportOwned
   duration: number
   players: Record<string, PlayerSnapshot>
   spellIcons: Record<string, string>   // spellId → Wowhead icon filename
+  // events is inherited from Segment via the intersection with Omit; declared
+  // explicitly here so the type is self-documenting at the snapshot boundary.
+  events: ClientEvent[]
 }
 
 export interface SegmentSummary {
@@ -198,6 +206,7 @@ export interface BossSectionSnapshot {
   kills: number
   players: Record<string, PlayerSnapshot>
   spellIcons: Record<string, string>
+  events: ClientEvent[]
 }
 
 // Internal — not exported over the wire
@@ -235,6 +244,7 @@ export interface KeyRunSnapshot {
   activeDurationSec: number          // sum of individual segment combat durations
   players: Record<string, PlayerSnapshot>
   spellIcons: Record<string, string> // spellId → Wowhead icon filename
+  events: ClientEvent[]
 }
 
 export type HistoryItem = KeyRunSummary | BossSectionSummary | SegmentSummary
@@ -423,6 +433,7 @@ export class SegmentStore {
       kills: segs.filter(s => s.success === true).length,
       players,
       spellIcons: this.iconResolver.getAll(),
+      events: segs.flatMap(s => s.events),
     }
   }
 
@@ -657,7 +668,14 @@ export class SegmentStore {
     }
     this.iconResolver.requestMany(spellIds)
 
-    return { type: 'key_run', ...meta, activeDurationSec, players, spellIcons: this.iconResolver.getAll() }
+    return {
+      type: 'key_run',
+      ...meta,
+      activeDurationSec,
+      players,
+      spellIcons: this.iconResolver.getAll(),
+      events: segs.flatMap(s => s.events),
+    }
   }
 
   toSnapshot(segment: Segment): SegmentSnapshot {

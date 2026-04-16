@@ -25,6 +25,17 @@ function getLastCreditMap(segment: Segment): Map<string, LastCredit> {
   return m
 }
 
+// Per-segment record of the most recent damage each enemy GUID took, used to
+// attribute a killer to enemy UNIT_DIED events (enemies have no death-recap
+// buffer). Scoped via WeakMap so it dies with the segment.
+interface LastEnemyHit { src: string; ability: string; spellId?: string }
+const lastEnemyDamager = new WeakMap<Segment, Map<string, LastEnemyHit>>()
+function getLastEnemyDamager(segment: Segment): Map<string, LastEnemyHit> {
+  let m = lastEnemyDamager.get(segment)
+  if (!m) { m = new Map(); lastEnemyDamager.set(segment, m) }
+  return m
+}
+
 const RECAP_WINDOW_SECONDS = 10  // how far back to collect events
 
 
@@ -191,7 +202,24 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
     // source GUID is in the map, treat it as an owned pet regardless of flags.
     const knownOwnedCreature = !isPlayerSrc && !hasPetFlag
       && !!segment.petToOwner[event.source.guid]
-    if (!isPlayerSrc && !hasPetFlag && !knownOwnedCreature) return
+    if (!isPlayerSrc && !hasPetFlag && !knownOwnedCreature) {
+      // Enemy damage to an ally: captured in the event stream so Full-mode's
+      // perspective=enemies view can aggregate incoming damage. NPC-on-NPC
+      // damage is skipped here to avoid ballooning the payload with trash-mob
+      // crossfire that nobody queries on.
+      if (isPlayerGuid(event.dest.guid)) {
+        segment.events.push({
+          t: event.timestamp,
+          kind: 'damage',
+          src: event.source.name,
+          dst: event.dest.name,
+          ability: dmg.spellName,
+          spellId: dmg.spellId,
+          amount: dmg.amount - Math.max(dmg.overkill, 0),
+        })
+      }
+      return
+    }
 
     let sourceName = event.source.name
     let sourceGuid = event.source.guid
@@ -221,6 +249,17 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
       if (!ownerName) return
       sourceName = ownerName
       sourceGuid = ownerGuid
+    }
+
+    // Track most recent damager of each enemy GUID — enemy UNIT_DIED events
+    // have no death-recap buffer, so this is how we attribute enemy kills to
+    // an ally source/ability in the Full-mode perspective=enemies deaths view.
+    if (!isPlayerGuid(event.dest.guid)) {
+      getLastEnemyDamager(segment).set(event.dest.guid, {
+        src: sourceName,
+        ability: dmg.spellName,
+        spellId: dmg.spellId,
+      })
     }
 
     applyDamage(segment, sourceName, sourceGuid, event.dest.name, dmg, event.timestamp)
@@ -254,7 +293,21 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
     // Drop heals whose source is neither a player nor an owned pet/creature. Matters for
     // SPELL_AURA_REMOVED synthetic overheal events where the source can be an unrelated
     // NPC whose shield expired — only player-attributable sources should reach the meter.
-    if (!isPlayerSrc && !hasPetFlag && !knownOwnedCreature) return
+    if (!isPlayerSrc && !hasPetFlag && !knownOwnedCreature) {
+      // Enemy healing: boss self-heals and mob healer adds. Event stream only —
+      // the meter aggregates stay ally-only as before.
+      segment.events.push({
+        t: event.timestamp,
+        kind: 'heal',
+        src: event.source.name,
+        dst: event.dest.name,
+        ability: heal.spellName,
+        spellId: heal.spellId,
+        amount: heal.baseAmount - heal.overheal,
+        overheal: heal.overheal,
+      })
+      return
+    }
 
     let sourceName = event.source.name
     let sourceGuid = event.source.guid
@@ -324,7 +377,28 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
     applyHeal(segment, sourceName, sourceGuid, event.dest.name, heal, event.timestamp)
   } else if (payload.type === 'death') {
     if (payload.unconsciousOnDeath) return
-    if (!isPlayerGuid(event.dest.guid)) return
+    if (!isPlayerGuid(event.dest.guid)) {
+      // Skip player-owned pets/guardians expiring (Army of the Dead ghouls,
+      // Gargoyle timing out, Dreadstalkers, Treants, etc.) — those aren't
+      // "enemy deaths." Flag-based check first, then the petToOwner map for
+      // NPC-flagged summons we've tracked via SPELL_SUMMON.
+      const destIsPet = !!(event.dest.flags & (PET_FLAG | GUARDIAN_FLAG))
+      if (destIsPet || segment.petToOwner[event.dest.guid]) return
+
+      // Enemy death — attribute killer via the most recent damage we saw
+      // against this enemy GUID. May be Unknown if the enemy took zero logged
+      // hits before dying (rare; e.g. scripted despawn-as-death).
+      const lastHit = getLastEnemyDamager(segment).get(event.dest.guid)
+      segment.events.push({
+        t: event.timestamp,
+        kind: 'death',
+        src: lastHit?.src ?? 'Unknown',
+        dst: event.dest.name,
+        ability: lastHit?.ability ?? 'Unknown',
+        spellId: lastHit?.spellId,
+      })
+      return
+    }
 
     const guid = event.dest.guid
     const recap = recentEvents.get(guid) ?? []
@@ -356,6 +430,18 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
     const player = getOrCreatePlayer(segment, playerName, guid)
     if (player) player.deaths.push(record)
 
+    segment.events.push({
+      t: event.timestamp,
+      kind: 'death',
+      src: killingBlow?.sourceName ?? 'Unknown',
+      dst: playerName,
+      ability: killingBlow?.spellName ?? 'Unknown',
+      spellId: killingBlow?.spellId,
+      // `amount` carries overkill for death events — reused because death
+      // records don't need a "damage amount" field separately.
+      amount: killingBlow?.overkill,
+    })
+
     // Clear the buffer so a rez + second death starts fresh
     recentEvents.delete(guid)
     return
@@ -379,6 +465,16 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
       sourceName = ownerName
       sourceGuid = ownerGuid
     } else if (!event.source.guid.startsWith('Player-')) {
+      // Enemy interrupt (rare but real — some mobs silence/interrupt players).
+      // Meter aggregates stay ally-only; only the event stream is updated.
+      segment.events.push({
+        t: event.timestamp,
+        kind: 'interrupt',
+        src: event.source.name,
+        dst: event.dest.name,
+        ability: payload.spellName,
+        spellId: payload.spellId,
+      })
       return
     }
 
@@ -422,6 +518,15 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
       kickedSpellName: payload.extraSpellName,
       targetName: event.dest.name,
       targetGuid: event.dest.guid,
+    })
+
+    segment.events.push({
+      t: event.timestamp,
+      kind: 'interrupt',
+      src: sourceName,
+      dst: event.dest.name,
+      ability: payload.spellName,
+      spellId: payload.spellId,
     })
   }
 
@@ -488,6 +593,16 @@ function applyDamage(segment: Segment, sourceName: string, sourceGuid: string, d
   // WCL's "Amount" column excludes overkill (damage dealt past 0 HP). Match that convention.
   // overkill is -1 when the hit wasn't a killing blow, >0 only on the killing blow itself.
   const amount = payload.amount - Math.max(payload.overkill, 0)
+
+  segment.events.push({
+    t: timestamp,
+    kind: 'damage',
+    src: sourceName,
+    dst: destName,
+    ability: spellName,
+    spellId,
+    amount,
+  })
 
   player.damage.total += amount
 
@@ -617,6 +732,16 @@ function applyHeal(segment: Segment, sourceName: string, sourceGuid: string, des
   // totals. The absorb debuff itself is accounted as a negative heal elsewhere
   // (see SPELL_HEAL_ABSORBED in parser.ts) so the player grand total nets out.
   const effective = baseAmount - overheal
+  segment.events.push({
+    t: timestamp,
+    kind: 'heal',
+    src: sourceName,
+    dst: destName,
+    ability: spellName,
+    spellId,
+    amount: effective,
+    overheal,
+  })
   player.healing.total += effective
   player.healing.overheal += overheal
 

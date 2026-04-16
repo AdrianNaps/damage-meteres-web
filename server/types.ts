@@ -171,3 +171,18 @@ export interface PlayerInterruptRecord {
   targetName: string         // the mob whose cast was interrupted
   targetGuid: string
 }
+
+// Pared-down event used by the client to re-aggregate under arbitrary filters.
+// Keys are short because the array runs to 10k+ per fight; every byte matters
+// on the wire. `t` is absolute ms (same epoch as ParsedEvent.timestamp) so the
+// client doesn't need to know segment start offsets — it filters on its own.
+export interface ClientEvent {
+  t: number
+  kind: 'damage' | 'heal' | 'interrupt' | 'death'
+  src: string              // canonical source name (pets/support already resolved to owner)
+  dst: string              // canonical dest name
+  ability: string          // spell name; 'death' kind stores the killing-blow ability
+  spellId?: string
+  amount?: number          // damage/heal value (excludes overkill, matches meter totals)
+  overheal?: number        // heal only
+}

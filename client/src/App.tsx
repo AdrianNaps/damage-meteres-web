@@ -10,6 +10,7 @@ import { BreakdownPanel } from './components/BreakdownPanel'
 import { DeathRecapPanel } from './components/DeathRecapPanel'
 import { SettingsModal } from './components/SettingsModal'
 import { LogsBanner } from './components/LogsBanner'
+import { FilterBar } from './components/FilterBar'
 
 export default function App() {
   const refreshBootInfo = useStore(s => s.refreshBootInfo)
@@ -75,8 +76,13 @@ function ContentPanel() {
       {/* Toggle bar: CategoryTabs + ModeToggle */}
       <ToggleBar metric={metric} setMetric={setMetric} mode={mode} setMode={setMode} />
 
-      {/* Graph — shown in Summary; Full will get its own layout later. */}
-      {mode === 'summary' && currentView && Object.keys(players).length > 0 && (
+      {/* Full-mode filter bar — Summary stays unfiltered for now. */}
+      {mode === 'full' && <FilterBar />}
+
+      {/* Graph appears in both modes. In Full it currently shares Summary's
+          behavior (unfiltered, same series); Full-specific interactions will
+          extend this without changing the mount point. */}
+      {currentView && Object.keys(players).length > 0 && (
         <GraphContainer metric={metric} players={players} duration={duration} />
       )}
 

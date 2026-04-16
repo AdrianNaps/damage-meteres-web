@@ -483,6 +483,7 @@ export class EncounterStateMachine extends EventEmitter {
       supportOwnedSpellIds: new Set(),
       targetDamageTaken: {},
       healingReceived: {},
+      events: [],
     }
   }
 }

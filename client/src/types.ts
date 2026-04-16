@@ -104,6 +104,17 @@ export interface PlayerSnapshot {
   interrupts: InterruptData
 }
 
+export interface ClientEvent {
+  t: number
+  kind: 'damage' | 'heal' | 'interrupt' | 'death'
+  src: string
+  dst: string
+  ability: string
+  spellId?: string
+  amount?: number
+  overheal?: number
+}
+
 export interface SegmentSnapshot {
   type: 'segment'
   id: string
@@ -114,6 +125,7 @@ export interface SegmentSnapshot {
   duration: number
   players: Record<string, PlayerSnapshot>
   spellIcons?: Record<string, string>
+  events?: ClientEvent[]
 }
 
 export interface SegmentSummary {
@@ -150,6 +162,7 @@ export interface KeyRunSnapshot {
   activeDurationSec: number
   players: Record<string, PlayerSnapshot>
   spellIcons?: Record<string, string>
+  events?: ClientEvent[]
 }
 
 export interface BossSectionSummary {
@@ -176,6 +189,7 @@ export interface BossSectionSnapshot {
   kills: number
   players: Record<string, PlayerSnapshot>
   spellIcons?: Record<string, string>
+  events?: ClientEvent[]
 }
 
 export type HistoryItem = KeyRunSummary | BossSectionSummary | SegmentSummary
