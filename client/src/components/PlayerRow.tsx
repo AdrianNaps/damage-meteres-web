@@ -1,4 +1,3 @@
-import { memo } from 'react'
 import type { PlayerSnapshot } from '../types'
 import { useStore, resolveSpecId } from '../store'
 import { shortName } from '../utils/format'
@@ -70,9 +69,7 @@ function formatNum(n: number): string {
 
 const textShadow = '0 1px 2px rgba(0, 0, 0, 0.85), 0 0 1px rgba(0, 0, 0, 0.9)'
 
-export const PlayerRow = memo(PlayerRowImpl)
-
-function PlayerRowImpl({ player, rank, topValue, totalValue, metric, onClick }: Props) {
+export function PlayerRow({ player, rank, topValue, totalValue, metric, onClick }: Props) {
   const value =
     metric === 'damage' ? player.dps
     : metric === 'healing' ? player.hps

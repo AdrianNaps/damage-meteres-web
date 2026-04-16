@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useMemo, useRef, useState, useTransition } from 'react'
+import { forwardRef, useDeferredValue, useMemo, useRef, useState } from 'react'
 import { useStore, selectCurrentView, type FilterAxis, type Perspective, resolveSpecId } from '../store'
 import { computeAbilityUniverse, computeUnitUniverse } from '../utils/filters'
 import type { ClientEvent, PlayerSnapshot } from '../types'
@@ -32,40 +32,28 @@ export function FilterBar() {
   const abilityRef = useRef<HTMLButtonElement>(null)
   const activeRef = open === 'Source' ? sourceRef : open === 'Target' ? targetRef : open === 'Ability' ? abilityRef : null
 
-  // Filter changes re-scan the event array via computeUnitRows. Wrapping the
-  // mutations in a transition keeps the filter bar responsive (picker close,
-  // chip removal animations) during the recompute on big logs.
-  const [, startTransition] = useTransition()
-  const setPerspectiveDeferred = useCallback(
-    (p: Perspective) => startTransition(() => setPerspective(p)),
-    [setPerspective]
-  )
-  const toggleFilterValueDeferred = useCallback(
-    (axis: FilterAxis, name: string) => startTransition(() => toggleFilterValue(axis, name)),
-    [toggleFilterValue]
-  )
-  const setFilterDeferred = useCallback(
-    (axis: FilterAxis, names: string[] | undefined) => startTransition(() => setFilter(axis, names)),
-    [setFilter]
-  )
-  const clearAllFiltersDeferred = useCallback(
-    () => startTransition(() => clearAllFilters()),
-    [clearAllFilters]
-  )
-
   const events: ClientEvent[] = currentView?.events ?? EMPTY_EVENTS
   const allies: Record<string, PlayerSnapshot> = currentView?.players ?? EMPTY_PLAYERS
+
+  // Defer the inputs to the event-scanning universes so a filter/perspective/
+  // metric change re-renders the chips and picker count immediately while the
+  // heavier recompute (computeAbilityUniverse iterates every event) runs at
+  // lower priority. Chips/counts above keep using raw state.
+  const deferredPerspective = useDeferredValue(perspective)
+  const deferredMetric = useDeferredValue(metric)
+  const deferredFilterSource = useDeferredValue(filters.Source)
+  const deferredFilterTarget = useDeferredValue(filters.Target)
 
   // Picker options are derived on render. Cheap for a few hundred units / a
   // few hundred abilities; if this ever becomes a bottleneck, memoize on
   // (events, perspective, filters, metric).
   const { sources, targets } = useMemo(
-    () => computeUnitUniverse(events, perspective, metric, allies),
-    [events, perspective, metric, allies]
+    () => computeUnitUniverse(events, deferredPerspective, deferredMetric, allies),
+    [events, deferredPerspective, deferredMetric, allies]
   )
   const abilityUniverse = useMemo(
-    () => computeAbilityUniverse(events, perspective, { Source: filters.Source, Target: filters.Target }, metric, allies),
-    [events, perspective, filters.Source, filters.Target, metric, allies]
+    () => computeAbilityUniverse(events, deferredPerspective, { Source: deferredFilterSource, Target: deferredFilterTarget }, deferredMetric, allies),
+    [events, deferredPerspective, deferredFilterSource, deferredFilterTarget, deferredMetric, allies]
   )
 
   const sourceOptions = useMemo(
@@ -106,7 +94,7 @@ export function FilterBar() {
         flexWrap: 'wrap',
         background: 'var(--bg-root)',
       }}>
-        <PerspectiveToggle perspective={perspective} onChange={setPerspectiveDeferred} />
+        <PerspectiveToggle perspective={perspective} onChange={setPerspective} />
         <Divider />
         <PickerButton
           ref={sourceRef}
@@ -133,10 +121,10 @@ export function FilterBar() {
           onClick={() => togglePicker('Ability')}
         />
         <div style={{ flex: 1 }} />
-        <ActiveFilterChips filters={filters} onRemove={(axis, value) => toggleFilterValueDeferred(axis, value)} onClearAxis={axis => setFilterDeferred(axis, undefined)} />
+        <ActiveFilterChips filters={filters} onRemove={(axis, value) => toggleFilterValue(axis, value)} onClearAxis={axis => setFilter(axis, undefined)} />
         {hasAnyFilter && (
           <button
-            onClick={clearAllFiltersDeferred}
+            onClick={clearAllFilters}
             style={{
               fontSize: 11,
               fontFamily: 'var(--font-sans)',
@@ -159,7 +147,7 @@ export function FilterBar() {
           anchorRef={activeRef}
           options={open === 'Ability' ? abilityOptions : (open === 'Source' ? sourceOptions : targetOptions)}
           selected={filters[open] ?? []}
-          onToggle={name => toggleFilterValueDeferred(open, name)}
+          onToggle={name => toggleFilterValue(open, name)}
           onClose={() => setOpen(null)}
           placeholder={open === 'Ability' ? 'Search abilities…' : `Search ${open.toLowerCase()}s…`}
         />

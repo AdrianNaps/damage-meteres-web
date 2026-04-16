@@ -1,4 +1,3 @@
-import { useTransition } from 'react'
 import { useStore, selectCurrentView } from '../store'
 import { mostRestrictiveFilter } from '../utils/filters'
 
@@ -11,7 +10,6 @@ export function FilterEmptyState() {
   const metric = useStore(s => s.metric)
   const clearAllFilters = useStore(s => s.clearAllFilters)
   const currentView = useStore(selectCurrentView)
-  const [, startTransition] = useTransition()
 
   const events = currentView?.events ?? []
   const allies = currentView?.players ?? {}
@@ -39,7 +37,7 @@ export function FilterEmptyState() {
         }
       </div>
       <button
-        onClick={() => startTransition(() => clearAllFilters())}
+        onClick={clearAllFilters}
         style={{
           marginTop: 8,
           padding: '6px 14px',

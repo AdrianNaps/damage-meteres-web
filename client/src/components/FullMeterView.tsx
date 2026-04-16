@@ -1,4 +1,4 @@
-import { memo, useMemo } from 'react'
+import { memo, useDeferredValue, useMemo } from 'react'
 import { useStore, selectCurrentView, selectIsLoading, resolveSpecId } from '../store'
 import type { PlayerSnapshot } from '../types'
 import {
@@ -73,6 +73,16 @@ export function FullMeterView() {
   const filters = useStore(s => s.filters)
   const metric = useStore(s => s.metric)
 
+  // useDeferredValue on interactive inputs so a metric/filter/perspective
+  // change yields two renders: one fast with the old rows (table still shows
+  // the previous state), then one that computes new rows at a lower priority.
+  // Note: Zustand 5 uses useSyncExternalStore, whose updates are always
+  // synchronous — so useTransition around the setters has no effect here.
+  // useDeferredValue works because it shadows the value locally in React.
+  const deferredPerspective = useDeferredValue(perspective)
+  const deferredFilters = useDeferredValue(filters)
+  const deferredMetric = useDeferredValue(metric)
+
   if (!currentView) {
     if (isLoading) return <FullLoadingSkeleton />
     return (
@@ -92,19 +102,19 @@ export function FullMeterView() {
     : 'activeDurationSec' in currentView ? currentView.activeDurationSec
     : 0
 
-  const matches = hasMatchingData(events, perspective, filters, metric, allies)
+  const matches = hasMatchingData(events, deferredPerspective, deferredFilters, deferredMetric, allies)
   if (!matches) return <FilterEmptyState />
 
-  if (metric === 'deaths') {
-    return <FilteredDeathsTable events={events} perspective={perspective} filters={filters} allies={allies} />
+  if (deferredMetric === 'deaths') {
+    return <FilteredDeathsTable events={events} perspective={deferredPerspective} filters={deferredFilters} allies={allies} />
   }
 
   return (
     <FilteredPlayerTable
       events={events}
-      perspective={perspective}
-      filters={filters}
-      category={metric}
+      perspective={deferredPerspective}
+      filters={deferredFilters}
+      category={deferredMetric}
       allies={allies}
       duration={duration}
     />
@@ -200,8 +210,10 @@ function PlayerColumnHeader({ labels, showActive }: { labels: [string, string, s
 
 // Memoized so that row renders are skipped when the parent re-renders for
 // unrelated reasons (e.g. an unrelated Zustand field changing). Relies on
-// stable prop identity: `config` is a module-level constant and `row` is
-// retained across renders via the parent's useMemo(computeUnitRows).
+// stable prop identity: `config` is a module-level constant, `row` is retained
+// across renders via the parent's useMemo(computeUnitRows), and everything
+// else is a primitive passed by value (including activePct, which is
+// recomputed each render but compares equal when inputs haven't changed).
 const FullPlayerRow = memo(FullPlayerRowImpl)
 
 function FullPlayerRowImpl({
@@ -562,7 +574,6 @@ function FullLoadingSkeleton() {
             gap: 12,
             alignItems: 'center',
             minHeight: 36,
-            padding: '0 0',
             borderBottom: '1px solid var(--border-subtle)',
           }}
         >

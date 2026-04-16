@@ -21,9 +21,10 @@ export interface FilterState {
   Ability?: string[]
 }
 
-// Empty filter object shared for equality checks and defaults. The store always
-// stores a fresh object after mutations so React subscribers re-render.
-export const EMPTY_FILTERS: FilterState = {}
+// Empty filter object shared for equality checks and defaults. Frozen so the
+// reference-identity sentinel can't be poisoned by accidental mutation — the
+// store uses `state.filters === EMPTY_FILTERS` to detect the empty case.
+export const EMPTY_FILTERS: FilterState = Object.freeze({}) as FilterState
 
 interface AppState {
   selectedSegment: SegmentSnapshot | null
@@ -179,10 +180,10 @@ export const useStore = create<AppState>((set) => ({
     selectedBossSectionId: null,
     selectedBossSection: null,
     filters: clearUnitFiltersOnScopeChange(state.filters),
-    // Clear the previous snapshot when switching to a different segment so
-    // the view can show a loading skeleton instead of stale data while the
-    // new snapshot is in flight.
-    ...(id !== state.selectedSegmentId ? { selectedSegment: null } : {}),
+    // Clear the previous snapshot only when switching to a different segment
+    // so the view can show a loading skeleton instead of stale data while the
+    // new snapshot is in flight. Re-selecting the same id is a no-op.
+    selectedSegment: id !== state.selectedSegmentId ? null : state.selectedSegment,
   })),
   setSelectedKeyRunId: (id) => set(state => ({
     selectedKeyRunId: id,

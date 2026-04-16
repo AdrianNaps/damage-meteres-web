@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useTransition } from 'react'
+import { useEffect } from 'react'
 import { connectWs } from './ws'
 import { useStore, selectCurrentView, selectCurrentScopeKey, type Metric, type Mode } from './store'
 import { EncounterHeader } from './components/EncounterHeader'
@@ -51,19 +51,6 @@ function ContentPanel() {
   const selectedPlayer = useStore(s => s.selectedPlayer)
   const selectedDeath = useStore(s => s.selectedDeath)
 
-  // Metric/mode switches can trigger a full re-aggregation of the event array
-  // on big logs. Wrapping in a transition lets React keep input/hover on the
-  // priority lane while the recompute runs, so the UI doesn't feel frozen.
-  const [, startTransition] = useTransition()
-  const setMetricDeferred = useCallback(
-    (m: Metric) => startTransition(() => setMetric(m)),
-    [setMetric]
-  )
-  const setModeDeferred = useCallback(
-    (m: Mode) => startTransition(() => setMode(m)),
-    [setMode]
-  )
-
   // Drill panel is Summary-only; Full mode's drill-down UX is a different design
   // that will land later.
   const hasDrill = mode === 'summary' && !!(selectedPlayer || selectedDeath)
@@ -87,7 +74,7 @@ function ContentPanel() {
       minHeight: 0,
     }}>
       {/* Toggle bar: CategoryTabs + ModeToggle */}
-      <ToggleBar metric={metric} setMetric={setMetricDeferred} mode={mode} setMode={setModeDeferred} />
+      <ToggleBar metric={metric} setMetric={setMetric} mode={mode} setMode={setMode} />
 
       {/* Full-mode filter bar — Summary stays unfiltered for now. */}
       {mode === 'full' && <FilterBar />}

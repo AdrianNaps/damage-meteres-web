@@ -122,8 +122,9 @@ function OverviewModule({
   const setSelectedDeath = useStore(s => s.setSelectedDeath)
 
   // Stable handlers so memoized row components don't re-render when the
-  // parent re-renders for unrelated reasons. moduleKey is the only dep since
-  // the store setters are reference-stable across renders.
+  // parent re-renders for unrelated reasons. moduleKey is the only varying
+  // dep; the store setters are included for correctness but are themselves
+  // reference-stable across renders.
   const onPlayerClick = useCallback(
     (name: string) => setSelectedPlayer(name, moduleKey),
     [setSelectedPlayer, moduleKey]
@@ -408,6 +409,9 @@ function DeathsModuleBody({
   )
 }
 
+// Memoized like RankedModuleRow above. `death` refs are stable across renders
+// for a given snapshot (they live inside currentView.players[…].deaths), so
+// the memo only re-runs when the parent hands it a genuinely different record.
 const DeathModuleRow = memo(DeathModuleRowImpl)
 
 function DeathModuleRowImpl({
