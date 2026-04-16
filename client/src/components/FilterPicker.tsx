@@ -86,7 +86,10 @@ export function FilterPicker({ anchorRef, options, selected, onToggle, onClose, 
       setCursor(c => Math.max(0, c - 1))
       return
     }
-    if (e.key === 'Enter' || e.key === ' ') {
+    // Space must still be typable in the search input — only treat it as
+    // toggle when focus isn't in the input. Enter works from either.
+    const spaceInInput = e.key === ' ' && e.target === inputRef.current
+    if ((e.key === 'Enter' || e.key === ' ') && !spaceInInput) {
       if (filtered[cursor]) {
         e.preventDefault()
         onToggle(filtered[cursor].name)

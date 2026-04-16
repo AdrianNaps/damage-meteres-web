@@ -16,6 +16,7 @@ interface LastCredit {
   destName: string
   timestamp: number
   critical: boolean
+  eventIndex: number  // index into segment.events for the pushed damage event
 }
 const lastDamageCredit = new WeakMap<Segment, Map<string, LastCredit>>()
 
@@ -566,6 +567,15 @@ function getOrCreatePlayer(segment: Segment, name: string, guid: string): Player
 // damage already credited to players for that spell (which arrived before the first
 // SUPPORT mirror). Walks all players; cheap because it runs at most once per spellId.
 function scrubSupportOwnedSpell(segment: Segment, spellId: string) {
+  // Zero out any already-pushed plain events for this spellId so the client-
+  // side filter engine doesn't credit them to the original caster — the
+  // supporter's SUPPORT mirror is the sole real attribution for standalone-Aug
+  // spells. We keep the entries (don't splice) because other LastCredit
+  // records hold positional eventIndex references that mustn't be invalidated.
+  for (const ev of segment.events) {
+    if (ev.kind === 'damage' && ev.spellId === spellId) ev.amount = 0
+  }
+
   for (const player of Object.values(segment.players)) {
     const spell = player.damage.spells[spellId]
     if (!spell) continue
@@ -594,6 +604,7 @@ function applyDamage(segment: Segment, sourceName: string, sourceGuid: string, d
   // overkill is -1 when the hit wasn't a killing blow, >0 only on the killing blow itself.
   const amount = payload.amount - Math.max(payload.overkill, 0)
 
+  const eventIndex = segment.events.length
   segment.events.push({
     t: timestamp,
     kind: 'damage',
@@ -674,7 +685,7 @@ function applyDamage(segment: Segment, sourceName: string, sourceGuid: string, d
 
   // Record this credit so a *_DAMAGE_SUPPORT mirror arriving on the next line for the
   // same (sourceGuid, destName, timestamp) can subtract its support amount from this hit.
-  getLastCreditMap(segment).set(sourceGuid, { player, spellId, destName, timestamp, critical })
+  getLastCreditMap(segment).set(sourceGuid, { player, spellId, destName, timestamp, critical, eventIndex })
 }
 
 // Subtract a SUPPORT mirror's amount from a previously credited hit on the original caster.
@@ -702,6 +713,14 @@ function subtractFromCredit(segment: Segment, prior: LastCredit, sourceName: str
     taken.total -= sub
     const src = taken.sources[sourceName]
     if (src) src.total -= sub
+  }
+
+  // Mirror the subtraction onto the raw event stream so client-side filter
+  // aggregation doesn't double-count the support amount once the supporter's
+  // own *_DAMAGE_SUPPORT event pushes its mirror entry.
+  const ev = segment.events[prior.eventIndex]
+  if (ev && ev.kind === 'damage' && ev.amount !== undefined) {
+    ev.amount = Math.max(0, ev.amount - sub)
   }
 }
 

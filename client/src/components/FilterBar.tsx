@@ -90,7 +90,7 @@ export function FilterBar() {
         <PickerButton
           ref={sourceRef}
           label="Source"
-          defaultLabel={perspective === 'allies' ? 'All Allies' : 'All Enemies'}
+          defaultLabel="Any source"
           values={filters.Source}
           open={open === 'Source'}
           onClick={() => togglePicker('Source')}
@@ -98,7 +98,7 @@ export function FilterBar() {
         <PickerButton
           ref={targetRef}
           label="Target"
-          defaultLabel={perspective === 'allies' ? 'All Targets' : 'All Allies'}
+          defaultLabel="Any target"
           values={filters.Target}
           open={open === 'Target'}
           onClick={() => togglePicker('Target')}
