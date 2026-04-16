@@ -237,7 +237,7 @@ function applySliceUpdate(
   const sources = new Map(state.sources)
   sources.set(sourceId, nextSlice)
   if (sourceId === state.activeSourceId) {
-    return { sources, ...(patch as Partial<AppState>) }
+    return { sources, ...flatFromSlice(nextSlice) }
   }
   return { sources }
 }

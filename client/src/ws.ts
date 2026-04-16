@@ -113,7 +113,8 @@ export function connectWs() {
         }
         case 'source_open_error': {
           // No global toast surface yet; log to console so it surfaces in
-          // devtools. PR 5 wires this to the LogPicker for inline UI feedback.
+          // devtools. A future toast or inline LogPicker error region will
+          // surface this to the user.
           console.warn('[ws] source_open_error:', msg.message, msg.filePath)
           break
         }
@@ -210,20 +211,23 @@ export function requestTargetDetail(
 export function requestLogsListing(): Promise<{ dir: string; files: { name: string; size: number; mtimeMs: number }[] } | null> {
   return new Promise(resolve => {
     if (!ws || ws.readyState !== WebSocket.OPEN) return resolve(null)
+    let resolved = false
     const handler = (e: MessageEvent) => {
       let m: any
       try { m = JSON.parse(e.data) } catch { return }
       if (m?.type === 'logs_listing') {
+        resolved = true
         ws?.removeEventListener('message', handler)
         resolve({ dir: m.dir, files: m.files })
       }
     }
     ws.addEventListener('message', handler)
     ws.send(JSON.stringify({ type: 'list_logs' }))
-    // Safety timeout so we don't leak handlers if the server drops.
     setTimeout(() => {
-      ws?.removeEventListener('message', handler)
-      resolve(null)
+      if (!resolved) {
+        ws?.removeEventListener('message', handler)
+        resolve(null)
+      }
     }, 5000)
   })
 }

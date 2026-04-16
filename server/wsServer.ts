@@ -70,13 +70,14 @@ interface LogListing {
   mtimeMs: number
 }
 
-function listLogs(dir: string): LogListing[] {
+async function listLogs(dir: string): Promise<LogListing[]> {
   try {
-    const entries = fs.readdirSync(dir).filter(f => WOW_LOG_PATTERN.test(f))
+    const names = await fs.promises.readdir(dir)
+    const matching = names.filter(f => WOW_LOG_PATTERN.test(f))
     const out: LogListing[] = []
-    for (const name of entries) {
+    for (const name of matching) {
       try {
-        const stat = fs.statSync(path.join(dir, name))
+        const stat = await fs.promises.stat(path.join(dir, name))
         out.push({ name, size: stat.size, mtimeMs: stat.mtimeMs })
       } catch {
         // Skip unreadable entries (permission, vanished mid-listing).
@@ -114,8 +115,8 @@ export function attachWsHandlers(
   }
 
   // Live source's machine event handlers. Archive sources are immutable
-  // post-load so they don't need ongoing event subscriptions; PR 3 will push
-  // their segment_list once on 'ready' and never again.
+  // post-load so they don't need ongoing event subscriptions; the 'ready'
+  // handler pushes their segment_list once and never again.
   const onEncounterStart = (seg: Segment) => {
     broadcast({
       type: 'encounter_start',
@@ -287,7 +288,11 @@ export function attachWsHandlers(
 
       if (msg.type === 'list_logs') {
         const dir = liveSource.getLogsDir()
-        ws.send(JSON.stringify({ type: 'logs_listing', dir, files: listLogs(dir) }))
+        listLogs(dir).then(files => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'logs_listing', dir, files }))
+          }
+        })
         return
       }
 

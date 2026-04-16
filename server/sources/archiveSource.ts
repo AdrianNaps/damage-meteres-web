@@ -28,7 +28,8 @@ export interface ArchiveLogSourceOptions {
 // in a row dedupes to the existing tab. Path-hash (vs content-hash) is cheaper
 // and sufficient because users open files by location, not by identity.
 export function archiveSourceId(filePath: string): string {
-  const abs = path.resolve(filePath)
+  let abs = path.resolve(filePath)
+  if (process.platform === 'win32') abs = abs.toLowerCase()
   const hash = createHash('sha1').update(abs).digest('hex').slice(0, 12)
   return `archive:${hash}`
 }
