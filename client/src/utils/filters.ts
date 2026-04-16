@@ -78,7 +78,48 @@ function passesPerspective(e: ClientEvent, perspective: Perspective, allySet: Se
   return perspective === 'allies' ? isAlly : !isAlly
 }
 
+function hasAnyFilter(filters: FilterState): boolean {
+  return !!(filters.Source || filters.Target || filters.Ability)
+}
+
+// Per-events-array caches for derived rows/universes under default filters.
+// Keyed by the events array reference so entries auto-evict when the snapshot
+// leaves snapshotCache (nothing holds the array anymore → GC'd → WeakMap
+// entry cleared). Filtered compositions fall through to a fresh compute —
+// the filter space is too large to cache exhaustively, and filtered views
+// are interactive so users expect each compute to run anyway.
+const unitRowsCache = new WeakMap<ClientEvent[], Map<string, UnitRow[]>>()
+const deathRowsCache = new WeakMap<ClientEvent[], Map<string, DeathRow[]>>()
+const abilityUniverseCache = new WeakMap<ClientEvent[], Map<string, AbilityEntry[]>>()
+const unitUniverseCache = new WeakMap<ClientEvent[], Map<string, { sources: string[]; targets: string[] }>>()
+
+function getOrInit<K extends object, V>(cache: WeakMap<K, Map<string, V>>, key: K): Map<string, V> {
+  let sub = cache.get(key)
+  if (!sub) { sub = new Map(); cache.set(key, sub) }
+  return sub
+}
+
 export function computeUnitRows(
+  events: ClientEvent[],
+  perspective: Perspective,
+  filters: FilterState,
+  category: 'damage' | 'healing' | 'interrupts',
+  allies: Record<string, PlayerSnapshot>,
+  durationSec: number,
+): UnitRow[] {
+  if (!hasAnyFilter(filters)) {
+    const sub = getOrInit(unitRowsCache, events)
+    const key = `${perspective}:${category}`
+    const cached = sub.get(key)
+    if (cached) return cached
+    const rows = computeUnitRowsImpl(events, perspective, filters, category, allies, durationSec)
+    sub.set(key, rows)
+    return rows
+  }
+  return computeUnitRowsImpl(events, perspective, filters, category, allies, durationSec)
+}
+
+function computeUnitRowsImpl(
   events: ClientEvent[],
   perspective: Perspective,
   filters: FilterState,
@@ -138,6 +179,24 @@ export function computeDeathRows(
   filters: FilterState,
   allies: Record<string, PlayerSnapshot>,
 ): DeathRow[] {
+  if (!hasAnyFilter(filters)) {
+    const sub = getOrInit(deathRowsCache, events)
+    const key = perspective
+    const cached = sub.get(key)
+    if (cached) return cached
+    const rows = computeDeathRowsImpl(events, perspective, filters, allies)
+    sub.set(key, rows)
+    return rows
+  }
+  return computeDeathRowsImpl(events, perspective, filters, allies)
+}
+
+function computeDeathRowsImpl(
+  events: ClientEvent[],
+  perspective: Perspective,
+  filters: FilterState,
+  allies: Record<string, PlayerSnapshot>,
+): DeathRow[] {
   const allySet = makeAllySet(allies)
   const rows: DeathRow[] = []
 
@@ -162,6 +221,25 @@ export function computeDeathRows(
 }
 
 export function computeAbilityUniverse(
+  events: ClientEvent[],
+  perspective: Perspective,
+  filters: Pick<FilterState, 'Source' | 'Target'>,
+  category: Metric,
+  allies: Record<string, PlayerSnapshot>,
+): AbilityEntry[] {
+  if (!filters.Source && !filters.Target) {
+    const sub = getOrInit(abilityUniverseCache, events)
+    const key = `${perspective}:${category}`
+    const cached = sub.get(key)
+    if (cached) return cached
+    const entries = computeAbilityUniverseImpl(events, perspective, filters, category, allies)
+    sub.set(key, entries)
+    return entries
+  }
+  return computeAbilityUniverseImpl(events, perspective, filters, category, allies)
+}
+
+function computeAbilityUniverseImpl(
   events: ClientEvent[],
   perspective: Perspective,
   filters: Pick<FilterState, 'Source' | 'Target'>,
@@ -240,6 +318,22 @@ export function hasMatchingData(
 // event should be pickable on either axis. We return them separately anyway so
 // callers can wire them to the right pickers.
 export function computeUnitUniverse(
+  events: ClientEvent[],
+  perspective: Perspective,
+  category: Metric,
+  allies: Record<string, PlayerSnapshot>,
+): { sources: string[]; targets: string[] } {
+  // No filter input — always cacheable per (events, perspective, category).
+  const sub = getOrInit(unitUniverseCache, events)
+  const key = `${perspective}:${category}`
+  const cached = sub.get(key)
+  if (cached) return cached
+  const result = computeUnitUniverseImpl(events, perspective, category, allies)
+  sub.set(key, result)
+  return result
+}
+
+function computeUnitUniverseImpl(
   events: ClientEvent[],
   perspective: Perspective,
   category: Metric,
