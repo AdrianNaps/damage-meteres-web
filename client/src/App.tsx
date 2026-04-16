@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { connectWs } from './ws'
-import { useStore, selectCurrentView, selectCurrentScopeKey } from './store'
+import { useStore, selectCurrentView, selectCurrentScopeKey, type Metric, type Mode } from './store'
 import { EncounterHeader } from './components/EncounterHeader'
 import { SegmentTabs } from './components/SegmentTabs'
 import { SummaryView } from './components/SummaryView'
@@ -56,8 +56,8 @@ function ContentPanel() {
 
   const players = currentView?.players ?? {}
   const duration =
-    currentView && 'duration' in currentView ? (currentView as { duration: number }).duration
-    : currentView && 'activeDurationSec' in currentView ? (currentView as { activeDurationSec: number }).activeDurationSec
+    currentView && 'duration' in currentView ? currentView.duration
+    : currentView && 'activeDurationSec' in currentView ? currentView.activeDurationSec
     : 0
 
   return (
@@ -107,9 +107,6 @@ function ContentPanel() {
   )
 }
 
-type Metric = 'damage' | 'healing' | 'deaths' | 'interrupts'
-type Mode = 'summary' | 'full'
-
 // Shared category list for Summary. Full mode will later extend this with
 // additional groups (Damage Taken, Dispels, Buffs, Casts, Timeline, …).
 const SUMMARY_CATEGORIES: { key: Metric; label: string }[] = [
@@ -151,16 +148,14 @@ function CategoryBar({ metric, setMetric }: { metric: Metric; setMetric: (m: Met
   // add more groups (separated by a small gap) as additional categories land.
   return (
     <div style={{ display: 'flex', alignItems: 'center', minWidth: 0, overflowX: 'auto' }}>
-      <div style={{ display: 'flex', alignItems: 'center' }}>
-        {SUMMARY_CATEGORIES.map(opt => (
-          <CategoryTab
-            key={opt.key}
-            label={opt.label}
-            active={metric === opt.key}
-            onClick={() => setMetric(opt.key)}
-          />
-        ))}
-      </div>
+      {SUMMARY_CATEGORIES.map(opt => (
+        <CategoryTab
+          key={opt.key}
+          label={opt.label}
+          active={metric === opt.key}
+          onClick={() => setMetric(opt.key)}
+        />
+      ))}
     </div>
   )
 }

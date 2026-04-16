@@ -10,6 +10,9 @@ export interface BootInfoState {
 // reset helpers and the graph component share a single source of truth.
 export const GRAPH_GROUP_AVG_KEY = '__group_avg__'
 
+export type Metric = 'damage' | 'healing' | 'deaths' | 'interrupts'
+export type Mode = 'summary' | 'full'
+
 interface AppState {
   selectedSegment: SegmentSnapshot | null
   segmentHistory: HistoryItem[]
@@ -20,9 +23,9 @@ interface AppState {
   selectedBossSection: BossSectionSnapshot | null
   selectedPlayer: string | null
   selectedDeath: PlayerDeathRecord | null
-  metric: 'damage' | 'healing' | 'deaths' | 'interrupts'
-  drillMetric: 'damage' | 'healing' | 'deaths' | 'interrupts' | null
-  mode: 'summary' | 'full'
+  metric: Metric
+  drillMetric: Metric | null
+  mode: Mode
   wsStatus: 'connecting' | 'connected' | 'disconnected'
   targetDetail: TargetDetail | null
   // Per-name spec cache, accumulated across every snapshot we've seen.

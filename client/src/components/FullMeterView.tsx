@@ -2,25 +2,8 @@ import { useStore, selectCurrentView, resolveSpecId } from '../store'
 import type { PlayerSnapshot, PlayerDeathRecord } from '../types'
 import { formatNum, shortName } from '../utils/format'
 import { specIconUrl } from '../utils/icons'
+import { SPEC_NAMES } from '../data/specIcons'
 import { getClassColor } from './PlayerRow'
-
-// First word is what the staging mock shows in the Spec column. Full names are
-// kept for potential future use (tooltip, details modal).
-const SPEC_NAMES: Record<number, string> = {
-  71: 'Arms', 72: 'Fury', 73: 'Protection',
-  65: 'Holy', 66: 'Protection', 70: 'Retribution',
-  253: 'Beast Mastery', 254: 'Marksmanship', 255: 'Survival',
-  259: 'Assassination', 260: 'Outlaw', 261: 'Subtlety',
-  256: 'Discipline', 257: 'Holy', 258: 'Shadow',
-  250: 'Blood', 251: 'Frost', 252: 'Unholy',
-  262: 'Elemental', 263: 'Enhancement', 264: 'Restoration',
-  62: 'Arcane', 63: 'Fire', 64: 'Frost',
-  265: 'Affliction', 266: 'Demonology', 267: 'Destruction',
-  268: 'Brewmaster', 270: 'Mistweaver', 269: 'Windwalker',
-  102: 'Balance', 103: 'Feral', 104: 'Guardian', 105: 'Restoration',
-  577: 'Havoc', 581: 'Vengeance', 1480: 'Devourer',
-  1467: 'Devastation', 1468: 'Preservation', 1473: 'Augmentation',
-}
 
 // Per-player table grid (damage/healing/interrupts). Mirrors staging mock
 // ordering: rank | player | bar+% | spec | stat1 | stat2 | stat3.
@@ -30,39 +13,44 @@ const PLAYER_GRID_COLUMNS = '32px 180px minmax(140px, 1fr) 110px 90px 90px 80px'
 // rank | time | player | killing blow | source | overkill.
 const DEATHS_GRID_COLUMNS = '32px 60px 180px minmax(140px, 1fr) 160px 90px'
 
-type NumericStat = { label: string; value: number; bold?: boolean }
+type StatFormat = 'shorthand' | 'integer'
+type NumericStat = { label: string; value: number; format: StatFormat; bold?: boolean }
 
 interface MetricConfig {
   // Drives sort order, the bar fill, and the % of total cell.
   sortValue: (p: PlayerSnapshot) => number
-  // Three right-aligned numeric columns. `undefined` renders as a muted dash.
+  labels: [string, string, string]
+  // Three right-aligned numeric columns.
   stats: (p: PlayerSnapshot) => [NumericStat, NumericStat, NumericStat]
 }
 
 const DAMAGE_CONFIG: MetricConfig = {
   sortValue: p => p.dps,
+  labels: ['Total', 'DPS', 'Casts'],
   stats: p => [
-    { label: 'Total', value: p.damage.total },
-    { label: 'DPS', value: p.dps, bold: true },
-    { label: 'Casts', value: Object.values(p.damage.spells).reduce((n, s) => n + s.hitCount, 0) },
+    { label: 'Total', value: p.damage.total, format: 'shorthand' },
+    { label: 'DPS', value: p.dps, format: 'shorthand', bold: true },
+    { label: 'Casts', value: Object.values(p.damage.spells).reduce((n, s) => n + s.hitCount, 0), format: 'integer' },
   ],
 }
 
 const HEALING_CONFIG: MetricConfig = {
   sortValue: p => p.hps,
+  labels: ['Total', 'HPS', 'Overheal'],
   stats: p => [
-    { label: 'Total', value: p.healing.total },
-    { label: 'HPS', value: p.hps, bold: true },
-    { label: 'Overheal', value: p.healing.overheal },
+    { label: 'Total', value: p.healing.total, format: 'shorthand' },
+    { label: 'HPS', value: p.hps, format: 'shorthand', bold: true },
+    { label: 'Overheal', value: p.healing.overheal, format: 'shorthand' },
   ],
 }
 
 const INTERRUPTS_CONFIG: MetricConfig = {
   sortValue: p => p.interrupts.total,
+  labels: ['Count', 'Spells', 'Records'],
   stats: p => [
-    { label: 'Count', value: p.interrupts.total, bold: true },
-    { label: 'Spells', value: Object.keys(p.interrupts.byKicked).length },
-    { label: 'Records', value: p.interrupts.records.length },
+    { label: 'Count', value: p.interrupts.total, format: 'integer', bold: true },
+    { label: 'Spells', value: Object.keys(p.interrupts.byKicked).length, format: 'integer' },
+    { label: 'Records', value: p.interrupts.records.length, format: 'integer' },
   ],
 }
 
@@ -72,12 +60,9 @@ const METRIC_CONFIG: Record<'damage' | 'healing' | 'interrupts', MetricConfig> =
   interrupts: INTERRUPTS_CONFIG,
 }
 
-// Interrupts are integer counts — format as localized integers, not K/M shorthand.
-function formatStat(label: string, value: number): string {
-  if (label === 'Count' || label === 'Spells' || label === 'Records' || label === 'Casts') {
-    return value > 0 ? value.toLocaleString() : '—'
-  }
-  return formatNum(value)
+function formatStat(stat: NumericStat): string {
+  if (stat.format === 'integer') return stat.value > 0 ? stat.value.toLocaleString() : '—'
+  return formatNum(stat.value)
 }
 
 export function FullMeterView() {
@@ -95,27 +80,22 @@ export function FullMeterView() {
   }
 
   if (metric === 'deaths') {
-    return <FullDeathsTable players={Object.values(currentView.players)} />
+    return <FullDeathsTable players={currentView.players} />
   }
 
   return <FullPlayerTable players={Object.values(currentView.players)} config={METRIC_CONFIG[metric]} />
 }
 
-function FullPlayerTable({
-  players,
-  config,
-}: {
-  players: PlayerSnapshot[]
-  config: MetricConfig
-}) {
+function FullPlayerTable({ players, config }: { players: PlayerSnapshot[]; config: MetricConfig }) {
+  const playerSpecs = useStore(s => s.playerSpecs)
+
   const sorted = [...players].sort((a, b) => config.sortValue(b) - config.sortValue(a))
   const topValue = sorted[0] ? config.sortValue(sorted[0]) : 0
   const totalValue = sorted.reduce((sum, p) => sum + config.sortValue(p), 0)
-  const headerLabels = sorted[0] ? config.stats(sorted[0]).map(s => s.label) : ['', '', '']
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      <PlayerColumnHeader labels={headerLabels as [string, string, string]} />
+      <PlayerColumnHeader labels={config.labels} />
       <div className="flex-1 overflow-y-auto">
         {sorted.length === 0 ? (
           <EmptyState text="No player data yet" />
@@ -128,6 +108,7 @@ function FullPlayerTable({
               topValue={topValue}
               totalValue={totalValue}
               config={config}
+              specId={resolveSpecId(playerSpecs, player.name, player.specId)}
             />
           ))
         )}
@@ -165,17 +146,18 @@ function FullPlayerRow({
   topValue,
   totalValue,
   config,
+  specId,
 }: {
   player: PlayerSnapshot
   rank: number
   topValue: number
   totalValue: number
   config: MetricConfig
+  specId: number | undefined
 }) {
-  const cachedSpec = useStore(s => resolveSpecId(s.playerSpecs, player.name, player.specId))
-  const color = getClassColor(cachedSpec)
-  const specIcon = specIconUrl(cachedSpec)
-  const specLabel = cachedSpec !== undefined ? SPEC_NAMES[cachedSpec] ?? '—' : '—'
+  const color = getClassColor(specId)
+  const specIcon = specIconUrl(specId)
+  const specLabel = specId !== undefined ? SPEC_NAMES[specId] ?? '—' : '—'
 
   const value = config.sortValue(player)
   const fillPct = topValue > 0 ? (value / topValue) * 100 : 0
@@ -205,10 +187,10 @@ function FullPlayerRow({
   )
 }
 
-function FullDeathsTable({ players }: { players: PlayerSnapshot[] }) {
+function FullDeathsTable({ players }: { players: Record<string, PlayerSnapshot> }) {
   const playerSpecs = useStore(s => s.playerSpecs)
 
-  const allDeaths = players
+  const allDeaths = Object.values(players)
     .flatMap(p => p.deaths)
     .sort((a, b) => a.timeOfDeath - b.timeOfDeath)
 
@@ -219,17 +201,14 @@ function FullDeathsTable({ players }: { players: PlayerSnapshot[] }) {
         {allDeaths.length === 0 ? (
           <EmptyState text="No deaths recorded" />
         ) : (
-          allDeaths.map((record, i) => {
-            const specId = resolveSpecId(playerSpecs, record.playerName, players.find(p => p.name === record.playerName)?.specId)
-            return (
-              <FullDeathRow
-                key={`${record.playerGuid}-${record.timeOfDeath}`}
-                record={record}
-                rank={i + 1}
-                specId={specId}
-              />
-            )
-          })
+          allDeaths.map((record, i) => (
+            <FullDeathRow
+              key={`${record.playerGuid}-${record.timeOfDeath}`}
+              record={record}
+              rank={i + 1}
+              specId={resolveSpecId(playerSpecs, record.playerName, players[record.playerName]?.specId)}
+            />
+          ))
         )}
       </div>
     </div>
@@ -411,6 +390,7 @@ function BarCell({
         fontFamily: 'var(--font-mono)',
         color: 'var(--text-secondary)',
         minWidth: 40,
+        flexShrink: 0,
         textAlign: 'right',
       }}>
         {shareOfTotal.toFixed(1)}%
@@ -442,7 +422,7 @@ function StatCell({ stat }: { stat: NumericStat }) {
       color: stat.bold ? 'var(--text-primary)' : 'var(--text-secondary)',
       textAlign: 'right',
     }}>
-      {formatStat(stat.label, stat.value)}
+      {formatStat(stat)}
     </span>
   )
 }
