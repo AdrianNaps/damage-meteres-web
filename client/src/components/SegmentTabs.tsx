@@ -1,76 +1,126 @@
-import { useStore } from '../store'
+import { useMemo } from 'react'
+import { useStore, LIVE_SOURCE_ID } from '../store'
 import { send } from '../ws'
-import type { KeyRunSummary, BossSectionSummary } from '../types'
+import type { HistoryItem, KeyRunSummary, BossSectionSummary } from '../types'
 import { raidDifficultyLabel } from '../utils/format'
 
+interface TaggedItem {
+  item: HistoryItem
+  sourceId: string
+}
+
 export function SegmentTabs() {
-  const history = useStore(s => s.segmentHistory)
+  const sources = useStore(s => s.sources)
+  const activeSourceId = useStore(s => s.activeSourceId)
   const selectedId = useStore(s => s.selectedSegmentId)
   const selectedKeyRunId = useStore(s => s.selectedKeyRunId)
   const selectedBossSectionId = useStore(s => s.selectedBossSectionId)
+  const setActiveSource = useStore(s => s.setActiveSource)
   const setSelectedSegmentId = useStore(s => s.setSelectedSegmentId)
   const setSelectedKeyRunId = useStore(s => s.setSelectedKeyRunId)
   const setSelectedBossSectionId = useStore(s => s.setSelectedBossSectionId)
+  const setLogPickerOpen = useStore(s => s.setLogPickerOpen)
 
-  if (history.length === 0) return null
+  // Aggregate instances from every source into one time-ordered set.
+  // Opening a log "unpacks" its instances here; the user never thinks about
+  // sources — just instances sorted by when they happened.
+  const allItems = useMemo(() => {
+    const items: TaggedItem[] = []
+    for (const [sourceId, slice] of sources.entries()) {
+      for (const item of slice.segmentHistory) {
+        items.push({ item, sourceId })
+      }
+    }
+    items.sort((a, b) => b.item.startTime - a.item.startTime)
+    return items
+  }, [sources])
 
-  // The store setters hydrate from snapshotCache when available; we only need
-  // to round-trip the server when that came up empty. Reading state after the
-  // setter works because Zustand's `set` is synchronous.
-  function selectSegment(id: string | null) {
+  if (allItems.length === 0) {
+    return (
+      <div
+        className="flex items-center gap-0 px-5 pt-2 pb-1"
+        style={{ borderBottom: '1px solid var(--border-subtle)' }}
+      >
+        <OpenLogButton labeled onClick={() => setLogPickerOpen(true)} />
+      </div>
+    )
+  }
+
+  function selectSegment(sourceId: string, id: string | null) {
+    if (sourceId !== activeSourceId) setActiveSource(sourceId)
     if (id === null) {
       setSelectedSegmentId(null)
       return
     }
     setSelectedSegmentId(id)
     if (useStore.getState().selectedSegment?.id !== id) {
-      send({ type: 'get_segment', segmentId: id })
+      send({ type: 'get_segment', sourceId, segmentId: id })
     }
   }
 
-  function selectKeyRun(keyRunId: string) {
+  function selectKeyRun(sourceId: string, keyRunId: string) {
+    if (sourceId !== activeSourceId) setActiveSource(sourceId)
     setSelectedKeyRunId(keyRunId)
     if (useStore.getState().selectedKeyRun?.keyRunId !== keyRunId) {
-      send({ type: 'get_key_run', keyRunId })
+      send({ type: 'get_key_run', sourceId, keyRunId })
     }
   }
 
-  function selectBossSection(bossSectionId: string) {
+  function selectBossSection(sourceId: string, bossSectionId: string) {
+    if (sourceId !== activeSourceId) setActiveSource(sourceId)
     setSelectedBossSectionId(bossSectionId)
     if (useStore.getState().selectedBossSection?.bossSectionId !== bossSectionId) {
-      send({ type: 'get_boss_section', bossSectionId })
+      send({ type: 'get_boss_section', sourceId, bossSectionId })
     }
   }
 
-  const reversedHistory = [...history].reverse()
-
-  const activeKeyRun = reversedHistory.find(
-    item =>
-      item.type === 'key_run' &&
+  // Detect active container for the bottom sub-tier. Uses the active source's
+  // selection state + the full aggregated list to find the right item.
+  const activeKeyRun = allItems.find(
+    ({ item, sourceId }) =>
+      item.type === 'key_run' && sourceId === activeSourceId &&
       (item.keyRunId === selectedKeyRunId || item.segments.some(s => s.id === selectedId))
-  ) as KeyRunSummary | undefined
+  )?.item as KeyRunSummary | undefined
 
-  const activeBossSection = !activeKeyRun ? (reversedHistory.find(
-    item =>
-      item.type === 'boss_section' &&
+  const activeBossSection = !activeKeyRun ? (allItems.find(
+    ({ item, sourceId }) =>
+      item.type === 'boss_section' && sourceId === activeSourceId &&
       (item.bossSectionId === selectedBossSectionId || item.segments.some(s => s.id === selectedId))
-  ) as BossSectionSummary | undefined) : undefined
+  )?.item as BossSectionSummary | undefined) : undefined
 
   const activeSegments = activeKeyRun?.segments ?? activeBossSection?.segments ?? []
 
   return (
     <div className="flex flex-col" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-      {/* Top tier — runs and standalone encounters */}
+      {/* Top tier — instances from all sources, time-ordered */}
       <div className="flex gap-0 px-5 pt-2 overflow-x-auto items-end">
-        {reversedHistory.map(item => {
+        {allItems.map(({ item, sourceId }) => {
           if (item.type === 'key_run') {
+            const isLive = sourceId === LIVE_SOURCE_ID && item.endTime === null
+            const isActive = activeSourceId === sourceId && activeKeyRun?.keyRunId === item.keyRunId
             return (
               <TabButton
-                key={item.keyRunId}
-                active={activeKeyRun?.keyRunId === item.keyRunId}
+                key={`${sourceId}:${item.keyRunId}`}
+                active={isActive}
                 accentColor="#d97706"
-                onClick={() => selectKeyRun(item.keyRunId)}
+                onClick={() => selectKeyRun(sourceId, item.keyRunId)}
               >
+                {isLive && (
+                  <span
+                    className="animate-pulse-dot"
+                    style={{
+                      width: 6,
+                      height: 6,
+                      borderRadius: '50%',
+                      background: 'var(--status-kill)',
+                      marginRight: 6,
+                      flexShrink: 0,
+                    }}
+                  />
+                )}
+                {isLive && (
+                  <span style={{ fontWeight: 500, marginRight: 4 }}>Live –</span>
+                )}
                 <span style={{ fontWeight: 500 }}>{item.dungeonName}</span>
                 <span style={{ opacity: 0.5, marginLeft: 4 }}>+{item.keystoneLevel}</span>
                 {item.success === true && <span style={{ color: 'var(--status-kill)', marginLeft: 4 }}>&#10003;</span>}
@@ -84,14 +134,15 @@ export function SegmentTabs() {
             )
           }
           if (item.type === 'boss_section') {
+            const isActive = activeSourceId === sourceId && activeBossSection?.bossSectionId === item.bossSectionId
             const kills = item.segments.filter(s => s.success === true).length
             const diff = raidDifficultyLabel(item.difficultyID)
             return (
               <TabButton
-                key={item.bossSectionId}
-                active={activeBossSection?.bossSectionId === item.bossSectionId}
+                key={`${sourceId}:${item.bossSectionId}`}
+                active={isActive}
                 accentColor="#8b5cf6"
-                onClick={() => selectBossSection(item.bossSectionId)}
+                onClick={() => selectBossSection(sourceId, item.bossSectionId)}
               >
                 <span style={{ fontWeight: 500 }}>{item.encounterName}</span>
                 {diff && (
@@ -103,12 +154,14 @@ export function SegmentTabs() {
               </TabButton>
             )
           }
+          // Standalone segment
+          const isActive = activeSourceId === sourceId && selectedId === item.id && !activeKeyRun && !activeBossSection
           return (
             <TabButton
-              key={item.id}
-              active={selectedId === item.id && !activeKeyRun && !activeBossSection}
+              key={`${sourceId}:${item.id}`}
+              active={isActive}
               accentColor="var(--text-primary)"
-              onClick={() => selectSegment(item.id)}
+              onClick={() => selectSegment(sourceId, item.id)}
             >
               {item.encounterName}
               {item.success === true && <span style={{ color: 'var(--status-kill)', marginLeft: 4 }}>&#10003;</span>}
@@ -116,6 +169,7 @@ export function SegmentTabs() {
             </TabButton>
           )
         })}
+        <OpenLogButton labeled={false} onClick={() => setLogPickerOpen(true)} />
       </div>
 
       {/* Bottom tier — segments within the active container */}
@@ -133,8 +187,8 @@ export function SegmentTabs() {
             accentColor="var(--text-secondary)"
             small
             onClick={() => {
-              if (activeKeyRun) selectKeyRun(activeKeyRun.keyRunId)
-              else if (activeBossSection) selectBossSection(activeBossSection.bossSectionId)
+              if (activeKeyRun) selectKeyRun(activeSourceId, activeKeyRun.keyRunId)
+              else if (activeBossSection) selectBossSection(activeSourceId, activeBossSection.bossSectionId)
             }}
           >
             Overall
@@ -145,7 +199,7 @@ export function SegmentTabs() {
               active={selectedId === seg.id}
               accentColor="var(--text-secondary)"
               small
-              onClick={() => selectSegment(seg.id)}
+              onClick={() => selectSegment(activeSourceId, seg.id)}
             >
               {activeBossSection ? `Pull ${pullNum}` : shortSegmentName(seg.encounterName)}
               {seg.success === true && <span style={{ color: 'var(--status-kill)', marginLeft: 4 }}>&#10003;</span>}
@@ -155,6 +209,32 @@ export function SegmentTabs() {
         </div>
       )}
     </div>
+  )
+}
+
+function OpenLogButton({ labeled, onClick }: { labeled: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      title="Open a log file"
+      aria-label="Open log file"
+      style={{
+        marginLeft: 6,
+        padding: labeled ? '6px 10px' : '6px 9px',
+        fontSize: 12,
+        background: 'transparent',
+        border: 'none',
+        cursor: 'pointer',
+        color: 'var(--text-secondary)',
+        marginBottom: -1,
+        borderBottom: '2px solid transparent',
+        whiteSpace: 'nowrap',
+      }}
+      onMouseEnter={e => { e.currentTarget.style.color = 'var(--text-primary)' }}
+      onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-secondary)' }}
+    >
+      {labeled ? '+ Open log…' : '+'}
+    </button>
   )
 }
 

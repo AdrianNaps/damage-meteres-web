@@ -14,6 +14,7 @@ export type Metric = 'damage' | 'healing' | 'deaths' | 'interrupts'
 export type Mode = 'summary' | 'full'
 export type Perspective = 'allies' | 'enemies'
 export type FilterAxis = 'Source' | 'Target' | 'Ability'
+export type SourceKind = 'live' | 'archive'
 
 export interface FilterState {
   Source?: string[]
@@ -60,11 +61,14 @@ function cacheEvictAggregates(cache: Map<string, AnySnapshot>): Map<string, AnyS
   return next ?? cache
 }
 
-interface AppState {
-  selectedSegment: SegmentSnapshot | null
+// Per-source slice. One of these exists per LogSource on the server. Each tab
+// in the future SourceSwitcher swaps which slice is "active" — components
+// continue to read flat top-level fields, which mirror the active slice.
+export interface SourceState {
   segmentHistory: HistoryItem[]
+  selectedSegment: SegmentSnapshot | null
   selectedSegmentId: string | null
-  selectedKeyRunId: string | null    // which key run header is selected
+  selectedKeyRunId: string | null
   selectedKeyRun: KeyRunSnapshot | null
   selectedBossSectionId: string | null
   selectedBossSection: BossSectionSnapshot | null
@@ -73,55 +77,169 @@ interface AppState {
   metric: Metric
   drillMetric: Metric | null
   mode: Mode
-  wsStatus: 'connecting' | 'connected' | 'disconnected'
   targetDetail: TargetDetail | null
-  // Per-name spec cache, accumulated across every snapshot we've seen.
-  // Used as a fallback when a segment (e.g. Trash 1) was created before COMBATANT_INFO fired.
-  playerSpecs: Record<string, number>
-  // spellId → Wowhead icon filename. Accumulated across snapshots so icons
-  // stay visible even when a snapshot arrives before the server resolver
-  // has finished looking up a new ID.
-  spellIcons: Record<string, string>
-  // Boot info from the Electron main process. null in pure-browser dev mode.
-  bootInfo: BootInfoState | null
-  settingsOpen: boolean
-  // Focused series on the DPS/HPS line graph. Survives metric toggles and
-  // sub-category tabs; reset by resetGraphFocus when the encounter changes.
   graphFocused: Set<string>
   graphScopeKey: string | null
+  perspective: Perspective
+  filters: FilterState
+  snapshotCache: Map<string, AnySnapshot>
+}
 
-  // Full-mode filter bar. Perspective flips which units are "sources" vs "targets";
-  // filters are AND-composed subsets that narrow the event stream before rendering.
+// Per-source metadata, pushed by the server. Distinct from SourceState because
+// the server owns this — it's not driven by user interactions.
+export interface SourceMeta {
+  sourceId: string
+  kind: SourceKind
+  label: string
+  filePath: string | null
+  liveStatus?: { writingNow: boolean; lastWriteAt: number | null }
+  loadProgress?: { bytesRead: number; totalBytes: number; linesProcessed: number }
+  loaded?: boolean   // archives flip true once the server emits 'ready'
+}
+
+export const LIVE_SOURCE_ID = 'live'
+
+function makeEmptySourceState(): SourceState {
+  return {
+    segmentHistory: [],
+    selectedSegment: null,
+    selectedSegmentId: null,
+    selectedKeyRunId: null,
+    selectedKeyRun: null,
+    selectedBossSectionId: null,
+    selectedBossSection: null,
+    selectedPlayer: null,
+    selectedDeath: null,
+    metric: 'damage',
+    drillMetric: null,
+    mode: 'summary',
+    targetDetail: null,
+    graphFocused: new Set([GRAPH_GROUP_AVG_KEY]),
+    graphScopeKey: null,
+    perspective: 'allies',
+    filters: EMPTY_FILTERS,
+    snapshotCache: new Map(),
+  }
+}
+
+interface AppState {
+  // Per-source storage. Each slice belongs to a server-side LogSource.
+  sources: Map<string, SourceState>
+  sourceMetas: Map<string, SourceMeta>
+  activeSourceId: string
+
+  // Flat mirror of the active source's slice. Components read these directly
+  // without knowing about per-source storage. Kept in sync by every setter
+  // (when the touched sourceId is the active one) and by setActiveSource.
+  selectedSegment: SegmentSnapshot | null
+  segmentHistory: HistoryItem[]
+  selectedSegmentId: string | null
+  selectedKeyRunId: string | null
+  selectedKeyRun: KeyRunSnapshot | null
+  selectedBossSectionId: string | null
+  selectedBossSection: BossSectionSnapshot | null
+  selectedPlayer: string | null
+  selectedDeath: PlayerDeathRecord | null
+  metric: Metric
+  drillMetric: Metric | null
+  mode: Mode
+  targetDetail: TargetDetail | null
+  graphFocused: Set<string>
+  graphScopeKey: string | null
   perspective: Perspective
   filters: FilterState
 
-  // Cache of recently-viewed snapshots keyed by `seg:<id>`, `kr:<id>`,
-  // `bs:<id>`. Re-clicks hydrate from here instead of round-tripping the
-  // server. See AnySnapshot / cachePut / cacheEvictAggregates above.
-  snapshotCache: Map<string, AnySnapshot>
+  // Truly cross-source state (no per-source mirror needed).
+  // Player specs and spell icons accumulate globally across every source we've
+  // seen — the same player/spell observed in archive A and archive B keeps
+  // its resolution.
+  playerSpecs: Record<string, number>
+  spellIcons: Record<string, string>
+  wsStatus: 'connecting' | 'connected' | 'disconnected'
+  bootInfo: BootInfoState | null
+  settingsOpen: boolean
+  logPickerOpen: boolean
 
-  setSelectedSegment: (s: SegmentSnapshot | null) => void
-  setSegmentHistory: (list: HistoryItem[]) => void
-  setSelectedSegmentId: (id: string | null) => void  // clears selectedPlayer, key run state, and (when null) selectedSegment
-  setSelectedKeyRunId: (id: string | null) => void   // clears segment selection
-  setSelectedKeyRun: (s: KeyRunSnapshot | null) => void
-  setSelectedBossSectionId: (id: string | null) => void
-  setSelectedBossSection: (s: BossSectionSnapshot | null) => void
-  setSelectedPlayer: (name: string | null, drillMetric?: AppState['metric']) => void
+  // Per-source-state setters. sourceId defaults to activeSourceId so existing
+  // call sites (component clicks) keep working unchanged. WS message handlers
+  // pass an explicit sourceId so updates land in the right slice even when the
+  // user is viewing a different one.
+  setSelectedSegment: (s: SegmentSnapshot | null, sourceId?: string) => void
+  setSegmentHistory: (list: HistoryItem[], sourceId?: string) => void
+  setSelectedSegmentId: (id: string | null, sourceId?: string) => void
+  setSelectedKeyRunId: (id: string | null, sourceId?: string) => void
+  setSelectedKeyRun: (s: KeyRunSnapshot | null, sourceId?: string) => void
+  setSelectedBossSectionId: (id: string | null, sourceId?: string) => void
+  setSelectedBossSection: (s: BossSectionSnapshot | null, sourceId?: string) => void
+  setSelectedPlayer: (name: string | null, drillMetric?: Metric) => void
   setSelectedDeath: (record: PlayerDeathRecord | null) => void
-  setMetric: (m: AppState['metric']) => void
-  setMode: (m: AppState['mode']) => void
-  setWsStatus: (s: AppState['wsStatus']) => void
+  setMetric: (m: Metric) => void
+  setMode: (m: Mode) => void
   setTargetDetail: (d: TargetDetail | null) => void
-  setBootInfo: (info: BootInfoState | null) => void
-  setSettingsOpen: (open: boolean) => void
   toggleGraphFocus: (key: string) => void
   syncGraphScope: (scopeKey: string | null) => void
   setPerspective: (p: Perspective) => void
   setFilter: (axis: FilterAxis, names: string[] | undefined) => void
   toggleFilterValue: (axis: FilterAxis, name: string) => void
   clearAllFilters: () => void
+
+  // Truly global setters.
+  setWsStatus: (s: AppState['wsStatus']) => void
+  setBootInfo: (info: BootInfoState | null) => void
+  setSettingsOpen: (open: boolean) => void
+  setLogPickerOpen: (open: boolean) => void
   refreshBootInfo: () => Promise<void>
+
+  // Source registry actions.
+  setActiveSource: (sourceId: string) => void
+  addSource: (meta: SourceMeta) => void
+  removeSource: (sourceId: string) => void
+  updateSourceMeta: (sourceId: string, partial: Partial<SourceMeta>) => void
+}
+
+// Project the slice's encounter-state fields onto the flat top-level shape.
+// The flat field names match the slice field names exactly, so the mirroring
+// is straightforward — any field that lives both in SourceState and AppState
+// gets copied here.
+function flatFromSlice(slice: SourceState): Partial<AppState> {
+  return {
+    selectedSegment: slice.selectedSegment,
+    segmentHistory: slice.segmentHistory,
+    selectedSegmentId: slice.selectedSegmentId,
+    selectedKeyRunId: slice.selectedKeyRunId,
+    selectedKeyRun: slice.selectedKeyRun,
+    selectedBossSectionId: slice.selectedBossSectionId,
+    selectedBossSection: slice.selectedBossSection,
+    selectedPlayer: slice.selectedPlayer,
+    selectedDeath: slice.selectedDeath,
+    metric: slice.metric,
+    drillMetric: slice.drillMetric,
+    mode: slice.mode,
+    targetDetail: slice.targetDetail,
+    graphFocused: slice.graphFocused,
+    graphScopeKey: slice.graphScopeKey,
+    perspective: slice.perspective,
+    filters: slice.filters,
+  }
+}
+
+// Apply a partial slice update for a sourceId and (when that sourceId is the
+// active source) mirror those same fields to the flat top-level state. The
+// flat field names match SourceState field names by design, so we can spread
+// `patch` straight into the returned partial.
+function applySliceUpdate(
+  state: AppState,
+  sourceId: string,
+  patch: Partial<SourceState>,
+): Partial<AppState> {
+  const current = state.sources.get(sourceId) ?? makeEmptySourceState()
+  const nextSlice: SourceState = { ...current, ...patch }
+  const sources = new Map(state.sources)
+  sources.set(sourceId, nextSlice)
+  if (sourceId === state.activeSourceId) {
+    return { sources, ...(patch as Partial<AppState>) }
+  }
+  return { sources }
 }
 
 function mergeIcons(
@@ -179,7 +297,21 @@ function mergeSpecs(
   return next
 }
 
+// Initial source map seed: a single 'live' slice. The actual SourceMeta for
+// 'live' is added by the WS layer once the server's `sources` frame lands —
+// meaning the initial UI render before WS connect has slice data but no meta,
+// which is fine because the source switcher (PR 5) reads sourceMetas only.
+const initialSources = new Map<string, SourceState>([
+  [LIVE_SOURCE_ID, makeEmptySourceState()],
+])
+
 export const useStore = create<AppState>((set) => ({
+  sources: initialSources,
+  sourceMetas: new Map(),
+  activeSourceId: LIVE_SOURCE_ID,
+
+  // Initial flat state mirrors the empty live slice. Defaults match the
+  // pre-multi-source store exactly so first render is unchanged.
   selectedSegment: null,
   segmentHistory: [],
   selectedSegmentId: null,
@@ -192,47 +324,63 @@ export const useStore = create<AppState>((set) => ({
   metric: 'damage',
   drillMetric: null,
   mode: 'summary',
-  wsStatus: 'connecting',
   targetDetail: null,
-  playerSpecs: {},
-  spellIcons: {},
-  bootInfo: null,
-  settingsOpen: false,
   graphFocused: new Set([GRAPH_GROUP_AVG_KEY]),
   graphScopeKey: null,
   perspective: 'allies',
   filters: EMPTY_FILTERS,
-  snapshotCache: new Map(),
 
-  setSelectedSegment: (s) => set(state => {
-    const base = {
+  playerSpecs: {},
+  spellIcons: {},
+  wsStatus: 'connecting',
+  bootInfo: null,
+  settingsOpen: false,
+  logPickerOpen: false,
+
+  setSelectedSegment: (s, sourceId) => set(state => {
+    const sid = sourceId ?? state.activeSourceId
+    const slice = state.sources.get(sid) ?? makeEmptySourceState()
+    // Only cache completed segments. In-progress pulls (endTime === null) would
+    // go stale the moment combat resumes; we'd rather always re-fetch those.
+    const nextCache = (s && s.endTime !== null)
+      ? cachePut(slice.snapshotCache, `seg:${s.id}`, s)
+      : slice.snapshotCache
+    const sliceUpdate: Partial<SourceState> = {
       selectedSegment: s,
+      snapshotCache: nextCache,
+    }
+    const out = applySliceUpdate(state, sid, sliceUpdate)
+    // Specs and icons accumulate globally — independent of which source.
+    return {
+      ...out,
       playerSpecs: mergeSpecs(state.playerSpecs, s?.players),
       spellIcons: mergeIcons(state.spellIcons, s?.spellIcons),
     }
-    // Only cache completed segments. In-progress pulls (endTime === null) would
-    // go stale the moment combat resumes; we'd rather always re-fetch those.
-    if (!s || s.endTime === null) return base
-    return { ...base, snapshotCache: cachePut(state.snapshotCache, `seg:${s.id}`, s) }
   }),
-  setSegmentHistory: (list) => set(state => {
-    if (state.segmentHistory === list) return {}
-    return {
+
+  setSegmentHistory: (list, sourceId) => set(state => {
+    const sid = sourceId ?? state.activeSourceId
+    const slice = state.sources.get(sid) ?? makeEmptySourceState()
+    if (slice.segmentHistory === list) return {}
+    return applySliceUpdate(state, sid, {
       segmentHistory: list,
-      snapshotCache: cacheEvictAggregates(state.snapshotCache),
-    }
+      snapshotCache: cacheEvictAggregates(slice.snapshotCache),
+    })
   }),
-  setSelectedSegmentId: (id) => set(state => {
+
+  setSelectedSegmentId: (id, sourceId) => set(state => {
+    const sid = sourceId ?? state.activeSourceId
+    const slice = state.sources.get(sid) ?? makeEmptySourceState()
     // Hydrate from cache if we have it; otherwise clear so the view shows a
     // loading skeleton while the server round-trip is in flight. Re-clicking
     // the same id preserves whatever snapshot is already loaded.
-    let nextSegment = state.selectedSegment
+    let nextSegment = slice.selectedSegment
     if (id === null) {
       nextSegment = null
-    } else if (id !== state.selectedSegmentId) {
-      nextSegment = (state.snapshotCache.get(`seg:${id}`) as SegmentSnapshot | undefined) ?? null
+    } else if (id !== slice.selectedSegmentId) {
+      nextSegment = (slice.snapshotCache.get(`seg:${id}`) as SegmentSnapshot | undefined) ?? null
     }
-    return {
+    return applySliceUpdate(state, sid, {
       selectedSegmentId: id,
       selectedSegment: nextSegment,
       selectedPlayer: null,
@@ -242,14 +390,17 @@ export const useStore = create<AppState>((set) => ({
       selectedKeyRun: null,
       selectedBossSectionId: null,
       selectedBossSection: null,
-      filters: clearUnitFiltersOnScopeChange(state.filters),
-    }
+      filters: clearUnitFiltersOnScopeChange(slice.filters),
+    })
   }),
-  setSelectedKeyRunId: (id) => set(state => {
+
+  setSelectedKeyRunId: (id, sourceId) => set(state => {
+    const sid = sourceId ?? state.activeSourceId
+    const slice = state.sources.get(sid) ?? makeEmptySourceState()
     const cached = id !== null
-      ? (state.snapshotCache.get(`kr:${id}`) as KeyRunSnapshot | undefined) ?? null
+      ? (slice.snapshotCache.get(`kr:${id}`) as KeyRunSnapshot | undefined) ?? null
       : null
-    return {
+    return applySliceUpdate(state, sid, {
       selectedKeyRunId: id,
       selectedKeyRun: cached,
       selectedSegmentId: null,
@@ -259,23 +410,34 @@ export const useStore = create<AppState>((set) => ({
       selectedPlayer: null,
       selectedDeath: null,
       drillMetric: null,
-      filters: clearUnitFiltersOnScopeChange(state.filters),
-    }
+      filters: clearUnitFiltersOnScopeChange(slice.filters),
+    })
   }),
-  setSelectedKeyRun: (s) => set(state => {
-    const base = {
+
+  setSelectedKeyRun: (s, sourceId) => set(state => {
+    const sid = sourceId ?? state.activeSourceId
+    const slice = state.sources.get(sid) ?? makeEmptySourceState()
+    const nextCache = (s && s.endTime !== null)
+      ? cachePut(slice.snapshotCache, `kr:${s.keyRunId}`, s)
+      : slice.snapshotCache
+    const out = applySliceUpdate(state, sid, {
       selectedKeyRun: s,
+      snapshotCache: nextCache,
+    })
+    return {
+      ...out,
       playerSpecs: mergeSpecs(state.playerSpecs, s?.players),
       spellIcons: mergeIcons(state.spellIcons, s?.spellIcons),
     }
-    if (!s || s.endTime === null) return base
-    return { ...base, snapshotCache: cachePut(state.snapshotCache, `kr:${s.keyRunId}`, s) }
   }),
-  setSelectedBossSectionId: (id) => set(state => {
+
+  setSelectedBossSectionId: (id, sourceId) => set(state => {
+    const sid = sourceId ?? state.activeSourceId
+    const slice = state.sources.get(sid) ?? makeEmptySourceState()
     const cached = id !== null
-      ? (state.snapshotCache.get(`bs:${id}`) as BossSectionSnapshot | undefined) ?? null
+      ? (slice.snapshotCache.get(`bs:${id}`) as BossSectionSnapshot | undefined) ?? null
       : null
-    return {
+    return applySliceUpdate(state, sid, {
       selectedBossSectionId: id,
       selectedBossSection: cached,
       selectedSegmentId: null,
@@ -285,83 +447,175 @@ export const useStore = create<AppState>((set) => ({
       selectedPlayer: null,
       selectedDeath: null,
       drillMetric: null,
-      filters: clearUnitFiltersOnScopeChange(state.filters),
-    }
+      filters: clearUnitFiltersOnScopeChange(slice.filters),
+    })
   }),
-  setSelectedBossSection: (s) => set(state => {
-    const base = {
+
+  setSelectedBossSection: (s, sourceId) => set(state => {
+    const sid = sourceId ?? state.activeSourceId
+    const slice = state.sources.get(sid) ?? makeEmptySourceState()
+    const nextCache = (s && s.endTime !== null)
+      ? cachePut(slice.snapshotCache, `bs:${s.bossSectionId}`, s)
+      : slice.snapshotCache
+    const out = applySliceUpdate(state, sid, {
       selectedBossSection: s,
+      snapshotCache: nextCache,
+    })
+    return {
+      ...out,
       playerSpecs: mergeSpecs(state.playerSpecs, s?.players),
       spellIcons: mergeIcons(state.spellIcons, s?.spellIcons),
     }
-    if (!s || s.endTime === null) return base
-    return { ...base, snapshotCache: cachePut(state.snapshotCache, `bs:${s.bossSectionId}`, s) }
   }),
-  setSelectedPlayer: (name, drillMetric) => set(state => ({
-    selectedPlayer: name,
-    selectedDeath: null,
-    drillMetric: name ? (drillMetric ?? state.metric) : null,
-  })),
-  setSelectedDeath: (record) => set({
+
+  setSelectedPlayer: (name, drillMetric) => set(state => {
+    const sid = state.activeSourceId
+    const slice = state.sources.get(sid) ?? makeEmptySourceState()
+    return applySliceUpdate(state, sid, {
+      selectedPlayer: name,
+      selectedDeath: null,
+      drillMetric: name ? (drillMetric ?? slice.metric) : null,
+    })
+  }),
+
+  setSelectedDeath: (record) => set(state => applySliceUpdate(state, state.activeSourceId, {
     selectedDeath: record,
     selectedPlayer: null,
     drillMetric: record ? 'deaths' : null,
-  }),
+  })),
+
   // Changing the focused metric keeps the existing drill panel open — the panel
   // shows whatever was clicked (tracked via drillMetric), not whatever is focused.
-  setMetric: (m) => set({ metric: m }),
-  setMode: (m) => set({ mode: m, selectedPlayer: null, selectedDeath: null, drillMetric: null }),
-  setWsStatus: (s) => set({ wsStatus: s }),
-  setTargetDetail: (d) => set({ targetDetail: d }),
-  setBootInfo: (info) => set({ bootInfo: info }),
-  setSettingsOpen: (open) => set({ settingsOpen: open }),
+  setMetric: (m) => set(state => applySliceUpdate(state, state.activeSourceId, { metric: m })),
+
+  setMode: (m) => set(state => applySliceUpdate(state, state.activeSourceId, {
+    mode: m,
+    selectedPlayer: null,
+    selectedDeath: null,
+    drillMetric: null,
+  })),
+
+  setTargetDetail: (d) => set(state => applySliceUpdate(state, state.activeSourceId, { targetDetail: d })),
+
   toggleGraphFocus: (key) => set(state => {
-    const next = new Set(state.graphFocused)
+    const sid = state.activeSourceId
+    const slice = state.sources.get(sid) ?? makeEmptySourceState()
+    const next = new Set(slice.graphFocused)
     if (next.has(key)) next.delete(key); else next.add(key)
-    return { graphFocused: next }
+    return applySliceUpdate(state, sid, { graphFocused: next })
   }),
+
   // Called on every render with the current scope key; resets focus only when
   // the parent encounter actually changes (null → non-null transitions, e.g.
   // initial load into a scope, are ignored so the default stays intact).
   syncGraphScope: (scopeKey) => set(state => {
-    if (state.graphScopeKey === scopeKey) return {}
-    const scopeChanged = state.graphScopeKey !== null && scopeKey !== state.graphScopeKey
-    return {
+    const sid = state.activeSourceId
+    const slice = state.sources.get(sid) ?? makeEmptySourceState()
+    if (slice.graphScopeKey === scopeKey) return {}
+    const scopeChanged = slice.graphScopeKey !== null && scopeKey !== slice.graphScopeKey
+    return applySliceUpdate(state, sid, {
       graphScopeKey: scopeKey,
       ...(scopeChanged ? { graphFocused: new Set([GRAPH_GROUP_AVG_KEY]) } : {}),
-    }
+    })
   }),
+
   // Flipping perspective inverts the source/target universes (allies ↔ enemies),
   // so keeping the old Source/Target/Ability names would reference units that
   // no longer exist on the active side. Spec says clear all three.
   setPerspective: (p) => set(state => {
-    if (state.perspective === p) return {}
-    if (state.filters === EMPTY_FILTERS) return { perspective: p }
-    return { perspective: p, filters: EMPTY_FILTERS }
+    const sid = state.activeSourceId
+    const slice = state.sources.get(sid) ?? makeEmptySourceState()
+    if (slice.perspective === p) return {}
+    if (slice.filters === EMPTY_FILTERS) {
+      return applySliceUpdate(state, sid, { perspective: p })
+    }
+    return applySliceUpdate(state, sid, { perspective: p, filters: EMPTY_FILTERS })
   }),
+
   setFilter: (axis, names) => set(state => {
+    const sid = state.activeSourceId
+    const slice = state.sources.get(sid) ?? makeEmptySourceState()
     const desired = !names || names.length === 0 ? undefined : names
-    const current = state.filters[axis]
+    const current = slice.filters[axis]
     // No-op when already in the requested state. Returning {} keeps the filters
     // reference stable so downstream useMemo deps don't miss.
     if (stringArraysEqual(current, desired)) return {}
-    const next: FilterState = { ...state.filters }
+    const next: FilterState = { ...slice.filters }
     if (desired === undefined) delete next[axis]
     else next[axis] = desired
-    return { filters: normalizeFilters(next) }
+    return applySliceUpdate(state, sid, { filters: normalizeFilters(next) })
   }),
+
   toggleFilterValue: (axis, name) => set(state => {
-    const current = state.filters[axis] ?? []
+    const sid = state.activeSourceId
+    const slice = state.sources.get(sid) ?? makeEmptySourceState()
+    const current = slice.filters[axis] ?? []
     const idx = current.indexOf(name)
     const nextList = idx === -1 ? [...current, name] : current.filter((_, i) => i !== idx)
-    const next: FilterState = { ...state.filters }
+    const next: FilterState = { ...slice.filters }
     if (nextList.length === 0) delete next[axis]
     else next[axis] = nextList
-    return { filters: normalizeFilters(next) }
+    return applySliceUpdate(state, sid, { filters: normalizeFilters(next) })
   }),
-  clearAllFilters: () => set(state => (
-    state.filters === EMPTY_FILTERS ? {} : { filters: EMPTY_FILTERS }
-  )),
+
+  clearAllFilters: () => set(state => {
+    const sid = state.activeSourceId
+    const slice = state.sources.get(sid) ?? makeEmptySourceState()
+    if (slice.filters === EMPTY_FILTERS) return {}
+    return applySliceUpdate(state, sid, { filters: EMPTY_FILTERS })
+  }),
+
+  setWsStatus: (s) => set({ wsStatus: s }),
+  setBootInfo: (info) => set({ bootInfo: info }),
+  setSettingsOpen: (open) => set({ settingsOpen: open }),
+  setLogPickerOpen: (open) => set({ logPickerOpen: open }),
+
+  setActiveSource: (sourceId) => set(state => {
+    if (sourceId === state.activeSourceId) return {}
+    const slice = state.sources.get(sourceId)
+    if (!slice) return {}
+    // Hydrate flat fields from the new slice so components see the new
+    // source's encounter state.
+    return { activeSourceId: sourceId, ...flatFromSlice(slice) }
+  }),
+
+  addSource: (meta) => set(state => {
+    const sourceMetas = new Map(state.sourceMetas)
+    sourceMetas.set(meta.sourceId, meta)
+    let sources = state.sources
+    if (!sources.has(meta.sourceId)) {
+      sources = new Map(sources)
+      sources.set(meta.sourceId, makeEmptySourceState())
+    }
+    return { sourceMetas, sources }
+  }),
+
+  removeSource: (sourceId) => set(state => {
+    if (sourceId === LIVE_SOURCE_ID) return {}   // live can't be removed
+    const sourceMetas = new Map(state.sourceMetas)
+    sourceMetas.delete(sourceId)
+    const sources = new Map(state.sources)
+    sources.delete(sourceId)
+    // If the removed source was active, fall back to live and re-mirror.
+    if (sourceId === state.activeSourceId) {
+      const liveSlice = sources.get(LIVE_SOURCE_ID) ?? makeEmptySourceState()
+      return {
+        sources, sourceMetas,
+        activeSourceId: LIVE_SOURCE_ID,
+        ...flatFromSlice(liveSlice),
+      }
+    }
+    return { sources, sourceMetas }
+  }),
+
+  updateSourceMeta: (sourceId, partial) => set(state => {
+    const existing = state.sourceMetas.get(sourceId)
+    if (!existing) return {}
+    const sourceMetas = new Map(state.sourceMetas)
+    sourceMetas.set(sourceId, { ...existing, ...partial })
+    return { sourceMetas }
+  }),
+
   refreshBootInfo: async () => {
     if (!window.api?.getBootInfo) return
     try {
@@ -372,6 +626,13 @@ export const useStore = create<AppState>((set) => ({
     }
   },
 }))
+
+// Convenience hook for code that explicitly wants the active source's slice
+// (e.g. the future SourceSwitcher's per-source previews). Most components keep
+// reading flat fields and don't need this.
+export function useActiveSource(): SourceState | undefined {
+  return useStore(s => s.sources.get(s.activeSourceId))
+}
 
 export const selectCurrentView = (s: AppState): SegmentSnapshot | KeyRunSnapshot | BossSectionSnapshot | null =>
   s.selectedKeyRun ?? s.selectedBossSection ?? s.selectedSegment
@@ -396,19 +657,23 @@ export const selectGraphTimeOffset = (s: AppState): number => {
 // within the same key run or boss section returns the same key; switching to a
 // different run/encounter returns a new one. Used by views that should persist
 // UI state across sub-category tabs but reset across top-level tabs.
+//
+// Includes the activeSourceId so switching tabs (e.g. live → archive) is treated
+// as a scope change for graph-focus reset purposes.
 export const selectCurrentScopeKey = (s: AppState): string | null => {
-  if (s.selectedKeyRunId) return `kr:${s.selectedKeyRunId}`
-  if (s.selectedBossSectionId) return `bs:${s.selectedBossSectionId}`
+  const prefix = `src:${s.activeSourceId}:`
+  if (s.selectedKeyRunId) return `${prefix}kr:${s.selectedKeyRunId}`
+  if (s.selectedBossSectionId) return `${prefix}bs:${s.selectedBossSectionId}`
   if (s.selectedSegmentId) {
     for (const item of s.segmentHistory) {
       if (item.type === 'key_run' && item.segments.some(seg => seg.id === s.selectedSegmentId)) {
-        return `kr:${item.keyRunId}`
+        return `${prefix}kr:${item.keyRunId}`
       }
       if (item.type === 'boss_section' && item.segments.some(seg => seg.id === s.selectedSegmentId)) {
-        return `bs:${item.bossSectionId}`
+        return `${prefix}bs:${item.bossSectionId}`
       }
     }
-    return `seg:${s.selectedSegmentId}`
+    return `${prefix}seg:${s.selectedSegmentId}`
   }
   return null
 }

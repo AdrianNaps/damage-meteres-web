@@ -3,21 +3,14 @@ import fs from 'fs'
 import { WebSocketServer } from 'ws'
 import type { AddressInfo } from 'net'
 import { app } from 'electron'
-import { LogWatcher } from '../server/watcher.js'
-import { parseLine } from '../server/parser.js'
-import { SegmentStore } from '../server/store.js'
-import { EncounterStateMachine } from '../server/stateMachine.js'
-import { attachWsHandlers, type AttachedWsHandlers } from '../server/wsServer.js'
+import { createRuntime, type Runtime } from '../server/runtime.js'
 import { createIconResolver } from '../server/iconResolver.js'
 import { getSettings, setSetting } from './settings.js'
 
 export class Backend {
-  store!: SegmentStore
-  machine!: EncounterStateMachine
   wss!: WebSocketServer
   wsPort = 0
-  private watcher: LogWatcher | null = null
-  private wsHandlers?: AttachedWsHandlers
+  private runtime: Runtime | null = null
 
   async start(): Promise<void> {
     const settings = getSettings()
@@ -50,15 +43,11 @@ export class Backend {
 
     const iconResolver = createIconResolver({ cacheFile: userCachePath })
 
-    this.store = new SegmentStore(settings.maxSegments, iconResolver)
-    this.machine = new EncounterStateMachine(this.store)
-
     this.wss = new WebSocketServer({ host: '127.0.0.1', port: 0 })
     await new Promise<void>((resolve, reject) => {
       this.wss.once('listening', () => resolve())
       this.wss.once('error', reject)
     })
-    this.wsHandlers = attachWsHandlers(this.wss, this.store, this.machine)
     this.wsPort = (this.wss.address() as AddressInfo).port
     console.log(`[backend] WebSocket listening on 127.0.0.1:${this.wsPort}`)
 
@@ -72,29 +61,21 @@ export class Backend {
       }
     }
 
-    this.setLogsDir(logsDir)
+    this.runtime = createRuntime({
+      logsDir,
+      maxSegments: settings.maxSegments,
+      iconResolver,
+      wss: this.wss,
+    })
   }
 
   setLogsDir(dir: string): void {
-    this.watcher?.stop()
-    this.watcher = new LogWatcher(dir)
-    this.watcher.on('lines', (lines: string[]) => {
-      for (const line of lines) {
-        const parsed = parseLine(line)
-        if (!parsed) continue
-        if (Array.isArray(parsed)) {
-          for (const event of parsed) this.machine.handle(event)
-        } else {
-          this.machine.handle(parsed)
-        }
-      }
-    })
-    this.watcher.start()
+    this.runtime?.setLogsDir(dir)
   }
 
   stop(): void {
-    this.watcher?.stop()
-    this.wsHandlers?.stop()
+    this.runtime?.dispose()
+    this.runtime = null
     this.wss?.close()
   }
 }

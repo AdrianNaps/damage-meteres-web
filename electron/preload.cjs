@@ -5,4 +5,5 @@ const { contextBridge, ipcRenderer } = require('electron')
 contextBridge.exposeInMainWorld('api', {
   getBootInfo: () => ipcRenderer.invoke('app:getBootInfo'),
   pickLogsDir: () => ipcRenderer.invoke('app:pickLogsDir'),
+  pickLogFile: () => ipcRenderer.invoke('app:pickLogFile'),
 })

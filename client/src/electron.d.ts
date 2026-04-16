@@ -11,6 +11,7 @@ declare global {
     api?: {
       getBootInfo: () => Promise<BootInfo>
       pickLogsDir: () => Promise<string | null>
+      pickLogFile: () => Promise<string | null>
     }
   }
 }

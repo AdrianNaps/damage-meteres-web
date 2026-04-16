@@ -11,6 +11,7 @@ import { DeathRecapPanel } from './components/DeathRecapPanel'
 import { SettingsModal } from './components/SettingsModal'
 import { LogsBanner } from './components/LogsBanner'
 import { FilterBar } from './components/FilterBar'
+import { LogPicker } from './components/LogPicker'
 
 export default function App() {
   const refreshBootInfo = useStore(s => s.refreshBootInfo)
@@ -38,6 +39,7 @@ export default function App() {
         <ContentPanel />
       </div>
       <SettingsModal />
+      <LogPicker />
     </div>
   )
 }
