@@ -3,8 +3,8 @@ import { connectWs } from './ws'
 import { useStore, selectCurrentView, selectCurrentScopeKey } from './store'
 import { EncounterHeader } from './components/EncounterHeader'
 import { SegmentTabs } from './components/SegmentTabs'
-import { MeterView } from './components/MeterView'
 import { SummaryView } from './components/SummaryView'
+import { FullMeterView } from './components/FullMeterView'
 import { GraphContainer } from './components/GraphContainer'
 import { BreakdownPanel } from './components/BreakdownPanel'
 import { DeathRecapPanel } from './components/DeathRecapPanel'
@@ -50,7 +50,9 @@ function ContentPanel() {
   const selectedPlayer = useStore(s => s.selectedPlayer)
   const selectedDeath = useStore(s => s.selectedDeath)
 
-  const hasDrill = !!(selectedPlayer || selectedDeath)
+  // Drill panel is Summary-only; Full mode's drill-down UX is a different design
+  // that will land later.
+  const hasDrill = mode === 'summary' && !!(selectedPlayer || selectedDeath)
 
   const players = currentView?.players ?? {}
   const duration =
@@ -70,22 +72,21 @@ function ContentPanel() {
       overflow: 'hidden',
       minHeight: 0,
     }}>
-      {/* Toggle bar: MetricToggle + ModeToggle */}
+      {/* Toggle bar: CategoryTabs + ModeToggle */}
       <ToggleBar metric={metric} setMetric={setMetric} mode={mode} setMode={setMode} />
 
-      {/* Graph */}
-      {currentView && Object.keys(players).length > 0 && (
+      {/* Graph — shown in Summary; Full will get its own layout later. */}
+      {mode === 'summary' && currentView && Object.keys(players).length > 0 && (
         <GraphContainer metric={metric} players={players} duration={duration} />
       )}
 
-      {/* Main content area: modules/rows + inline drill panel */}
+      {/* Main content area: modules/rows + inline drill panel. Shared shell so
+          the drill push-sidebar behaves identically in Summary and Full. */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'row', overflow: 'hidden', minHeight: 0 }}>
-        {/* Left: main content */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
-          {mode === 'summary' ? <SummaryView /> : <MeterView />}
+          {mode === 'summary' ? <SummaryView /> : <FullMeterView />}
         </div>
 
-        {/* Right: inline drill panel */}
         <div style={{
           width: hasDrill ? 420 : 0,
           minWidth: hasDrill ? 420 : 0,
@@ -98,13 +99,25 @@ function ContentPanel() {
           flexDirection: 'column',
           minHeight: 0,
         }}>
-          {selectedPlayer && <BreakdownPanel />}
-          {selectedDeath && <DeathRecapPanel />}
+          {mode === 'summary' && selectedPlayer && <BreakdownPanel />}
+          {mode === 'summary' && selectedDeath && <DeathRecapPanel />}
         </div>
       </div>
     </div>
   )
 }
+
+type Metric = 'damage' | 'healing' | 'deaths' | 'interrupts'
+type Mode = 'summary' | 'full'
+
+// Shared category list for Summary. Full mode will later extend this with
+// additional groups (Damage Taken, Dispels, Buffs, Casts, Timeline, …).
+const SUMMARY_CATEGORIES: { key: Metric; label: string }[] = [
+  { key: 'damage', label: 'Damage Done' },
+  { key: 'healing', label: 'Healing' },
+  { key: 'interrupts', label: 'Interrupts' },
+  { key: 'deaths', label: 'Deaths' },
+]
 
 function ToggleBar({
   metric,
@@ -112,35 +125,35 @@ function ToggleBar({
   mode,
   setMode,
 }: {
-  metric: 'damage' | 'healing' | 'deaths' | 'interrupts'
-  setMetric: (m: 'damage' | 'healing' | 'deaths' | 'interrupts') => void
-  mode: 'summary' | 'full'
-  setMode: (m: 'summary' | 'full') => void
+  metric: Metric
+  setMetric: (m: Metric) => void
+  mode: Mode
+  setMode: (m: Mode) => void
 }) {
-  const metricOptions: { key: typeof metric; label: string }[] = [
-    { key: 'damage', label: 'Damage' },
-    { key: 'healing', label: 'Healing' },
-    { key: 'deaths', label: 'Deaths' },
-    { key: 'interrupts', label: 'Interrupts' },
-  ]
-
-  const modeOptions: { key: typeof mode; label: string }[] = [
-    { key: 'summary', label: 'Summary' },
-    { key: 'full', label: 'Full' },
-  ]
-
   return (
     <div style={{
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'space-between',
+      gap: 16,
       padding: '8px 16px',
+      minHeight: 46,
       flexShrink: 0,
     }}>
-      {/* Metric toggle */}
-      <div style={{ display: 'inline-flex', border: '1px solid var(--border-default)', overflow: 'hidden' }}>
-        {metricOptions.map(opt => (
-          <ToggleButton
+      <CategoryBar metric={metric} setMetric={setMetric} />
+      <ModeToggle mode={mode} setMode={setMode} />
+    </div>
+  )
+}
+
+function CategoryBar({ metric, setMetric }: { metric: Metric; setMetric: (m: Metric) => void }) {
+  // Both Summary and Full use the same underline-tab visual language. Full will
+  // add more groups (separated by a small gap) as additional categories land.
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', minWidth: 0, overflowX: 'auto' }}>
+      <div style={{ display: 'flex', alignItems: 'center' }}>
+        {SUMMARY_CATEGORIES.map(opt => (
+          <CategoryTab
             key={opt.key}
             label={opt.label}
             active={metric === opt.key}
@@ -148,51 +161,82 @@ function ToggleBar({
           />
         ))}
       </div>
-
-      {/* Mode toggle — hidden until Full view is built */}
-      {false && <div style={{ display: 'inline-flex', border: '1px solid var(--border-default)', overflow: 'hidden' }}>
-        {modeOptions.map(opt => (
-          <ToggleButton
-            key={opt.key}
-            label={opt.label}
-            active={mode === opt.key}
-            onClick={() => setMode(opt.key)}
-          />
-        ))}
-      </div>}
     </div>
   )
 }
 
-function ToggleButton({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+function CategoryTab({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
   return (
     <button
       onClick={onClick}
       style={{
-        padding: '4px 14px',
+        padding: '7px 12px',
         fontSize: 12,
-        fontWeight: 500,
-        cursor: 'pointer',
+        fontFamily: 'inherit',
+        background: 'transparent',
         border: 'none',
-        borderRight: '1px solid var(--border-default)',
-        background: active ? 'var(--bg-active)' : 'transparent',
+        borderBottom: `2px solid ${active ? 'var(--text-primary)' : 'transparent'}`,
         color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
-        transition: 'background 0.15s, color 0.15s',
+        cursor: 'pointer',
+        whiteSpace: 'nowrap',
+        transition: 'color 0.15s, border-color 0.15s',
       }}
-      onMouseEnter={e => {
-        if (!active) {
-          e.currentTarget.style.background = 'var(--bg-hover)'
-          e.currentTarget.style.color = 'var(--text-primary)'
-        }
-      }}
-      onMouseLeave={e => {
-        if (!active) {
-          e.currentTarget.style.background = 'transparent'
-          e.currentTarget.style.color = 'var(--text-secondary)'
-        }
-      }}
+      onMouseEnter={e => { if (!active) e.currentTarget.style.color = 'var(--text-primary)' }}
+      onMouseLeave={e => { if (!active) e.currentTarget.style.color = 'var(--text-secondary)' }}
     >
       {label}
     </button>
   )
 }
+
+function ModeToggle({ mode, setMode }: { mode: Mode; setMode: (m: Mode) => void }) {
+  const options: { key: Mode; label: string }[] = [
+    { key: 'summary', label: 'Summary' },
+    { key: 'full', label: 'Full' },
+  ]
+  return (
+    <div style={{
+      display: 'inline-flex',
+      border: '1px solid var(--border-default)',
+      overflow: 'hidden',
+      flexShrink: 0,
+    }}>
+      {options.map((opt, i) => {
+        const active = mode === opt.key
+        return (
+          <button
+            key={opt.key}
+            onClick={() => setMode(opt.key)}
+            style={{
+              padding: '4px 14px',
+              fontSize: 12,
+              fontWeight: 500,
+              fontFamily: 'inherit',
+              background: active ? 'var(--bg-active)' : 'transparent',
+              color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
+              border: 'none',
+              borderLeft: i === 0 ? 'none' : '1px solid var(--border-default)',
+              cursor: 'pointer',
+              transition: 'background 0.15s, color 0.15s',
+            }}
+            onMouseEnter={e => {
+              if (!active) {
+                e.currentTarget.style.background = 'var(--bg-hover)'
+                e.currentTarget.style.color = 'var(--text-primary)'
+              }
+            }}
+            onMouseLeave={e => {
+              if (!active) {
+                e.currentTarget.style.background = 'transparent'
+                e.currentTarget.style.color = 'var(--text-secondary)'
+              }
+            }}
+          >
+            {opt.label}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
