@@ -14,23 +14,32 @@ export function SegmentTabs() {
 
   if (history.length === 0) return null
 
+  // The store setters hydrate from snapshotCache when available; we only need
+  // to round-trip the server when that came up empty. Reading state after the
+  // setter works because Zustand's `set` is synchronous.
   function selectSegment(id: string | null) {
     if (id === null) {
       setSelectedSegmentId(null)
-    } else {
-      setSelectedSegmentId(id)
+      return
+    }
+    setSelectedSegmentId(id)
+    if (useStore.getState().selectedSegment?.id !== id) {
       send({ type: 'get_segment', segmentId: id })
     }
   }
 
   function selectKeyRun(keyRunId: string) {
     setSelectedKeyRunId(keyRunId)
-    send({ type: 'get_key_run', keyRunId })
+    if (useStore.getState().selectedKeyRun?.keyRunId !== keyRunId) {
+      send({ type: 'get_key_run', keyRunId })
+    }
   }
 
   function selectBossSection(bossSectionId: string) {
     setSelectedBossSectionId(bossSectionId)
-    send({ type: 'get_boss_section', bossSectionId })
+    if (useStore.getState().selectedBossSection?.bossSectionId !== bossSectionId) {
+      send({ type: 'get_boss_section', bossSectionId })
+    }
   }
 
   const reversedHistory = [...history].reverse()

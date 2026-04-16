@@ -26,6 +26,40 @@ export interface FilterState {
 // store uses `state.filters === EMPTY_FILTERS` to detect the empty case.
 export const EMPTY_FILTERS: FilterState = Object.freeze({}) as FilterState
 
+// Viewed-snapshot cache so re-clicking a tab the user already loaded doesn't
+// round-trip the server. Completed snapshots are immutable, so a hit is always
+// correct. LRU by insertion order — Map.keys() yields oldest first.
+export type AnySnapshot = SegmentSnapshot | KeyRunSnapshot | BossSectionSnapshot
+const SNAPSHOT_CACHE_MAX = 20
+
+function cachePut(cache: Map<string, AnySnapshot>, key: string, snap: AnySnapshot): Map<string, AnySnapshot> {
+  const next = new Map(cache)
+  next.delete(key)    // re-insert bumps to tail so LRU eviction hits oldest
+  next.set(key, snap)
+  while (next.size > SNAPSHOT_CACHE_MAX) {
+    const oldest = next.keys().next().value
+    if (oldest === undefined) break
+    next.delete(oldest)
+  }
+  return next
+}
+
+// Called whenever the segment_list payload changes: per-segment snapshots are
+// immutable once complete, but aggregates (key runs, boss sections) can gain
+// pulls mid-raid. Cheapest safe invalidation is to evict all aggregate keys
+// and let the next view re-fetch. No-op for completed logs where segmentHistory
+// arrives once and never changes.
+function cacheEvictAggregates(cache: Map<string, AnySnapshot>): Map<string, AnySnapshot> {
+  let next: Map<string, AnySnapshot> | null = null
+  for (const key of cache.keys()) {
+    if (key.startsWith('kr:') || key.startsWith('bs:')) {
+      if (!next) next = new Map(cache)
+      next.delete(key)
+    }
+  }
+  return next ?? cache
+}
+
 interface AppState {
   selectedSegment: SegmentSnapshot | null
   segmentHistory: HistoryItem[]
@@ -60,6 +94,11 @@ interface AppState {
   // filters are AND-composed subsets that narrow the event stream before rendering.
   perspective: Perspective
   filters: FilterState
+
+  // Cache of recently-viewed snapshots keyed by `seg:<id>`, `kr:<id>`,
+  // `bs:<id>`. Re-clicks hydrate from here instead of round-tripping the
+  // server. See AnySnapshot / cachePut / cacheEvictAggregates above.
+  snapshotCache: Map<string, AnySnapshot>
 
   setSelectedSegment: (s: SegmentSnapshot | null) => void
   setSegmentHistory: (list: HistoryItem[]) => void
@@ -163,62 +202,101 @@ export const useStore = create<AppState>((set) => ({
   graphScopeKey: null,
   perspective: 'allies',
   filters: EMPTY_FILTERS,
+  snapshotCache: new Map(),
 
-  setSelectedSegment: (s) => set(state => ({
-    selectedSegment: s,
-    playerSpecs: mergeSpecs(state.playerSpecs, s?.players),
-    spellIcons: mergeIcons(state.spellIcons, s?.spellIcons),
-  })),
-  setSegmentHistory: (list) => set({ segmentHistory: list }),
-  setSelectedSegmentId: (id) => set(state => ({
-    selectedSegmentId: id,
-    selectedPlayer: null,
-    selectedDeath: null,
-    drillMetric: null,
-    selectedKeyRunId: null,
-    selectedKeyRun: null,
-    selectedBossSectionId: null,
-    selectedBossSection: null,
-    filters: clearUnitFiltersOnScopeChange(state.filters),
-    // Clear the previous snapshot only when switching to a different segment
-    // so the view can show a loading skeleton instead of stale data while the
-    // new snapshot is in flight. Re-selecting the same id is a no-op.
-    selectedSegment: id !== state.selectedSegmentId ? null : state.selectedSegment,
-  })),
-  setSelectedKeyRunId: (id) => set(state => ({
-    selectedKeyRunId: id,
-    selectedKeyRun: null,
-    selectedSegmentId: null,
-    selectedSegment: null,
-    selectedBossSectionId: null,
-    selectedBossSection: null,
-    selectedPlayer: null,
-    selectedDeath: null,
-    drillMetric: null,
-    filters: clearUnitFiltersOnScopeChange(state.filters),
-  })),
-  setSelectedKeyRun: (s) => set(state => ({
-    selectedKeyRun: s,
-    playerSpecs: mergeSpecs(state.playerSpecs, s?.players),
-    spellIcons: mergeIcons(state.spellIcons, s?.spellIcons),
-  })),
-  setSelectedBossSectionId: (id) => set(state => ({
-    selectedBossSectionId: id,
-    selectedBossSection: null,
-    selectedSegmentId: null,
-    selectedSegment: null,
-    selectedKeyRunId: null,
-    selectedKeyRun: null,
-    selectedPlayer: null,
-    selectedDeath: null,
-    drillMetric: null,
-    filters: clearUnitFiltersOnScopeChange(state.filters),
-  })),
-  setSelectedBossSection: (s) => set(state => ({
-    selectedBossSection: s,
-    playerSpecs: mergeSpecs(state.playerSpecs, s?.players),
-    spellIcons: mergeIcons(state.spellIcons, s?.spellIcons),
-  })),
+  setSelectedSegment: (s) => set(state => {
+    const base = {
+      selectedSegment: s,
+      playerSpecs: mergeSpecs(state.playerSpecs, s?.players),
+      spellIcons: mergeIcons(state.spellIcons, s?.spellIcons),
+    }
+    // Only cache completed segments. In-progress pulls (endTime === null) would
+    // go stale the moment combat resumes; we'd rather always re-fetch those.
+    if (!s || s.endTime === null) return base
+    return { ...base, snapshotCache: cachePut(state.snapshotCache, `seg:${s.id}`, s) }
+  }),
+  setSegmentHistory: (list) => set(state => {
+    if (state.segmentHistory === list) return {}
+    return {
+      segmentHistory: list,
+      snapshotCache: cacheEvictAggregates(state.snapshotCache),
+    }
+  }),
+  setSelectedSegmentId: (id) => set(state => {
+    // Hydrate from cache if we have it; otherwise clear so the view shows a
+    // loading skeleton while the server round-trip is in flight. Re-clicking
+    // the same id preserves whatever snapshot is already loaded.
+    let nextSegment = state.selectedSegment
+    if (id === null) {
+      nextSegment = null
+    } else if (id !== state.selectedSegmentId) {
+      nextSegment = (state.snapshotCache.get(`seg:${id}`) as SegmentSnapshot | undefined) ?? null
+    }
+    return {
+      selectedSegmentId: id,
+      selectedSegment: nextSegment,
+      selectedPlayer: null,
+      selectedDeath: null,
+      drillMetric: null,
+      selectedKeyRunId: null,
+      selectedKeyRun: null,
+      selectedBossSectionId: null,
+      selectedBossSection: null,
+      filters: clearUnitFiltersOnScopeChange(state.filters),
+    }
+  }),
+  setSelectedKeyRunId: (id) => set(state => {
+    const cached = id !== null
+      ? (state.snapshotCache.get(`kr:${id}`) as KeyRunSnapshot | undefined) ?? null
+      : null
+    return {
+      selectedKeyRunId: id,
+      selectedKeyRun: cached,
+      selectedSegmentId: null,
+      selectedSegment: null,
+      selectedBossSectionId: null,
+      selectedBossSection: null,
+      selectedPlayer: null,
+      selectedDeath: null,
+      drillMetric: null,
+      filters: clearUnitFiltersOnScopeChange(state.filters),
+    }
+  }),
+  setSelectedKeyRun: (s) => set(state => {
+    const base = {
+      selectedKeyRun: s,
+      playerSpecs: mergeSpecs(state.playerSpecs, s?.players),
+      spellIcons: mergeIcons(state.spellIcons, s?.spellIcons),
+    }
+    if (!s || s.endTime === null) return base
+    return { ...base, snapshotCache: cachePut(state.snapshotCache, `kr:${s.keyRunId}`, s) }
+  }),
+  setSelectedBossSectionId: (id) => set(state => {
+    const cached = id !== null
+      ? (state.snapshotCache.get(`bs:${id}`) as BossSectionSnapshot | undefined) ?? null
+      : null
+    return {
+      selectedBossSectionId: id,
+      selectedBossSection: cached,
+      selectedSegmentId: null,
+      selectedSegment: null,
+      selectedKeyRunId: null,
+      selectedKeyRun: null,
+      selectedPlayer: null,
+      selectedDeath: null,
+      drillMetric: null,
+      filters: clearUnitFiltersOnScopeChange(state.filters),
+    }
+  }),
+  setSelectedBossSection: (s) => set(state => {
+    const base = {
+      selectedBossSection: s,
+      playerSpecs: mergeSpecs(state.playerSpecs, s?.players),
+      spellIcons: mergeIcons(state.spellIcons, s?.spellIcons),
+    }
+    if (!s || s.endTime === null) return base
+    return { ...base, snapshotCache: cachePut(state.snapshotCache, `bs:${s.bossSectionId}`, s) }
+  }),
   setSelectedPlayer: (name, drillMetric) => set(state => ({
     selectedPlayer: name,
     selectedDeath: null,
