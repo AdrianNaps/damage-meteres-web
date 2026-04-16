@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import type { PlayerSnapshot } from '../types'
 import { useStore, resolveSpecId } from '../store'
 import { shortName } from '../utils/format'
@@ -46,9 +47,19 @@ const CLASS_COLORS: Record<number, string> = {
 
 const UNKNOWN_CLASS_COLOR = '#64748B'
 
+// Tiny cache keyed by specId. The lookups are cheap individually but happen
+// once per row × per render, and we re-render a lot — avoiding repeated object
+// property access adds up. `undefined` maps to the unknown color via a fixed key.
+const classColorCache = new Map<number | 'unknown', string>()
+
 export function getClassColor(specId?: number): string {
+  const key = specId ?? 'unknown'
+  const cached = classColorCache.get(key)
+  if (cached !== undefined) return cached
   const classId = specId !== undefined ? SPEC_TO_CLASS[specId] : undefined
-  return classId !== undefined ? CLASS_COLORS[classId] : UNKNOWN_CLASS_COLOR
+  const color = classId !== undefined ? CLASS_COLORS[classId] : UNKNOWN_CLASS_COLOR
+  classColorCache.set(key, color)
+  return color
 }
 
 function formatNum(n: number): string {
@@ -59,7 +70,9 @@ function formatNum(n: number): string {
 
 const textShadow = '0 1px 2px rgba(0, 0, 0, 0.85), 0 0 1px rgba(0, 0, 0, 0.9)'
 
-export function PlayerRow({ player, rank, topValue, totalValue, metric, onClick }: Props) {
+export const PlayerRow = memo(PlayerRowImpl)
+
+function PlayerRowImpl({ player, rank, topValue, totalValue, metric, onClick }: Props) {
   const value =
     metric === 'damage' ? player.dps
     : metric === 'healing' ? player.hps

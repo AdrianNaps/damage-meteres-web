@@ -1,5 +1,5 @@
-import { useMemo } from 'react'
-import { useStore, selectCurrentView, resolveSpecId } from '../store'
+import { memo, useMemo } from 'react'
+import { useStore, selectCurrentView, selectIsLoading, resolveSpecId } from '../store'
 import type { PlayerSnapshot } from '../types'
 import {
   computeUnitRows,
@@ -68,11 +68,13 @@ function formatStat(stat: NumericStat): string {
 
 export function FullMeterView() {
   const currentView = useStore(selectCurrentView)
+  const isLoading = useStore(selectIsLoading)
   const perspective = useStore(s => s.perspective)
   const filters = useStore(s => s.filters)
   const metric = useStore(s => s.metric)
 
   if (!currentView) {
+    if (isLoading) return <FullLoadingSkeleton />
     return (
       <div className="flex-1 flex items-center justify-center">
         <span className="animate-pulse-dot" style={{ fontSize: 13, color: 'var(--text-muted)' }}>
@@ -196,7 +198,13 @@ function PlayerColumnHeader({ labels, showActive }: { labels: [string, string, s
   )
 }
 
-function FullPlayerRow({
+// Memoized so that row renders are skipped when the parent re-renders for
+// unrelated reasons (e.g. an unrelated Zustand field changing). Relies on
+// stable prop identity: `config` is a module-level constant and `row` is
+// retained across renders via the parent's useMemo(computeUnitRows).
+const FullPlayerRow = memo(FullPlayerRowImpl)
+
+function FullPlayerRowImpl({
   row,
   rank,
   topValue,
@@ -312,7 +320,9 @@ function DeathsColumnHeader() {
   )
 }
 
-function FullDeathRow({
+const FullDeathRow = memo(FullDeathRowImpl)
+
+function FullDeathRowImpl({
   row,
   rank,
   specId,
@@ -524,4 +534,47 @@ function formatElapsed(sec: number): string {
   const m = Math.floor(safe / 60)
   const s = Math.floor(safe % 60)
   return `${m}:${String(s).padStart(2, '0')}`
+}
+
+// Placeholder for the Full view while an aggregate snapshot is being fetched.
+// Mirrors the grid layout so the swap feels stable.
+function FullLoadingSkeleton() {
+  return (
+    <div
+      className="animate-pulse-dot"
+      style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, padding: '6px 14px' }}
+    >
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: PLAYER_GRID_COLUMNS,
+        gap: 12,
+        padding: '6px 0',
+        borderBottom: '1px solid var(--border-subtle)',
+      }}>
+        <div /><div /><div /><div /><div /><div /><div />
+      </div>
+      {Array.from({ length: 10 }).map((_, i) => (
+        <div
+          key={i}
+          style={{
+            display: 'grid',
+            gridTemplateColumns: PLAYER_GRID_COLUMNS,
+            gap: 12,
+            alignItems: 'center',
+            minHeight: 36,
+            padding: '0 0',
+            borderBottom: '1px solid var(--border-subtle)',
+          }}
+        >
+          <span />
+          <div style={{ height: 12, width: '70%', background: 'var(--bg-hover)', borderRadius: 2 }} />
+          <div style={{ height: 10, width: `${85 - i * 6}%`, background: 'var(--bg-hover)', borderRadius: 2 }} />
+          <span />
+          <div style={{ height: 10, width: '60%', background: 'var(--bg-hover)', borderRadius: 2, justifySelf: 'end' }} />
+          <div style={{ height: 10, width: '60%', background: 'var(--bg-hover)', borderRadius: 2, justifySelf: 'end' }} />
+          <div style={{ height: 10, width: '50%', background: 'var(--bg-hover)', borderRadius: 2, justifySelf: 'end' }} />
+        </div>
+      ))}
+    </div>
+  )
 }

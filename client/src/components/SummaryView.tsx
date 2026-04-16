@@ -1,4 +1,5 @@
-import { useStore, selectCurrentView, resolveSpecId } from '../store'
+import { memo, useCallback } from 'react'
+import { useStore, selectCurrentView, selectIsLoading, resolveSpecId } from '../store'
 import { getClassColor } from './PlayerRow'
 import { formatNum, shortName } from '../utils/format'
 import { specIconUrl } from '../utils/icons'
@@ -41,13 +42,13 @@ const MODULE_CONFIG: Record<ModuleKey, {
 
 export function SummaryView() {
   const currentView = useStore(selectCurrentView)
+  const isLoading = useStore(selectIsLoading)
   const metric = useStore(s => s.metric)
   const setMetric = useStore(s => s.setMetric)
-  const setSelectedPlayer = useStore(s => s.setSelectedPlayer)
-  const setSelectedDeath = useStore(s => s.setSelectedDeath)
   const playerSpecs = useStore(s => s.playerSpecs)
 
   if (!currentView) {
+    if (isLoading) return <SummaryLoadingSkeleton />
     return (
       <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         <span className="animate-pulse-dot" style={{ fontSize: 13, color: 'var(--text-muted)' }}>
@@ -76,9 +77,7 @@ export function SummaryView() {
           playerList={playerList}
           allDeaths={allDeaths}
           playerSpecs={playerSpecs}
-          onSelect={() => {}}
-          onPlayerClick={(name) => setSelectedPlayer(name, focused)}
-          onDeathClick={setSelectedDeath}
+          onSelect={undefined}
         />
       </div>
 
@@ -94,8 +93,6 @@ export function SummaryView() {
             allDeaths={allDeaths}
             playerSpecs={playerSpecs}
             onSelect={() => setMetric(key)}
-            onPlayerClick={(name) => setSelectedPlayer(name, key)}
-            onDeathClick={setSelectedDeath}
           />
         ))}
       </div>
@@ -111,8 +108,6 @@ function OverviewModule({
   allDeaths,
   playerSpecs,
   onSelect,
-  onPlayerClick,
-  onDeathClick,
 }: {
   moduleKey: ModuleKey
   isFocused: boolean
@@ -120,11 +115,23 @@ function OverviewModule({
   playerList: PlayerSnapshot[]
   allDeaths: PlayerDeathRecord[]
   playerSpecs: Record<string, number>
-  onSelect: () => void
-  onPlayerClick: ((name: string) => void) | undefined
-  onDeathClick: ((record: PlayerDeathRecord) => void) | undefined
+  onSelect: (() => void) | undefined
 }) {
   const cfg = MODULE_CONFIG[moduleKey]
+  const setSelectedPlayer = useStore(s => s.setSelectedPlayer)
+  const setSelectedDeath = useStore(s => s.setSelectedDeath)
+
+  // Stable handlers so memoized row components don't re-render when the
+  // parent re-renders for unrelated reasons. moduleKey is the only dep since
+  // the store setters are reference-stable across renders.
+  const onPlayerClick = useCallback(
+    (name: string) => setSelectedPlayer(name, moduleKey),
+    [setSelectedPlayer, moduleKey]
+  )
+  const onDeathClick = useCallback(
+    (record: PlayerDeathRecord) => setSelectedDeath(record),
+    [setSelectedDeath]
+  )
 
   return (
     <div style={{
@@ -146,13 +153,13 @@ function OverviewModule({
           justifyContent: 'space-between',
           padding: '6px 12px',
           borderBottom: '1px solid var(--border-subtle)',
-          cursor: 'pointer',
+          cursor: onSelect ? 'pointer' : 'default',
           flexShrink: 0,
           background: isActive ? 'var(--bg-hover)' : 'transparent',
           transition: 'background 0.15s',
         }}
-        onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = 'var(--bg-hover)' }}
-        onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent' }}
+        onMouseEnter={onSelect ? e => { if (!isActive) e.currentTarget.style.background = 'var(--bg-hover)' } : undefined}
+        onMouseLeave={onSelect ? e => { if (!isActive) e.currentTarget.style.background = 'transparent' } : undefined}
       >
         <div style={{
           fontSize: 10, fontWeight: 600, textTransform: 'uppercase',
@@ -198,7 +205,7 @@ function RankedModuleBody({
   playerList: PlayerSnapshot[]
   playerSpecs: Record<string, number>
   isFocused: boolean
-  onPlayerClick: ((name: string) => void) | undefined
+  onPlayerClick: (name: string) => void
 }) {
   const cfg = MODULE_CONFIG[moduleKey]
   const valFn = cfg.valFn!
@@ -247,68 +254,114 @@ function RankedModuleBody({
       )}
       {list.map((p, i) => {
         const specId = resolveSpecId(playerSpecs, p.name, p.specId)
-        const color = getClassColor(specId)
         const pct = maxVal > 0 ? (valFn(p) / maxVal) * 100 : 0
         const isSelected = selectedPlayer === p.name && drillMetric === moduleKey
+        const total = cfg.totalFn?.(p) ?? null
+        const value = fmtFn(p)
 
-        const interactive = !!onPlayerClick
         return (
-          <div
+          <RankedModuleRow
             key={p.name}
-            onClick={interactive ? () => onPlayerClick(p.name) : undefined}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              padding: '3px 12px',
-              borderBottom: '1px solid var(--border-subtle)',
-              cursor: interactive ? 'pointer' : 'default',
-              fontSize: 12,
-              transition: 'background 0.1s',
-              background: isSelected ? 'var(--bg-active)' : 'transparent',
-            }}
-            onMouseEnter={interactive ? e => { if (!isSelected) e.currentTarget.style.background = 'var(--bg-hover)' } : undefined}
-            onMouseLeave={interactive ? e => { if (!isSelected) e.currentTarget.style.background = isSelected ? 'var(--bg-active)' : 'transparent' } : undefined}
-          >
-            <div style={{ width: 20, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', fontSize: 11 }}>
-              {i + 1}
-            </div>
-            <div style={{
-              width: 100, display: 'flex', alignItems: 'center', gap: 6,
-              fontSize: 12, color, minWidth: 0,
-            }}>
-              <SpecIcon specId={specId} />
-              <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                {shortName(p.name)}
-              </span>
-            </div>
-            <div style={{ flex: 1, padding: '0 8px' }}>
-              <div style={{
-                height: 14, background: 'var(--bg-hover)', borderRadius: 2,
-                overflow: 'hidden', position: 'relative',
-              }}>
-                <div style={{
-                  height: '100%', borderRadius: 2, opacity: 0.85,
-                  width: `${pct}%`, background: color,
-                }} />
-              </div>
-            </div>
-            {isFocused && cfg.totalFn ? (
-              <div style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 11, display: 'flex', gap: 6, flexShrink: 0 }}>
-                <span style={{ color: 'var(--text-secondary)', width: 48, textAlign: 'right' }}>{cfg.totalFn(p)}</span>
-                <span style={{ color: 'var(--text-primary)', fontWeight: 600, width: 48, textAlign: 'right' }}>{fmtFn(p)}</span>
-              </div>
-            ) : (
-              <div style={{
-                width: 55, textAlign: 'right', fontFamily: 'var(--font-mono)',
-                fontSize: 11, color: 'var(--text-secondary)',
-              }}>
-                {fmtFn(p)}
-              </div>
-            )}
-          </div>
+            name={p.name}
+            specId={specId}
+            rank={i + 1}
+            pct={pct}
+            total={total}
+            value={value}
+            isSelected={isSelected}
+            isFocused={isFocused}
+            showSplitColumns={showSplitColumns}
+            onClick={onPlayerClick}
+          />
         )
       })}
     </>
+  )
+}
+
+// Memoized: re-renders only when the row's visible props change. The onClick
+// prop is stable via the parent's useCallback, and all other props are
+// primitives or primitives-by-value. This stops Zustand updates unrelated to
+// the row (e.g. graph focus, WS status) from reconciling 10-20 rows per metric.
+const RankedModuleRow = memo(RankedModuleRowImpl)
+
+function RankedModuleRowImpl({
+  name,
+  specId,
+  rank,
+  pct,
+  total,
+  value,
+  isSelected,
+  isFocused,
+  showSplitColumns,
+  onClick,
+}: {
+  name: string
+  specId: number | undefined
+  rank: number
+  pct: number
+  total: string | null
+  value: string
+  isSelected: boolean
+  isFocused: boolean
+  showSplitColumns: boolean
+  onClick: (name: string) => void
+}) {
+  const color = getClassColor(specId)
+  return (
+    <div
+      onClick={() => onClick(name)}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        padding: '3px 12px',
+        borderBottom: '1px solid var(--border-subtle)',
+        cursor: 'pointer',
+        fontSize: 12,
+        transition: 'background 0.1s',
+        background: isSelected ? 'var(--bg-active)' : 'transparent',
+      }}
+      onMouseEnter={e => { if (!isSelected) e.currentTarget.style.background = 'var(--bg-hover)' }}
+      onMouseLeave={e => { e.currentTarget.style.background = isSelected ? 'var(--bg-active)' : 'transparent' }}
+    >
+      <div style={{ width: 20, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', fontSize: 11 }}>
+        {rank}
+      </div>
+      <div style={{
+        width: 100, display: 'flex', alignItems: 'center', gap: 6,
+        fontSize: 12, color, minWidth: 0,
+      }}>
+        <SpecIcon specId={specId} />
+        <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          {shortName(name)}
+        </span>
+      </div>
+      <div style={{ flex: 1, padding: '0 8px' }}>
+        <div style={{
+          height: 14, background: 'var(--bg-hover)', borderRadius: 2,
+          overflow: 'hidden', position: 'relative',
+        }}>
+          <div style={{
+            height: '100%', borderRadius: 2, opacity: 0.85,
+            width: `${pct}%`, background: color,
+          }} />
+        </div>
+      </div>
+      {isFocused && showSplitColumns && total !== null ? (
+        <div style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 11, display: 'flex', gap: 6, flexShrink: 0 }}>
+          <span style={{ color: 'var(--text-secondary)', width: 48, textAlign: 'right' }}>{total}</span>
+          <span style={{ color: 'var(--text-primary)', fontWeight: 600, width: 48, textAlign: 'right' }}>{value}</span>
+        </div>
+      ) : (
+        <div style={{
+          width: 55, textAlign: 'right', fontFamily: 'var(--font-mono)',
+          fontSize: 11, color: 'var(--text-secondary)',
+        }}>
+          {value}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -322,7 +375,7 @@ function DeathsModuleBody({
   deaths: PlayerDeathRecord[]
   playerSpecs: Record<string, number>
   playerList: PlayerSnapshot[]
-  onDeathClick: ((record: PlayerDeathRecord) => void) | undefined
+  onDeathClick: (record: PlayerDeathRecord) => void
   isFocused: boolean
 }) {
   if (deaths.length === 0) {
@@ -341,40 +394,118 @@ function DeathsModuleBody({
       {deaths.map((d, i) => {
         const player = playerByName.get(d.playerName)
         const specId = resolveSpecId(playerSpecs, d.playerName, player?.specId)
-        const color = getClassColor(specId)
-        const elapsed = `${Math.floor(d.combatElapsed / 60)}:${String(Math.floor(d.combatElapsed % 60)).padStart(2, '0')}`
-        const spellName = d.killingBlow?.spellName ?? 'Unknown'
-        const sourceName = d.killingBlow?.sourceName ?? 'Unknown'
-
         return (
-          <div
+          <DeathModuleRow
             key={`${d.playerGuid}-${d.timeOfDeath}-${i}`}
-            onClick={onDeathClick ? () => onDeathClick(d) : undefined}
-            style={{
-              padding: '4px 12px',
-              borderBottom: '1px solid var(--border-subtle)',
-              fontSize: 12,
-              cursor: onDeathClick ? 'pointer' : 'default',
-              transition: 'background 0.1s',
-            }}
-            onMouseEnter={onDeathClick ? e => { e.currentTarget.style.background = 'var(--bg-hover)' } : undefined}
-            onMouseLeave={onDeathClick ? e => { e.currentTarget.style.background = 'transparent' } : undefined}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--status-wipe)', fontSize: 11 }}>
-                {elapsed}
-              </span>
-              <SpecIcon specId={specId} />
-              <span style={{ fontWeight: 500, color }}>
-                {shortName(d.playerName)}
-              </span>
-              <span style={{ color: 'var(--text-secondary)', fontSize: 11, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {isFocused ? <>killed by <span style={{ color: 'var(--text-primary)' }}>{spellName}</span> from {sourceName}</> : <>to {spellName}</>}
-              </span>
-            </div>
-          </div>
+            death={d}
+            specId={specId}
+            isFocused={isFocused}
+            onClick={onDeathClick}
+          />
         )
       })}
     </>
+  )
+}
+
+const DeathModuleRow = memo(DeathModuleRowImpl)
+
+function DeathModuleRowImpl({
+  death,
+  specId,
+  isFocused,
+  onClick,
+}: {
+  death: PlayerDeathRecord
+  specId: number | undefined
+  isFocused: boolean
+  onClick: (record: PlayerDeathRecord) => void
+}) {
+  const color = getClassColor(specId)
+  const elapsed = `${Math.floor(death.combatElapsed / 60)}:${String(Math.floor(death.combatElapsed % 60)).padStart(2, '0')}`
+  const spellName = death.killingBlow?.spellName ?? 'Unknown'
+  const sourceName = death.killingBlow?.sourceName ?? 'Unknown'
+
+  return (
+    <div
+      onClick={() => onClick(death)}
+      style={{
+        padding: '4px 12px',
+        borderBottom: '1px solid var(--border-subtle)',
+        fontSize: 12,
+        cursor: 'pointer',
+        transition: 'background 0.1s',
+      }}
+      onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-hover)' }}
+      onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--status-wipe)', fontSize: 11 }}>
+          {elapsed}
+        </span>
+        <SpecIcon specId={specId} />
+        <span style={{ fontWeight: 500, color }}>
+          {shortName(death.playerName)}
+        </span>
+        <span style={{ color: 'var(--text-secondary)', fontSize: 11, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {isFocused ? <>killed by <span style={{ color: 'var(--text-primary)' }}>{spellName}</span> from {sourceName}</> : <>to {spellName}</>}
+        </span>
+      </div>
+    </div>
+  )
+}
+
+// Placeholder rendered while an aggregate snapshot is in flight. Mirrors the
+// Summary layout (focus pane + sidebar) so the swap doesn't shift UI. Bars
+// pulse subtly via the existing animate-pulse-dot keyframe.
+function SummaryLoadingSkeleton() {
+  return (
+    <div style={{ display: 'flex', gap: 8, padding: 8, flex: 1, minHeight: 0 }}>
+      <div style={{ flex: 3, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+        <SkeletonModule rows={6} />
+      </div>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 8, minWidth: 180 }}>
+        <SkeletonModule rows={3} />
+        <SkeletonModule rows={3} />
+        <SkeletonModule rows={3} />
+      </div>
+    </div>
+  )
+}
+
+function SkeletonModule({ rows }: { rows: number }) {
+  return (
+    <div
+      className="animate-pulse-dot"
+      style={{
+        background: 'var(--bg-root)',
+        border: '1px solid var(--border-subtle)',
+        borderRadius: 2,
+        flex: 1,
+        display: 'flex',
+        flexDirection: 'column',
+        overflow: 'hidden',
+        minHeight: 0,
+      }}
+    >
+      <div style={{
+        padding: '6px 12px',
+        borderBottom: '1px solid var(--border-subtle)',
+        height: 28,
+      }} />
+      <div style={{ flex: 1, padding: '6px 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {Array.from({ length: rows }).map((_, i) => (
+          <div
+            key={i}
+            style={{
+              height: 14,
+              background: 'var(--bg-hover)',
+              borderRadius: 2,
+              width: `${90 - i * 8}%`,
+            }}
+          />
+        ))}
+      </div>
+    </div>
   )
 }

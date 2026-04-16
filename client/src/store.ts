@@ -105,9 +105,23 @@ function mergeIcons(
 // persist across fights; if they don't, they drop silently during aggregation.
 function clearUnitFiltersOnScopeChange(filters: FilterState): FilterState {
   if (!filters.Source && !filters.Target) return filters
-  const next: FilterState = {}
-  if (filters.Ability) next.Ability = filters.Ability
-  return next
+  if (!filters.Ability) return EMPTY_FILTERS
+  return { Ability: filters.Ability }
+}
+
+function stringArraysEqual(a: string[] | undefined, b: string[] | undefined): boolean {
+  if (a === b) return true
+  if (!a || !b) return false
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false
+  return true
+}
+
+// Normalizes to the shared EMPTY_FILTERS sentinel when all axes are empty so
+// subscribers comparing by reference don't see a new object for the same
+// "no filters" state.
+function normalizeFilters(next: FilterState): FilterState {
+  return Object.keys(next).length === 0 ? EMPTY_FILTERS : next
 }
 
 function mergeSpecs(
@@ -165,7 +179,10 @@ export const useStore = create<AppState>((set) => ({
     selectedBossSectionId: null,
     selectedBossSection: null,
     filters: clearUnitFiltersOnScopeChange(state.filters),
-    ...(id === null ? { selectedSegment: null } : {}),
+    // Clear the previous snapshot when switching to a different segment so
+    // the view can show a loading skeleton instead of stale data while the
+    // new snapshot is in flight.
+    ...(id !== state.selectedSegmentId ? { selectedSegment: null } : {}),
   })),
   setSelectedKeyRunId: (id) => set(state => ({
     selectedKeyRunId: id,
@@ -238,25 +255,34 @@ export const useStore = create<AppState>((set) => ({
   // Flipping perspective inverts the source/target universes (allies ↔ enemies),
   // so keeping the old Source/Target/Ability names would reference units that
   // no longer exist on the active side. Spec says clear all three.
-  setPerspective: (p) => set(state => (
-    state.perspective === p ? {} : { perspective: p, filters: EMPTY_FILTERS }
-  )),
+  setPerspective: (p) => set(state => {
+    if (state.perspective === p) return {}
+    if (state.filters === EMPTY_FILTERS) return { perspective: p }
+    return { perspective: p, filters: EMPTY_FILTERS }
+  }),
   setFilter: (axis, names) => set(state => {
-    const next = { ...state.filters }
-    if (!names || names.length === 0) delete next[axis]
-    else next[axis] = names
-    return { filters: next }
+    const desired = !names || names.length === 0 ? undefined : names
+    const current = state.filters[axis]
+    // No-op when already in the requested state. Returning {} keeps the filters
+    // reference stable so downstream useMemo deps don't miss.
+    if (stringArraysEqual(current, desired)) return {}
+    const next: FilterState = { ...state.filters }
+    if (desired === undefined) delete next[axis]
+    else next[axis] = desired
+    return { filters: normalizeFilters(next) }
   }),
   toggleFilterValue: (axis, name) => set(state => {
     const current = state.filters[axis] ?? []
     const idx = current.indexOf(name)
     const nextList = idx === -1 ? [...current, name] : current.filter((_, i) => i !== idx)
-    const next = { ...state.filters }
+    const next: FilterState = { ...state.filters }
     if (nextList.length === 0) delete next[axis]
     else next[axis] = nextList
-    return { filters: next }
+    return { filters: normalizeFilters(next) }
   }),
-  clearAllFilters: () => set({ filters: EMPTY_FILTERS }),
+  clearAllFilters: () => set(state => (
+    state.filters === EMPTY_FILTERS ? {} : { filters: EMPTY_FILTERS }
+  )),
   refreshBootInfo: async () => {
     if (!window.api?.getBootInfo) return
     try {
@@ -321,3 +347,11 @@ export function resolveSpecId(
 // Kept for components that only care about individual segment data (e.g. target drill-down)
 export const selectCurrentSegment = (s: AppState): SegmentSnapshot | null =>
   s.selectedSegment
+
+// True when the user has selected a scope but its snapshot has not yet arrived
+// from the server. Views use this to render a loading skeleton instead of
+// either stale data or the empty "no encounter" state.
+export const selectIsLoading = (s: AppState): boolean =>
+  !!(s.selectedSegmentId && !s.selectedSegment) ||
+  !!(s.selectedKeyRunId && !s.selectedKeyRun) ||
+  !!(s.selectedBossSectionId && !s.selectedBossSection)

@@ -58,7 +58,17 @@ const iconResolver = createIconResolver({
 })
 const store   = new SegmentStore(maxSegments, iconResolver)
 const machine = new EncounterStateMachine(store)
-const wss     = new WebSocketServer({ server: httpServer })
+// permessage-deflate: combat-log payloads repeat player names, spell IDs, and
+// ability names heavily, so compression typically cuts wire size 10–20×. Most
+// impactful on the web path (real network); on Electron/localhost the smaller
+// payload also reduces client-side JSON.parse time.
+const wss     = new WebSocketServer({
+  server: httpServer,
+  perMessageDeflate: {
+    zlibDeflateOptions: { level: 3 },  // fast compression; higher levels don't pay off for WS frames
+    threshold: 1024,                   // skip compression for small control messages
+  },
+})
 attachWsHandlers(wss, store, machine)
 
 httpServer.listen(port, () => {
