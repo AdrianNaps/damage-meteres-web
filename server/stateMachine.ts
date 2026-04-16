@@ -14,9 +14,17 @@ const OWNED_UNIT_FLAGS  = PET_FLAG | GUARDIAN_FLAG | PLAYER_FLAG
 // Per-mob state kept only while a trash pack is open. Reset to empty between packs.
 interface TrashMobInfo {
   name: string
-  maxHP: number       // highest observed max HP (never decreases)
-  lastHPpct: number   // most recent currentHP/maxHP ratio; 1.0 if unknown
+  maxHP: number          // highest observed max HP (never decreases)
+  lastHPpct: number      // most recent currentHP/maxHP ratio; 1.0 if unknown
+  lastEventTime: number  // timestamp (ms) of the most recent event involving this mob
 }
+
+// If a tracked mob has had no events for this long, assume it despawned, leashed,
+// or was skipped without firing UNIT_DIED, and evict it. Needed for NPX-style mobs
+// (e.g. Lingering Image) that dissipate silently — without this, a single ghost
+// entry keeps activeMobs non-empty for the rest of the key and prevents new packs
+// from opening.
+const MOB_INACTIVITY_TIMEOUT_MS = 15_000
 
 // A unit is a hostile NPC if it carries the hostile reaction flag and isn't itself a
 // player/pet/guardian. Vehicle- GUIDs (boss-controlled mounts like Ick) also qualify.
@@ -43,6 +51,10 @@ export class EncounterStateMachine extends EventEmitter {
   private activeMobs: Map<string, TrashMobInfo> = new Map()
   // Highest-max-HP mob observed in the current pack, used to name the segment at finalize.
   private currentPackHighestHpMob: { name: string; maxHP: number } | null = null
+  // Whether any tracked mob died inside the current pack. Packs that close via
+  // inactivity prune with no kills are treated as noise (stray DoT tick on a
+  // distant mob, etc.) and discarded rather than shown as empty segments.
+  private currentPackHadKill = false
   // Most recent segment (trash OR boss) in the current key — seeds guidToSpec /
   // guidToName / petToOwner on the next trash pack. Decoupled from currentSegment
   // because currentSegment goes null between packs (events are dropped in that
@@ -85,6 +97,7 @@ export class EncounterStateMachine extends EventEmitter {
         this.carryoverSeg = segment
         this.activeMobs.clear()
         this.currentPackHighestHpMob = null
+        this.currentPackHadKill = false
         this.mode = 'in_key'
         console.log(`[key] START — ${p.dungeonName} +${p.keystoneLevel}`)
         this.emit('challenge_start', segment)
@@ -143,10 +156,21 @@ export class EncounterStateMachine extends EventEmitter {
         // Close any open trash pack before entering the boss fight. Keep the
         // activeTrashSegment reference intact (it's the "most recent trash" used
         // by challenge_end); the pack is marked closed via endTime + success.
+        // An unnamed pack (no HP-bearing damage ever landed on a tracked mob)
+        // opened by _openTrashPack is noise and gets discarded here too —
+        // happens when e.g. a stray pre-pull tick opens a pack just before boss.
+        // The initial Pack 1 from CHALLENGE_MODE_START (packCount===1) is always
+        // kept as the placeholder.
         if (this.activeTrashSegment && this.currentSegment === this.activeTrashSegment) {
-          this.activeTrashSegment.endTime = event.timestamp
-          this.activeTrashSegment.success = true
-          this._applyFinalPackName(this.activeTrashSegment)
+          if (this.currentPackHighestHpMob || this.packCount === 1) {
+            this.activeTrashSegment.endTime = event.timestamp
+            this.activeTrashSegment.success = true
+            this._applyFinalPackName(this.activeTrashSegment)
+          } else {
+            console.log(`[pack] DISCARD (unnamed, boss pull) — was "${this.activeTrashSegment.encounterName}"`)
+            this.store.removeById(this.activeTrashSegment.id)
+            this.packCount--
+          }
         }
         this.activeMobs.clear()
         this.currentPackHighestHpMob = null
@@ -240,10 +264,27 @@ export class EncounterStateMachine extends EventEmitter {
     if (event.type === 'UNIT_DIED') {
       if (!this.activeMobs.has(event.dest.guid)) return
       this.activeMobs.delete(event.dest.guid)
+      this.currentPackHadKill = true
       if (this.activeMobs.size === 0 && this.activeTrashSegment && this.currentSegment === this.activeTrashSegment) {
-        this.activeTrashSegment.endTime = event.timestamp
-        this.activeTrashSegment.success = true
-        this._applyFinalPackName(this.activeTrashSegment)
+        if (this.currentPackHighestHpMob || this.packCount === 1) {
+          // Named pack, or the initial CHALLENGE_MODE_START placeholder Pack 1
+          // (always kept even when it only sees mob-source events, to hold early
+          // key metadata like COMBATANT_INFO).
+          this.activeTrashSegment.endTime = event.timestamp
+          this.activeTrashSegment.success = true
+          this._applyFinalPackName(this.activeTrashSegment)
+          console.log(`[pack] CLOSE (kill) — ${this.activeTrashSegment.encounterName}`)
+          this.emit('pack_changed', this.activeTrashSegment)
+        } else {
+          // No HP-bearing damage ever landed on a tracked mob — the whole "pack"
+          // was mob-source-only events (e.g. a stray swing on a player from a
+          // distant mob that then died). Treat as noise, same as the inactivity-
+          // with-no-kill path.
+          console.log(`[pack] DISCARD (unnamed) — was "${this.activeTrashSegment.encounterName}"`)
+          this.store.removeById(this.activeTrashSegment.id)
+          this.packCount--
+          this.emit('pack_changed', this.activeTrashSegment)
+        }
         this.currentSegment = null
         this.currentPackHighestHpMob = null
       }
@@ -308,12 +349,54 @@ export class EncounterStateMachine extends EventEmitter {
           this.activeTrashSegment.endTime = event.timestamp
           this.activeTrashSegment.success = false
           this._applyFinalPackName(this.activeTrashSegment)
+          console.log(`[pack] CLOSE (reset) — ${this.activeTrashSegment.encounterName}`)
           this.currentSegment = null
           this.currentPackHighestHpMob = null
+          this.emit('pack_changed', this.activeTrashSegment)
         }
         // All ghost active mobs reset with the wipe — the re-engage starts fresh
         this.activeMobs.clear()
       }
+    }
+
+    // Inactivity prune — evict any tracked mob whose last event is older than the
+    // timeout. Catches mobs that despawn, leash, or get skipped past without firing
+    // UNIT_DIED (e.g. NPX's Lingering Image). Only close the pack if eviction
+    // happened AND the set is now empty — without the eviction guard, the very
+    // first damage event on a freshly-opened pack would close it immediately
+    // (activeMobs started empty, prune changes nothing, the size-0 check still
+    // matches).
+    let evicted = false
+    let latestEvictedEventTime = 0
+    for (const [guid, info] of this.activeMobs) {
+      if (event.timestamp - info.lastEventTime > MOB_INACTIVITY_TIMEOUT_MS) {
+        this.activeMobs.delete(guid)
+        evicted = true
+        if (info.lastEventTime > latestEvictedEventTime) latestEvictedEventTime = info.lastEventTime
+      }
+    }
+    if (evicted && this.activeMobs.size === 0 && this.activeTrashSegment && this.currentSegment === this.activeTrashSegment) {
+      if (this.currentPackHadKill) {
+        // End the pack at the last evicted mob's final event, not `now` — the gap
+        // between that time and `now` is dead air, not part of the pack.
+        this.activeTrashSegment.endTime = latestEvictedEventTime
+        this.activeTrashSegment.success = true
+        this._applyFinalPackName(this.activeTrashSegment)
+        console.log(`[pack] CLOSE (inactivity) — ${this.activeTrashSegment.encounterName}`)
+        this.emit('pack_changed', this.activeTrashSegment)
+      } else {
+        // No mob died in this pack — it was a stray DoT / ambient tick that opened
+        // a pack with nothing real in it. Drop the segment from the store and roll
+        // back the counter so the next legit pack reuses this number. Leave the
+        // in-memory Segment object referenced by carryoverSeg/activeTrashSegment
+        // untouched — its guidToSpec still seeds the next real pack correctly.
+        console.log(`[pack] DISCARD (empty) — was "${this.activeTrashSegment.encounterName}"`)
+        this.store.removeById(this.activeTrashSegment.id)
+        this.packCount--
+        this.emit('pack_changed', this.activeTrashSegment)
+      }
+      this.currentSegment = null
+      this.currentPackHighestHpMob = null
     }
 
     // If no pack is currently accepting events (post-reset, post-UNIT_DIED, or
@@ -332,8 +415,9 @@ export class EncounterStateMachine extends EventEmitter {
     if (prev) {
       if (newMaxHP > prev.maxHP) prev.maxHP = newMaxHP
       prev.lastHPpct = newPct
+      prev.lastEventTime = event.timestamp
     } else {
-      this.activeMobs.set(mobUnit.guid, { name: mobUnit.name, maxHP: newMaxHP, lastHPpct: newPct })
+      this.activeMobs.set(mobUnit.guid, { name: mobUnit.name, maxHP: newMaxHP, lastHPpct: newPct, lastEventTime: event.timestamp })
     }
 
     // Track the highest-max-HP mob in this pack for naming at finalize time
@@ -358,6 +442,9 @@ export class EncounterStateMachine extends EventEmitter {
     this.currentSegment = segment
     this.carryoverSeg = segment
     this.currentPackHighestHpMob = null
+    this.currentPackHadKill = false
+    console.log(`[pack] OPEN — Pack ${this.packCount}`)
+    this.emit('pack_changed', segment)
   }
 
   private _applyFinalPackName(segment: Segment): void {

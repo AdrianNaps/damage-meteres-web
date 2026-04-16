@@ -198,16 +198,16 @@ test('partial pack deaths: pack stays open while any tracked mob is still alive'
   assert.equal(segs[0].success, true)
 })
 
-test('mob-source-only pack: mob hitting players opens and closes a pack via UNIT_DIED', () => {
-  // Exercises the sourceIsMob && !destIsMob branch — mob events where the mob is
-  // the attacker and the player is the destination. These carry no HP snapshot
-  // (advanced log is dest-side) but must still open a pack and close it on death.
+test('mob-source-only pack: unnamed pack is discarded at kill-close', () => {
+  // Exercises the sourceIsMob && !destIsMob branch combined with the unnamed-pack
+  // discard. A mob swinging at a player (no HP snapshot, since HP is dest-side)
+  // opens a pack; when that mob dies, the pack has a kill but no named mob. Real
+  // trash engagements always generate at least one player-to-mob damage event
+  // with HP, so an unnamed pack is noise (distant mob's stray hit) — discard it.
   const { sm, store } = makeSm()
   const mob = makeMob('Creature-0-1-1-1-111-000A', 'Silent Stalker')
   const player = makePlayer()
 
-  // Build a mob→player damage event (no HP info, since HP is only populated when
-  // the mob is the dest of a damage event).
   const mobAttacksPlayer: ParsedEvent = {
     timestamp: t(100),
     type: 'SPELL_DAMAGE',
@@ -225,12 +225,11 @@ test('mob-source-only pack: mob hitting players opens and closes a pack via UNIT
   sm.handle(mobDied(mob, 200))
   sm.handle(challengeEnd(true, 300))
 
+  // Only the initial placeholder Pack 1 from CHALLENGE_MODE_START remains; the
+  // ghost pack opened by the stray mob swing was discarded.
   const segs = store.getAll()
   assert.equal(segs.length, 1)
-  // No maxHP ever observed (HP snapshot only comes from dest-side events) — falls
-  // back to the placeholder name, not "Pack 1: Silent Stalker"
   assert.equal(segs[0].encounterName, 'Pack 1')
-  assert.equal(segs[0].success, true)
 })
 
 test('sequential resets: wipe → re-engage → wipe produces three packs', () => {
@@ -363,6 +362,81 @@ test('key depleted mid-boss: boss closes with success=false before challenge_end
   // when the key depleted) gets success=false.
   assert.equal(segs[0].success, true)
   assert.equal(segs[1].success, false)  // Boss 1 (force-closed)
+})
+
+test('inactivity prune: ghost mob with no UNIT_DIED is evicted after >15s of silence, splitting pack', () => {
+  // NPX case: a Lingering Image despawns silently without firing UNIT_DIED,
+  // leaving a ghost entry in activeMobs that would otherwise merge the rest of
+  // the key into one pack. After 15s of silence on the ghost GUID, the next
+  // trash event should prune it, close the stalled pack (since the pack had
+  // real kills of other mobs), and open a new one.
+  const { sm, store } = makeSm()
+  const realMob  = makeMob('Creature-0-1-1-1-100-000A', 'Shadowguard Champion')
+  const ghost    = makeMob('Creature-0-1-1-1-100-000B', 'Lingering Image')
+  const nextPack = makeMob('Creature-0-1-1-1-200-000C', 'Dreadflail')
+
+  sm.handle(challengeStart('Nexus-Point Xenas', 0))
+  // Pack 1: real mob dies (gives the pack a kill), ghost then takes a hit and
+  // goes silent without dying
+  sm.handle(mobDamage(realMob, 500_000, 3_000_000, 50))
+  sm.handle(mobDied(realMob, 60))
+  sm.handle(mobDamage(ghost, 2_000_000, 3_000_000, 100))
+  // 20s later, the group engages the next pack — prune fires, ghost evicted,
+  // Pack 1 closes (had kills → kept), Pack 2 opens
+  sm.handle(mobDamage(nextPack, 900_000, 1_000_000, 20_100))
+  sm.handle(mobDied(nextPack, 20_200))
+  sm.handle(challengeEnd(true, 21_000))
+
+  const segs = store.getAll()
+  assert.equal(segs.length, 2)
+  assert.equal(segs[0].encounterName, 'Pack 1: Shadowguard Champion')
+  assert.equal(segs[1].encounterName, 'Pack 2: Dreadflail')
+})
+
+test('empty pack discard: inactivity close with no kills drops the segment and rolls back the counter', () => {
+  // A stray DoT tick on a distant hostile mob opens a pack; the mob never dies
+  // (unrelated to the real fight) and silence hits the timeout. That pack is
+  // noise and should be discarded so the next real engagement is still Pack 2
+  // rather than Pack 3.
+  const { sm, store } = makeSm()
+  const realMob  = makeMob('Creature-0-1-1-1-100-000A', 'Raging Tusker')
+  const strayMob = makeMob('Creature-0-1-1-1-200-000B', 'Distant Lurker')
+  const nextReal = makeMob('Creature-0-1-1-1-300-000C', 'Sand Cleric')
+
+  sm.handle(challengeStart('Ara-Kara', 0))
+  // Pack 1: real kill
+  sm.handle(mobDamage(realMob, 500_000, 1_000_000, 100))
+  sm.handle(mobDied(realMob, 200))
+  // A stray tick opens a new pack for the distant lurker (no kill follows)
+  sm.handle(mobDamage(strayMob, 900_000, 1_000_000, 300))
+  // 20s later — the lurker's pack should be pruned and discarded, then the next
+  // legit engagement opens what should still be Pack 2.
+  sm.handle(mobDamage(nextReal, 900_000, 1_000_000, 20_400))
+  sm.handle(mobDied(nextReal, 20_500))
+  sm.handle(challengeEnd(true, 21_000))
+
+  const segs = store.getAll()
+  assert.equal(segs.length, 2)
+  assert.equal(segs[0].encounterName, 'Pack 1: Raging Tusker')
+  assert.equal(segs[1].encounterName, 'Pack 2: Sand Cleric')
+})
+
+test('inactivity prune does not fire within the timeout window', () => {
+  // Chain-pulls (common in M+) land events on the same mobs within a few seconds.
+  // The prune must not misfire on healthy packs just because a mob had a brief lull.
+  const { sm, store } = makeSm()
+  const mob = makeMob('Creature-0-1-1-1-100-000A', 'Raging Tusker')
+
+  sm.handle(challengeStart('Ara-Kara', 0))
+  sm.handle(mobDamage(mob, 1_000_000, 1_000_000, 100))
+  // 10s later — under the 15s threshold
+  sm.handle(mobDamage(mob,   500_000, 1_000_000, 10_100))
+  sm.handle(mobDied(mob, 10_200))
+  sm.handle(challengeEnd(true, 11_000))
+
+  const segs = store.getAll()
+  assert.equal(segs.length, 1)
+  assert.equal(segs[0].encounterName, 'Pack 1: Raging Tusker')
 })
 
 test('spec/name carryover: guidToSpec propagates trash → boss → new trash', () => {

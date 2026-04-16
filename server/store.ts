@@ -290,6 +290,16 @@ export class SegmentStore {
     }
   }
 
+  // Drops a segment that was pushed but turned out to be noise (e.g. a trash pack
+  // opened by a stray DoT tick that never produced a kill). Caller is responsible
+  // for cleaning up any references (activeTrashSegment, carryoverSeg) on their end.
+  removeById(id: string): boolean {
+    const idx = this.segments.findIndex(s => s.id === id)
+    if (idx === -1) return false
+    this.segments.splice(idx, 1)
+    return true
+  }
+
   private _historyItemCount(): number {
     const keyRunIds = new Set<string>()
     const bossSectionIds = new Set<string>()

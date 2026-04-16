@@ -21,7 +21,9 @@ export function attachWsHandlers(
   }
 
   function broadcastSegmentList() {
-    broadcast({ type: 'segment_list', segments: store.getHistoryItems() })
+    const items = store.getHistoryItems()
+    console.log(`[ws] broadcast segment_list → ${items.length} items, ${wss.clients.size} clients`)
+    broadcast({ type: 'segment_list', segments: items })
   }
 
   const onEncounterStart = (seg: Segment) => {
@@ -35,6 +37,7 @@ export function attachWsHandlers(
   machine.on('encounter_end', onEncounterEnd)
   machine.on('challenge_start', broadcastSegmentList)
   machine.on('challenge_end', broadcastSegmentList)
+  machine.on('pack_changed', broadcastSegmentList)
 
   const onConnection = (ws: WebSocket) => {
     console.log('[ws] Client connected')
@@ -142,6 +145,7 @@ export function attachWsHandlers(
       machine.off('encounter_end', onEncounterEnd)
       machine.off('challenge_start', broadcastSegmentList)
       machine.off('challenge_end', broadcastSegmentList)
+      machine.off('pack_changed', broadcastSegmentList)
       wss.off('connection', onConnection)
     },
   }
