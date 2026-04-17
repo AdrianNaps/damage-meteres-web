@@ -637,10 +637,12 @@ export function useActiveSource(): SourceState | undefined {
 export const selectCurrentView = (s: AppState): SegmentSnapshot | KeyRunSnapshot | BossSectionSnapshot | null =>
   s.selectedKeyRun ?? s.selectedBossSection ?? s.selectedSegment
 
-// True when the user is on the "Overall" aggregate tab (key run or boss
-// section) rather than an individual segment/pull.
+// True when the user is on a raid boss-section "Overall" aggregate tab.
+// M+ key-run Overall is excluded: the dungeon run is a continuous timeline,
+// so the graph remains meaningful. Raid Overall spans disjoint pull attempts
+// with resets between them, so a single time axis would be misleading.
 export const selectIsOverall = (s: AppState): boolean =>
-  !!(s.selectedKeyRun || s.selectedBossSection) && s.selectedSegmentId === null
+  !!s.selectedBossSection && s.selectedSegmentId === null
 
 // Seconds to add to x-axis time labels on the line graph so M+ segments show
 // their position within the dungeon run ("20:00 – 23:00") instead of restarting
