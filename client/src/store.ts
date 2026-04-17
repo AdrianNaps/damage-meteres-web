@@ -697,10 +697,20 @@ export function resolveSpecId(
 export const selectCurrentSegment = (s: AppState): SegmentSnapshot | null =>
   s.selectedSegment
 
-// True when the user has selected a scope but its snapshot has not yet arrived
-// from the server. Views use this to render a loading skeleton instead of
-// either stale data or the empty "no encounter" state.
-export const selectIsLoading = (s: AppState): boolean =>
-  !!(s.selectedSegmentId && !s.selectedSegment) ||
-  !!(s.selectedKeyRunId && !s.selectedKeyRun) ||
-  !!(s.selectedBossSectionId && !s.selectedBossSection)
+// True when data is on the way and the view should render a loading skeleton
+// instead of either stale data or the empty "no encounter" state. Two cases:
+//   1) the user has selected a scope but its snapshot hasn't arrived yet, and
+//   2) the active source is an archive still being parsed — no segment_list
+//      has landed yet, so nothing is selected, but we know data is incoming.
+export const selectIsLoading = (s: AppState): boolean => {
+  if (s.selectedSegmentId && !s.selectedSegment) return true
+  if (s.selectedKeyRunId && !s.selectedKeyRun) return true
+  if (s.selectedBossSectionId && !s.selectedBossSection) return true
+  const activeMeta = s.sourceMetas.get(s.activeSourceId)
+  // Treat any archive that hasn't finished parsing as loading. We gate on
+  // `!loaded` rather than `loadProgress && !loaded` so the skeleton also
+  // covers the brief window between `source_opened` and the first
+  // `source_progress` frame.
+  if (activeMeta?.kind === 'archive' && !activeMeta.loaded) return true
+  return false
+}

@@ -1,4 +1,5 @@
 import { useStore, LIVE_SOURCE_ID, type SourceMeta } from './store'
+import type { HistoryItem } from './types'
 
 let ws: WebSocket | null = null
 
@@ -129,9 +130,41 @@ export function connectWs() {
           // here. Picker requests fire from LogPicker.tsx (PR 5).
           break
         }
-        case 'segment_list':
+        case 'segment_list': {
           setSegmentHistory(msg.segments, sourceId)
+          // If the user hasn't picked anything in this source yet, auto-select
+          // the most recent top-level instance so an opened log lands on real
+          // data instead of an empty "waiting" state. Once anything is
+          // selected, the guard below stops firing — re-deliveries of the
+          // list during live combat won't yank the user's selection.
+          const slice = useStore.getState().sources.get(sourceId)
+          if (
+            slice &&
+            slice.selectedSegmentId === null &&
+            slice.selectedKeyRunId === null &&
+            slice.selectedBossSectionId === null
+          ) {
+            const items = msg.segments as HistoryItem[]
+            let latest: HistoryItem | null = null
+            for (const it of items) {
+              if (!latest || it.startTime > latest.startTime) latest = it
+            }
+            if (latest) {
+              const store = useStore.getState()
+              if (latest.type === 'key_run') {
+                store.setSelectedKeyRunId(latest.keyRunId, sourceId)
+                send({ type: 'get_key_run', sourceId, keyRunId: latest.keyRunId })
+              } else if (latest.type === 'boss_section') {
+                store.setSelectedBossSectionId(latest.bossSectionId, sourceId)
+                send({ type: 'get_boss_section', sourceId, bossSectionId: latest.bossSectionId })
+              } else {
+                store.setSelectedSegmentId(latest.id, sourceId)
+                send({ type: 'get_segment', sourceId, segmentId: latest.id })
+              }
+            }
+          }
           break
+        }
         case 'segment_detail': {
           // Only hydrate selectedSegment when the message corresponds to the
           // current selection in the target source's slice. For the active
