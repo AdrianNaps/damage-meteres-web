@@ -396,7 +396,7 @@ export function computeEnemyPlayers(
       const a = ensure(src)
       a.healing += e.amount ?? 0
       a.overheal += e.overheal ?? 0
-    } else if (e.kind === 'death' && !allySet.has(dst)) {
+    } else if (e.kind === 'death' && !allySet.has(dst)) { // attribute to victim (dst), not killer
       ensure(dst).deaths.push({
         playerName: dst,
         timeOfDeath: e.t,
@@ -412,7 +412,7 @@ export function computeEnemyPlayers(
         kickerSpellId: e.spellId ?? '',
         kickerSpellName: e.ability,
         kickedSpellId: '',
-        kickedSpellName: e.ability,
+        kickedSpellName: '',
         targetName: dst,
         targetGuid: '',
       })

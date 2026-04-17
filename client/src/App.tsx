@@ -13,6 +13,9 @@ import { LogsBanner } from './components/LogsBanner'
 import { FilterBar } from './components/FilterBar'
 import { LogPicker } from './components/LogPicker'
 import { computeEnemyPlayers } from './utils/filters'
+import type { ClientEvent } from './types'
+
+const EMPTY_EVENTS: ClientEvent[] = []
 
 export default function App() {
   const refreshBootInfo = useStore(s => s.refreshBootInfo)
@@ -66,7 +69,7 @@ function ContentPanel() {
     : currentView && 'activeDurationSec' in currentView ? currentView.activeDurationSec
     : 0
 
-  const events = currentView?.events ?? []
+  const events = currentView?.events ?? EMPTY_EVENTS
 
   // When Full mode + enemies perspective, derive enemy pseudo-snapshots from
   // events so the graph shows enemy output instead of ally data.

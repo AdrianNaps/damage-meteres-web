@@ -560,19 +560,19 @@ function FullLoadingSkeleton() {
     >
       <div style={{
         display: 'grid',
-        gridTemplateColumns: PLAYER_GRID_COLUMNS,
+        gridTemplateColumns: playerGridColumns(2),
         gap: 12,
         padding: '6px 0',
         borderBottom: '1px solid var(--border-subtle)',
       }}>
-        <div /><div /><div /><div /><div /><div /><div />
+        <div /><div /><div /><div /><div /><div />
       </div>
       {Array.from({ length: 10 }).map((_, i) => (
         <div
           key={i}
           style={{
             display: 'grid',
-            gridTemplateColumns: PLAYER_GRID_COLUMNS,
+            gridTemplateColumns: playerGridColumns(2),
             gap: 12,
             alignItems: 'center',
             minHeight: 36,

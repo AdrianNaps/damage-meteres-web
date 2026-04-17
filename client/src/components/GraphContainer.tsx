@@ -805,5 +805,5 @@ function drawInactiveState(ctx: CanvasRenderingContext2D, w: number, h: number) 
   ctx.fillStyle = 'rgba(168,170,180,0.45)'
   ctx.font = SANS_FONT
   ctx.textAlign = 'center'
-  ctx.fillText('Select a segment to view graph', w / 2, h / 2 + 4)
+  ctx.fillText('Select a segment to view graph', w / 2, PAD.top + plotH * 0.72)
 }
