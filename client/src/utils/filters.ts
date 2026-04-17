@@ -354,6 +354,101 @@ function computeUnitUniverseImpl(
   return { sources: [...sources].sort(), targets: [...targets].sort() }
 }
 
+// Build pseudo-PlayerSnapshots for enemy units from raw events. Used by the
+// graph when perspective is 'enemies' — the server only ships ally snapshots,
+// so we derive enemy rate values and event records from the events array.
+const enemyPlayersCache = new WeakMap<ClientEvent[], Map<string, Record<string, PlayerSnapshot>>>()
+
+export function computeEnemyPlayers(
+  events: ClientEvent[],
+  allies: Record<string, PlayerSnapshot>,
+  durationSec: number,
+): Record<string, PlayerSnapshot> {
+  const sub = getOrInit(enemyPlayersCache, events)
+  const cacheKey = `d:${durationSec}`
+  const cached = sub.get(cacheKey)
+  if (cached) return cached
+
+  const allySet = makeAllySet(allies)
+  type Acc = {
+    damage: number; healing: number; overheal: number
+    deaths: PlayerSnapshot['deaths']
+    interrupts: PlayerSnapshot['interrupts']['records']
+  }
+  const agg = new Map<string, Acc>()
+
+  const ensure = (name: string): Acc => {
+    let a = agg.get(name)
+    if (!a) {
+      a = { damage: 0, healing: 0, overheal: 0, deaths: [], interrupts: [] }
+      agg.set(name, a)
+    }
+    return a
+  }
+
+  for (const e of events) {
+    const src = e.src
+    const dst = e.dst
+
+    if (e.kind === 'damage' && !allySet.has(src)) {
+      ensure(src).damage += e.amount ?? 0
+    } else if (e.kind === 'heal' && !allySet.has(src)) {
+      const a = ensure(src)
+      a.healing += e.amount ?? 0
+      a.overheal += e.overheal ?? 0
+    } else if (e.kind === 'death' && !allySet.has(dst)) {
+      ensure(dst).deaths.push({
+        playerName: dst,
+        timeOfDeath: e.t,
+        combatElapsed: 0, // filled below
+        killingBlow: { spellName: e.ability, sourceName: src, spellId: e.spellId ?? '' },
+      } as PlayerSnapshot['deaths'][number])
+    } else if (e.kind === 'interrupt' && !allySet.has(src)) {
+      ensure(src).interrupts.push({
+        kickerName: src,
+        kickerGuid: '',
+        timeOfInterrupt: e.t,
+        combatElapsed: 0,
+        kickerSpellId: e.spellId ?? '',
+        kickerSpellName: e.ability,
+        kickedSpellId: '',
+        kickedSpellName: e.ability,
+        targetName: dst,
+        targetGuid: '',
+      })
+    }
+  }
+
+  // Compute combatElapsed relative to the first event timestamp.
+  const t0 = events.length > 0 ? events[0].t : 0
+  for (const a of agg.values()) {
+    for (const d of a.deaths) d.combatElapsed = (d.timeOfDeath - t0) / 1000
+    for (const r of a.interrupts) r.combatElapsed = (r.timeOfInterrupt - t0) / 1000
+  }
+
+  const dur = Math.max(1, durationSec)
+  const result: Record<string, PlayerSnapshot> = {}
+  for (const [name, a] of agg) {
+    result[name] = {
+      name,
+      dps: a.damage / dur,
+      hps: a.healing / dur,
+      damage: { total: a.damage, spells: {}, targets: {} },
+      healing: { total: a.healing, overheal: a.overheal, spells: {}, targets: {} },
+      deaths: a.deaths,
+      interrupts: {
+        total: a.interrupts.length,
+        byKicker: {},
+        byKicked: {},
+        records: a.interrupts,
+      },
+    }
+  }
+
+  sub.set(cacheKey, result)
+  return result
+}
+
 // Heuristic for the empty-state "most-restrictive filter" hint. Rebuilds the
 // check once per axis with that axis removed; first axis whose removal yields
 // data is the one we name. Returns null if removing any single axis isn't

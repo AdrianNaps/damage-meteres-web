@@ -1,6 +1,6 @@
-import { useEffect } from 'react'
+import { useEffect, useMemo } from 'react'
 import { connectWs } from './ws'
-import { useStore, selectCurrentView, selectCurrentScopeKey, type Metric, type Mode } from './store'
+import { useStore, selectCurrentView, selectCurrentScopeKey, selectIsOverall, type Metric, type Mode } from './store'
 import { EncounterHeader } from './components/EncounterHeader'
 import { SegmentTabs } from './components/SegmentTabs'
 import { SummaryView } from './components/SummaryView'
@@ -12,6 +12,7 @@ import { SettingsModal } from './components/SettingsModal'
 import { LogsBanner } from './components/LogsBanner'
 import { FilterBar } from './components/FilterBar'
 import { LogPicker } from './components/LogPicker'
+import { computeEnemyPlayers } from './utils/filters'
 
 export default function App() {
   const refreshBootInfo = useStore(s => s.refreshBootInfo)
@@ -50,6 +51,8 @@ function ContentPanel() {
   const setMetric = useStore(s => s.setMetric)
   const setMode = useStore(s => s.setMode)
   const currentView = useStore(selectCurrentView)
+  const isOverall = useStore(selectIsOverall)
+  const perspective = useStore(s => s.perspective)
   const selectedPlayer = useStore(s => s.selectedPlayer)
   const selectedDeath = useStore(s => s.selectedDeath)
 
@@ -62,6 +65,17 @@ function ContentPanel() {
     currentView && 'duration' in currentView ? currentView.duration
     : currentView && 'activeDurationSec' in currentView ? currentView.activeDurationSec
     : 0
+
+  const events = currentView?.events ?? []
+
+  // When Full mode + enemies perspective, derive enemy pseudo-snapshots from
+  // events so the graph shows enemy output instead of ally data.
+  const graphPlayers = useMemo(() => {
+    if (mode === 'full' && perspective === 'enemies' && events.length > 0) {
+      return computeEnemyPlayers(events, players, duration)
+    }
+    return players
+  }, [mode, perspective, events, players, duration])
 
   return (
     <div style={{
@@ -81,11 +95,11 @@ function ContentPanel() {
       {/* Full-mode filter bar — Summary stays unfiltered for now. */}
       {mode === 'full' && <FilterBar />}
 
-      {/* Graph appears in both modes. In Full it currently shares Summary's
-          behavior (unfiltered, same series); Full-specific interactions will
-          extend this without changing the mount point. */}
-      {currentView && Object.keys(players).length > 0 && (
-        <GraphContainer metric={metric} players={players} duration={duration} />
+      {/* Graph appears in both modes. On the Overall aggregate tab, it shows
+          an inactive placeholder (no per-segment timeline to plot). In Full
+          mode with enemies perspective, graph series use enemy-derived data. */}
+      {currentView && (isOverall || Object.keys(graphPlayers).length > 0) && (
+        <GraphContainer metric={metric} players={graphPlayers} duration={duration} inactive={isOverall} />
       )}
 
       {/* Main content area: modules/rows + inline drill panel. Shared shell so

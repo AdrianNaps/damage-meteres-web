@@ -13,8 +13,12 @@ import { specIconUrl } from '../utils/icons'
 import { getClassColor } from './PlayerRow'
 import { FilterEmptyState } from './FilterEmptyState'
 
-// Per-player table grid: rank | player | bar+% | active% | stat1 | stat2 | stat3.
-const PLAYER_GRID_COLUMNS = '32px 180px minmax(140px, 1fr) 70px 90px 90px 80px'
+// Per-player table grid: rank | player | bar+% | active% | ...stats.
+// Stats columns vary per category, so the grid is built dynamically.
+function playerGridColumns(statCount: number): string {
+  const statCols = Array.from({ length: statCount }, () => '90px').join(' ')
+  return `32px 180px minmax(140px, 1fr) 70px ${statCols}`
+}
 
 // Deaths grid — per-death rows, different shape. Mirrors staging mock:
 // rank | time | player | killing blow | source | overkill.
@@ -24,34 +28,32 @@ type StatFormat = 'shorthand' | 'integer'
 type NumericStat = { label: string; value: number; format: StatFormat; bold?: boolean }
 
 interface MetricConfig {
-  labels: [string, string, string]
-  stats: (row: UnitRow) => [NumericStat, NumericStat, NumericStat]
+  labels: string[]
+  stats: (row: UnitRow) => NumericStat[]
 }
 
 const DAMAGE_CONFIG: MetricConfig = {
-  labels: ['Total', 'DPS', 'Casts'],
+  labels: ['Total', 'DPS'],
   stats: r => [
     { label: 'Total', value: r.total, format: 'shorthand' },
     { label: 'DPS', value: r.value, format: 'shorthand', bold: true },
-    { label: 'Casts', value: r.casts ?? 0, format: 'integer' },
   ],
 }
 
 const HEALING_CONFIG: MetricConfig = {
-  labels: ['Total', 'HPS', 'Overheal'],
+  labels: ['Total', 'Overheal', 'HPS'],
   stats: r => [
     { label: 'Total', value: r.total, format: 'shorthand' },
-    { label: 'HPS', value: r.value, format: 'shorthand', bold: true },
     { label: 'Overheal', value: r.overheal ?? 0, format: 'shorthand' },
+    { label: 'HPS', value: r.value, format: 'shorthand', bold: true },
   ],
 }
 
 const INTERRUPTS_CONFIG: MetricConfig = {
-  labels: ['Count', 'Spells', '—'],
+  labels: ['Count', 'Spells'],
   stats: r => [
     { label: 'Count', value: r.value, format: 'integer', bold: true },
     { label: 'Spells', value: r.distinctAbilities ?? 0, format: 'integer' },
-    { label: '—', value: 0, format: 'integer' },
   ],
 }
 
@@ -185,12 +187,12 @@ function computeActivePct(player: PlayerSnapshot | undefined, duration: number):
   return Math.max(0, Math.min(100, pct))
 }
 
-function PlayerColumnHeader({ labels, showActive }: { labels: [string, string, string]; showActive: boolean }) {
+function PlayerColumnHeader({ labels, showActive }: { labels: string[]; showActive: boolean }) {
   return (
     <div
       style={{
         display: 'grid',
-        gridTemplateColumns: PLAYER_GRID_COLUMNS,
+        gridTemplateColumns: playerGridColumns(labels.length),
         alignItems: 'center',
         gap: 12,
         padding: '6px 14px',
@@ -201,9 +203,9 @@ function PlayerColumnHeader({ labels, showActive }: { labels: [string, string, s
       <HeaderCell>Unit</HeaderCell>
       <HeaderCell />
       <HeaderCell align="right">{showActive ? 'Active' : ''}</HeaderCell>
-      <HeaderCell align="right">{labels[0]}</HeaderCell>
-      <HeaderCell align="right">{labels[1]}</HeaderCell>
-      <HeaderCell align="right">{labels[2]}</HeaderCell>
+      {labels.map((l, i) => (
+        <HeaderCell key={i} align="right">{l}</HeaderCell>
+      ))}
     </div>
   )
 }
@@ -246,7 +248,7 @@ function FullPlayerRowImpl({
     <div
       style={{
         display: 'grid',
-        gridTemplateColumns: PLAYER_GRID_COLUMNS,
+        gridTemplateColumns: playerGridColumns(stats.length),
         alignItems: 'center',
         gap: 12,
         minHeight: 36,

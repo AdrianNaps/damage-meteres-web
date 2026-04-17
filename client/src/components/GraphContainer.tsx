@@ -8,6 +8,7 @@ interface Props {
   metric: 'damage' | 'healing' | 'deaths' | 'interrupts'
   players: Record<string, PlayerSnapshot>
   duration: number
+  inactive?: boolean
 }
 
 const PAD = { top: 4, right: 8, bottom: 16, left: 40 }
@@ -96,7 +97,7 @@ interface BarData {
 
 interface BarHoverState { bucket: number; seriesIndex: number; xCss: number }
 
-export function GraphContainer({ metric, players, duration }: Props) {
+export function GraphContainer({ metric, players, duration, inactive }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const playerSpecs = useStore(s => s.playerSpecs)
@@ -244,6 +245,11 @@ export function GraphContainer({ metric, players, duration }: Props) {
     ctx.scale(dpr, dpr)
     ctx.clearRect(0, 0, w, h)
 
+    if (inactive) {
+      drawInactiveState(ctx, w, h)
+      return
+    }
+
     const plotW = w - PAD.left - PAD.right
     const plotH = h - PAD.top - PAD.bottom
 
@@ -255,7 +261,7 @@ export function GraphContainer({ metric, players, duration }: Props) {
     } else {
       drawEmptyState(ctx, w, h)
     }
-  }, [isBar, barData, lineData, focused, duration, timeOffset, hover, barHover])
+  }, [isBar, barData, lineData, focused, duration, timeOffset, hover, barHover, inactive])
 
   useEffect(() => {
     draw()
@@ -275,6 +281,7 @@ export function GraphContainer({ metric, players, duration }: Props) {
     : 'Interrupts Over Time'
 
   function handleMouseMove(e: React.MouseEvent<HTMLCanvasElement>) {
+    if (inactive) return
     const rect = e.currentTarget.getBoundingClientRect()
     const plotW = rect.width - PAD.left - PAD.right
     const xInPlot = e.clientX - rect.left - PAD.left
@@ -384,7 +391,7 @@ export function GraphContainer({ metric, players, duration }: Props) {
           {title}
         </div>
         <div style={{ display: 'flex', gap: 12 }}>
-          {legendEntries.map(e => {
+          {!inactive && legendEntries.map(e => {
             const isFocused = isBar || focused.has(e.key)
             return (
               <div
@@ -763,4 +770,40 @@ function drawEmptyState(ctx: CanvasRenderingContext2D, w: number, h: number) {
   ctx.font = SANS_FONT
   ctx.textAlign = 'center'
   ctx.fillText('None', w / 2, h / 2 + 4)
+}
+
+function drawInactiveState(ctx: CanvasRenderingContext2D, w: number, h: number) {
+  const plotW = w - PAD.left - PAD.right
+  const plotH = h - PAD.top - PAD.bottom
+
+  // Faint grid lines — same structure as active graph but much subtler.
+  ctx.strokeStyle = 'rgba(255,255,255,0.025)'
+  ctx.lineWidth = 1
+  for (let i = 0; i <= 4; i++) {
+    const y = PAD.top + plotH * (1 - i / 4)
+    ctx.beginPath()
+    ctx.moveTo(PAD.left, y)
+    ctx.lineTo(PAD.left + plotW, y)
+    ctx.stroke()
+  }
+
+  // Decorative sine wave — gives visual rhythm without implying real data.
+  ctx.strokeStyle = 'rgba(255,255,255,0.04)'
+  ctx.lineWidth = 1.5
+  ctx.beginPath()
+  const mid = PAD.top + plotH * 0.5
+  const amp = plotH * 0.18
+  for (let x = 0; x <= plotW; x++) {
+    const t = x / plotW
+    const y = mid - Math.sin(t * Math.PI * 2.5) * amp * (0.5 + 0.5 * Math.sin(t * Math.PI))
+    if (x === 0) ctx.moveTo(PAD.left + x, y)
+    else ctx.lineTo(PAD.left + x, y)
+  }
+  ctx.stroke()
+
+  // Label
+  ctx.fillStyle = 'rgba(168,170,180,0.45)'
+  ctx.font = SANS_FONT
+  ctx.textAlign = 'center'
+  ctx.fillText('Select a segment to view graph', w / 2, h / 2 + 4)
 }
