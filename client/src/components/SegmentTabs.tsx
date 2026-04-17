@@ -37,10 +37,7 @@ export function SegmentTabs() {
 
   if (allItems.length === 0) {
     return (
-      <div
-        className="flex items-center gap-0 px-5 pt-2 pb-1"
-        style={{ borderBottom: '1px solid var(--border-subtle)' }}
-      >
+      <div className="flex items-center gap-0 px-5 pt-2 pb-1">
         <OpenLogButton labeled onClick={() => setLogPickerOpen(true)} />
       </div>
     )
@@ -91,9 +88,10 @@ export function SegmentTabs() {
   const activeSegments = activeKeyRun?.segments ?? activeBossSection?.segments ?? []
 
   return (
-    <div className="flex flex-col" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+    <div className="flex flex-col">
       {/* Top tier — instances from all sources, time-ordered */}
-      <div className="flex gap-0 px-5 pt-2 overflow-x-auto items-end">
+      <div className="px-5 pt-2">
+        <div className="flex gap-0 overflow-x-auto items-end" style={{ overflowY: 'hidden' }}>
         {allItems.map(({ item, sourceId }) => {
           if (item.type === 'key_run') {
             const isLive = sourceId === LIVE_SOURCE_ID && item.endTime === null
@@ -170,14 +168,13 @@ export function SegmentTabs() {
           )
         })}
         <OpenLogButton labeled={false} onClick={() => setLogPickerOpen(true)} />
+        </div>
       </div>
 
       {/* Bottom tier — segments within the active container */}
       {activeSegments.length > 0 && (
-        <div
-          className="flex gap-0 px-5 pt-0.5 pb-0.5 overflow-x-auto items-end"
-          style={{ paddingLeft: 28 }}
-        >
+        <div className="px-5 pt-0.5 pb-0.5" style={{ paddingLeft: 28 }}>
+          <div className="flex gap-0 overflow-x-auto items-end" style={{ overflowY: 'hidden' }}>
           <TabButton
             active={
               selectedId === null &&
@@ -206,6 +203,7 @@ export function SegmentTabs() {
               {seg.success === false && <span style={{ color: 'var(--status-wipe)', marginLeft: 4 }}>&#10007;</span>}
             </TabButton>
           ))}
+          </div>
         </div>
       )}
     </div>
