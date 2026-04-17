@@ -100,7 +100,7 @@ export function SegmentTabs() {
               <TabButton
                 key={`${sourceId}:${item.keyRunId}`}
                 active={isActive}
-                accentColor="#d97706"
+                accentColor="var(--accent-keyrun)"
                 onClick={() => selectKeyRun(sourceId, item.keyRunId)}
               >
                 {isLive && (
@@ -139,7 +139,7 @@ export function SegmentTabs() {
               <TabButton
                 key={`${sourceId}:${item.bossSectionId}`}
                 active={isActive}
-                accentColor="#8b5cf6"
+                accentColor="var(--accent-boss)"
                 onClick={() => selectBossSection(sourceId, item.bossSectionId)}
               >
                 <span style={{ fontWeight: 500 }}>{item.encounterName}</span>

@@ -187,7 +187,7 @@ export function LogPicker() {
               fontSize: 11,
               color: 'var(--text-secondary)',
               background: 'rgba(234, 179, 8, 0.06)',
-              borderBottom: '1px solid color-mix(in srgb, #eab308 20%, transparent)',
+              borderBottom: '1px solid color-mix(in srgb, var(--health-medium) 20%, transparent)',
             }}
           >
             ⚠ At max ({ARCHIVE_CAP}) open archives. Opening another will close{' '}

@@ -28,7 +28,7 @@ export function EncounterHeader() {
             flexShrink: 0,
             background:
               wsStatus === 'connected' ? 'var(--status-kill)'
-              : wsStatus === 'connecting' ? '#eab308'
+              : wsStatus === 'connecting' ? 'var(--health-medium)'
               : 'var(--status-wipe)',
           }}
         />
