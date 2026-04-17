@@ -442,6 +442,9 @@ export function computeEnemyPlayers(
         byKicked: {},
         records: a.interrupts,
       },
+      // Enemy perspective doesn't render the Active column, but the field is
+      // required by PlayerSnapshot — fill with 0.
+      activeSec: 0,
     }
   }
 

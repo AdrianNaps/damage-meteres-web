@@ -102,6 +102,7 @@ export interface PlayerSnapshot {
   healing: { total: number; overheal: number; spells: Record<string, SpellHealStats>; targets: Record<string, TargetHealStats> }
   deaths: PlayerDeathRecord[]
   interrupts: InterruptData
+  activeSec: number
 }
 
 export interface ClientEvent {

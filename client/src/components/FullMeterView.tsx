@@ -175,15 +175,13 @@ function FilteredPlayerTable({
   )
 }
 
-// Percentage of the fight the player was contributing. Without resurrect data,
-// we treat the latest death as the moment they stopped helping — accurate for
-// single-segment views and a conservative lower bound for aggregated key runs
-// where `combatElapsed` is relative to an individual segment.
+// Percentage of the fight the player was contributing. The server pre-computes
+// `activeSec` per-segment so aggregated views (key run / boss section) correctly
+// reactivate the player on each new pull, and within a segment we detect rezzes
+// via post-death activity. See server/store.ts `segmentActiveSec`.
 function computeActivePct(player: PlayerSnapshot | undefined, duration: number): number | null {
   if (!player || duration <= 0) return null
-  if (player.deaths.length === 0) return 100
-  const last = player.deaths.reduce((a, b) => (a.timeOfDeath > b.timeOfDeath ? a : b))
-  const pct = (last.combatElapsed / duration) * 100
+  const pct = (player.activeSec / duration) * 100
   return Math.max(0, Math.min(100, pct))
 }
 

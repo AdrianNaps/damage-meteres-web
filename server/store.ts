@@ -151,6 +151,24 @@ export interface Segment {
 export interface PlayerSnapshot extends Omit<PlayerData, 'firstDamageTime' | 'lastDamageTime' | 'firstHealTime' | 'lastHealTime'> {
   dps: number
   hps: number
+  // Seconds the player was alive-and-contributing, summed per segment so each
+  // pull "reactivates" them. Within a segment: if they acted (damage/heal) after
+  // their last death they must have rezzed, so we credit the full segment; if
+  // not, we credit up to their last death. Drives the Active % column.
+  activeSec: number
+}
+
+// Per-segment contribution to a player's activeSec. See PlayerSnapshot.activeSec
+// for the model. `segStartMs` is seg.firstEventTime ?? seg.startTime; `segDurSec`
+// is (segEnd - segStart)/1000. PlayerData `lastDamageTime`/`lastHealTime` give us
+// "did they act after their last death?" without needing to walk events.
+export function segmentActiveSec(sp: PlayerData, segStartMs: number, segDurSec: number): number {
+  if (sp.deaths.length === 0) return segDurSec
+  const lastDeathMs = sp.deaths.reduce((m, d) => Math.max(m, d.timeOfDeath), 0)
+  const lastActionMs = Math.max(sp.lastDamageTime ?? 0, sp.lastHealTime ?? 0)
+  if (lastActionMs > lastDeathMs) return segDurSec  // rezzed and kept going
+  const lastDeathElapsed = (lastDeathMs - segStartMs) / 1000
+  return Math.max(0, Math.min(segDurSec, lastDeathElapsed))
 }
 
 export interface SegmentSnapshot extends Omit<Segment, 'players' | 'supportOwnedSpellIds'> {
@@ -439,12 +457,20 @@ export class SegmentStore {
 
   private _mergeSegments(segs: Segment[], overrideDurationSec?: number): { players: Record<string, PlayerSnapshot>; activeDurationSec: number } {
     const merged: Record<string, PlayerData> = {}
+    // Per-player active seconds accumulator — reset-per-segment so a player who
+    // dies in pull 1 still earns full credit for pull 2 where they rezzed.
+    const activeSecByName: Record<string, number> = {}
     let activeDurationSec = 0
 
     for (const seg of segs) {
       const start = seg.firstEventTime ?? seg.startTime
       const end   = seg.endTime ?? seg.lastEventTime ?? start
-      activeDurationSec += (end - start) / 1000
+      const segDurSec = (end - start) / 1000
+      activeDurationSec += segDurSec
+
+      for (const [name, sp] of Object.entries(seg.players)) {
+        activeSecByName[name] = (activeSecByName[name] ?? 0) + segmentActiveSec(sp, start, segDurSec)
+      }
 
       for (const [name, player] of Object.entries(seg.players)) {
         if (!merged[name]) {
@@ -640,6 +666,7 @@ export class SegmentStore {
         ...rest,
         dps: durationSec > 0 ? player.damage.total / durationSec : 0,
         hps: durationSec > 0 ? player.healing.total / durationSec : 0,
+        activeSec: activeSecByName[name] ?? 0,
       }
     }
     return { players, activeDurationSec }
@@ -701,6 +728,7 @@ export class SegmentStore {
         ...rest,
         dps: duration > 0 ? player.damage.total / duration : 0,
         hps: duration > 0 ? player.healing.total / duration : 0,
+        activeSec: segmentActiveSec(player, start, duration),
       }
     }
 
