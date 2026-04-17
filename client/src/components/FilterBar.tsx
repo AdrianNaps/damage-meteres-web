@@ -257,7 +257,7 @@ const PickerButton = forwardRef<HTMLButtonElement, {
       onClick={onClick}
       style={{
         display: 'inline-flex',
-        alignItems: 'center',
+        alignItems: 'baseline',
         gap: 6,
         fontFamily: 'var(--font-sans)',
         fontSize: 11,
