@@ -13,6 +13,10 @@ export const GRAPH_GROUP_AVG_KEY = '__group_avg__'
 export type Metric = 'damage' | 'healing' | 'deaths' | 'interrupts' | 'buffs'
 export type Mode = 'summary' | 'full'
 export type Perspective = 'allies' | 'enemies'
+// Healing lens. Effective = treat overheal as noise (column hidden, bar solid,
+// ranked by HPS). Raw = surface overheal everywhere (extra column with %raw
+// suffix, bar stacks effective + overheal, ranked by raw throughput).
+export type HealingLens = 'effective' | 'raw'
 export type FilterAxis = 'Source' | 'Target' | 'Ability'
 export type SourceKind = 'live' | 'archive'
 
@@ -189,9 +193,13 @@ interface AppState {
   bootInfo: BootInfoState | null
   settingsOpen: boolean
   logPickerOpen: boolean
-  // Per-metric view options. User preference, not scope- or source-scoped:
-  // flipping the toggle should persist across segments and sources.
-  healingShowOverheal: boolean
+  // Per-metric "lens": a secondary axis that changes how a single metric's
+  // rows are framed (columns, bar fill, and ranking). Distinct from `metric`
+  // (Damage/Healing/…) and `mode` (Summary/Full). User preference, not scope-
+  // or source-scoped: flipping the lens should persist across segments and
+  // sources. Today only Healing has a lens; other metrics will gain their own
+  // as needs appear (e.g. damage dealt vs. taken).
+  healingLens: HealingLens
 
   // Per-source-state setters. sourceId defaults to activeSourceId so existing
   // call sites (component clicks) keep working unchanged. WS message handlers
@@ -223,7 +231,7 @@ interface AppState {
   setBootInfo: (info: BootInfoState | null) => void
   setSettingsOpen: (open: boolean) => void
   setLogPickerOpen: (open: boolean) => void
-  setHealingShowOverheal: (show: boolean) => void
+  setHealingLens: (lens: HealingLens) => void
   refreshBootInfo: () => Promise<void>
 
   // Source registry actions.
@@ -430,7 +438,7 @@ export const useStore = create<AppState>((set) => ({
   bootInfo: null,
   settingsOpen: false,
   logPickerOpen: false,
-  healingShowOverheal: false,
+  healingLens: 'effective',
 
   setSelectedSegment: (s, sourceId) => set(state => {
     const sid = sourceId ?? state.activeSourceId
@@ -846,7 +854,7 @@ export const useStore = create<AppState>((set) => ({
   setBootInfo: (info) => set({ bootInfo: info }),
   setSettingsOpen: (open) => set({ settingsOpen: open }),
   setLogPickerOpen: (open) => set({ logPickerOpen: open }),
-  setHealingShowOverheal: (show) => set({ healingShowOverheal: show }),
+  setHealingLens: (lens) => set({ healingLens: lens }),
 
   setActiveSource: (sourceId) => set(state => {
     if (sourceId === state.activeSourceId) return {}

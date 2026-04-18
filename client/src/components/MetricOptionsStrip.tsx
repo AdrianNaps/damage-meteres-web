@@ -28,8 +28,8 @@ export function MetricOptionsStrip() {
 }
 
 function HealingOptions() {
-  const show = useStore(s => s.healingShowOverheal)
-  const setShow = useStore(s => s.setHealingShowOverheal)
+  const lens = useStore(s => s.healingLens)
+  const setLens = useStore(s => s.setHealingLens)
   return (
     <div style={{
       display: 'inline-flex',
@@ -37,13 +37,13 @@ function HealingOptions() {
       borderRadius: 3,
       overflow: 'hidden',
     }}>
-      <OverhealSegment label="Effective" active={!show} onClick={() => setShow(false)} isFirst />
-      <OverhealSegment label="Include overheal" active={show} onClick={() => setShow(true)} />
+      <LensSegment label="Effective" active={lens === 'effective'} onClick={() => setLens('effective')} isFirst />
+      <LensSegment label="Raw"       active={lens === 'raw'}       onClick={() => setLens('raw')} />
     </div>
   )
 }
 
-function OverhealSegment({
+function LensSegment({
   label,
   active,
   onClick,

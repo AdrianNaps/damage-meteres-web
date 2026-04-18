@@ -185,39 +185,45 @@ function FilteredPlayerTable({
   setSelectedPlayer: (name: string | null, drillMetric?: Metric) => void
 }) {
   const playerSpecs = useStore(s => s.playerSpecs)
-  const healingShowOverheal = useStore(s => s.healingShowOverheal)
+  const healingLens = useStore(s => s.healingLens)
 
-  const rows = useMemo(
+  const baseRows = useMemo(
     () => computeUnitRows(events, perspective, filters, category, allies, duration),
     [events, perspective, filters, category, allies, duration]
   )
 
-  const showOverheal = category === 'healing' && healingShowOverheal
+  const rawLens = category === 'healing' && healingLens === 'raw'
   const config =
     category === 'damage'     ? DAMAGE_CONFIG
     : category === 'interrupts' ? INTERRUPTS_CONFIG
-    : showOverheal            ? HEALING_WITH_OVERHEAL_CONFIG
+    : rawLens                 ? HEALING_WITH_OVERHEAL_CONFIG
     : HEALING_EFFECTIVE_CONFIG
 
-  const totalValue = rows.reduce((sum, r) => sum + r.value, 0)
+  // Under the raw lens we re-rank by raw throughput (effective + overheal per
+  // second) and stack the bar to match, so visual rank lines up with numeric
+  // rank. computeUnitRows returns rows sorted by effective HPS; we don't push
+  // the lens down into that util because the sort is the only thing that
+  // differs — keeping it component-side avoids polluting the filters cache key.
+  // The re-sort produces a fresh array, so the cached base array stays intact.
+  // barScale and overhealPerSec are folded into the same useMemo so the row,
+  // its scale contribution, and its overheal-per-second stay aligned by index.
+  const { rows, barScale, overhealPerSec } = useMemo(() => {
+    if (!rawLens || duration <= 0) {
+      return { rows: baseRows, barScale: baseRows[0]?.value ?? 0, overhealPerSec: null as number[] | null }
+    }
+    const paired = baseRows.map(r => {
+      const oh = (r.overheal ?? 0) / duration
+      return { r, oh, raw: r.value + oh }
+    })
+    paired.sort((a, b) => b.raw - a.raw)
+    return {
+      rows: paired.map(p => p.r),
+      barScale: paired[0]?.raw ?? 0,
+      overhealPerSec: paired.map(p => p.oh),
+    }
+  }, [baseRows, rawLens, duration])
 
-  // When overheal is on the bar stacks effective + overheal, so the scale must
-  // expand to include the top row's overheal too — otherwise the stacked bar
-  // would clip past 100%. Ranking stays by effective HPS (row order unchanged).
-  // Computed in one pass so the per-second overheal values are available at
-  // row render time without recomputing them from cumulative overheal/duration.
-  const { barScale, overhealPerSec } = useMemo(() => {
-    if (!showOverheal || duration <= 0) {
-      return { barScale: rows[0]?.value ?? 0, overhealPerSec: null as number[] | null }
-    }
-    const ohs = rows.map(r => (r.overheal ?? 0) / duration)
-    let scale = 0
-    for (let i = 0; i < rows.length; i++) {
-      const stacked = rows[i].value + ohs[i]
-      if (stacked > scale) scale = stacked
-    }
-    return { barScale: scale, overhealPerSec: ohs }
-  }, [rows, showOverheal, duration])
+  const totalValue = rows.reduce((sum, r) => sum + r.value, 0)
 
   // Only allies are shown in the drill panel; enemy rows have no entry in
   // `currentView.players`, so selecting them would render an empty breakdown.
