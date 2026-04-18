@@ -30,12 +30,18 @@ const DEATHS_GRID_COLUMNS = '32px 60px 180px minmax(140px, 1fr) 160px 90px'
 type StatFormat = 'shorthand' | 'integer'
 type NumericStat = { label: string; value: number; format: StatFormat; bold?: boolean; suffix?: string }
 
+// Per-row auxiliary values threaded into config.stats — populated by
+// FilteredPlayerTable's lens-aware useMemo so each config can read whichever
+// it needs. Adding a new lens means adding a field here, not changing every
+// config's signature. Optional so default-lens configs can ignore them.
+interface AuxStats {
+  overhealPerSec?: number    // healing-raw: effective + overheal = raw HPS
+  mitigatedPerSec?: number   // damageTaken-mitigated: absorbed + blocked per second
+}
+
 interface MetricConfig {
   labels: string[]
-  // overhealPerSec is threaded through so the raw-lens healing config can
-  // compute raw HPS locally. Other configs accept fewer params (TS is happy
-  // with that via function-type param contravariance) or ignore the value.
-  stats: (row: UnitRow, overhealPerSec: number) => NumericStat[]
+  stats: (row: UnitRow, aux: AuxStats) => NumericStat[]
 }
 
 const DAMAGE_CONFIG: MetricConfig = {
@@ -61,19 +67,58 @@ const HEALING_EFFECTIVE_CONFIG: MetricConfig = {
 
 const HEALING_RAW_CONFIG: MetricConfig = {
   labels: ['Total', 'Overheal', 'HPS'],
-  stats: (r, ohps) => {
+  stats: (r, aux) => {
     const oh = r.overheal ?? 0
     const rawTotal = r.total + oh
     // Share of raw throughput that was overheal. Guard rawTotal===0 so a row
     // with zero healing doesn't render "(NaN%)".
     const ohPct = rawTotal > 0 ? (oh / rawTotal) * 100 : 0
-    const rawHps = r.value + ohps
+    const rawHps = r.value + (aux.overhealPerSec ?? 0)
     return [
       { label: 'Total', value: rawTotal, format: 'shorthand' },
       { label: 'Overheal', value: oh, format: 'shorthand', suffix: rawTotal > 0 ? `(${Math.round(ohPct)}%)` : undefined },
       { label: 'HPS', value: rawHps, format: 'shorthand', bold: true },
     ]
   },
+}
+
+// Three shapes for Damage Taken, one per lens.
+// Incoming (default) reports gross (landed + mitigated) Total and DTPS, plus
+//   a Mitigated column with %gross suffix so the share of incoming that was
+//   prevented reads at a glance. Bar stacks landed (primary fill) + mitigated
+//   (lighter shade) to the same gross scale — mirrors healing-raw's effective
+//   + overheal stack.
+// Effective reports landed damage only — what actually hit health bars.
+// Mitigated reports prevented damage only — "how much did the cooldowns eat."
+const DAMAGE_TAKEN_INCOMING_CONFIG: MetricConfig = {
+  labels: ['Total', 'Mitigated', 'DTPS'],
+  stats: (r, aux) => {
+    const mit = r.mitigated ?? 0
+    const grossTotal = r.total + mit
+    const mitPct = grossTotal > 0 ? (mit / grossTotal) * 100 : 0
+    const grossDtps = r.value + (aux.mitigatedPerSec ?? 0)
+    return [
+      { label: 'Total', value: grossTotal, format: 'shorthand' },
+      { label: 'Mitigated', value: mit, format: 'shorthand', suffix: grossTotal > 0 ? `(${Math.round(mitPct)}%)` : undefined },
+      { label: 'DTPS', value: grossDtps, format: 'shorthand', bold: true },
+    ]
+  },
+}
+
+const DAMAGE_TAKEN_EFFECTIVE_CONFIG: MetricConfig = {
+  labels: ['Total', 'DTPS'],
+  stats: r => [
+    { label: 'Total', value: r.total, format: 'shorthand' },
+    { label: 'DTPS', value: r.value, format: 'shorthand', bold: true },
+  ],
+}
+
+const DAMAGE_TAKEN_MITIGATED_CONFIG: MetricConfig = {
+  labels: ['Mitigated', 'DTPS'],
+  stats: (r, aux) => [
+    { label: 'Mitigated', value: r.mitigated ?? 0, format: 'shorthand' },
+    { label: 'DTPS', value: aux.mitigatedPerSec ?? 0, format: 'shorthand', bold: true },
+  ],
 }
 
 const INTERRUPTS_CONFIG: MetricConfig = {
@@ -183,7 +228,7 @@ function FilteredPlayerTable({
   events: Parameters<typeof computeUnitRows>[0]
   perspective: Parameters<typeof computeUnitRows>[1]
   filters: Parameters<typeof computeUnitRows>[2]
-  category: 'damage' | 'healing' | 'interrupts'
+  category: 'damage' | 'damageTaken' | 'healing' | 'interrupts'
   allies: Record<string, PlayerSnapshot>
   duration: number
   selectedPlayer: string | null
@@ -191,44 +236,126 @@ function FilteredPlayerTable({
 }) {
   const playerSpecs = useStore(s => s.playerSpecs)
   const healingLens = useStore(s => s.healingLens)
+  const damageTakenLens = useStore(s => s.damageTakenLens)
 
   const baseRows = useMemo(
     () => computeUnitRows(events, perspective, filters, category, allies, duration),
     [events, perspective, filters, category, allies, duration]
   )
 
-  const rawLens = category === 'healing' && healingLens === 'raw'
+  // Resolve the active lens. 'default' = rank & bar use row.value directly
+  // with no secondary stack. 'healingRaw' = bar stacks effective + overheal,
+  // ranked by raw. 'damageTakenIncoming' = bar stacks landed + mitigated,
+  // ranked by gross (landed + mitigated/sec). 'damageTakenMitigated' = bar
+  // and ranking both swap to mitigated/sec (no stack).
+  type LensMode = 'default' | 'healingRaw' | 'damageTakenIncoming' | 'damageTakenMitigated'
+  const lensMode: LensMode =
+    category === 'healing' && healingLens === 'raw' ? 'healingRaw'
+    : category === 'damageTaken' && damageTakenLens === 'incoming' ? 'damageTakenIncoming'
+    : category === 'damageTaken' && damageTakenLens === 'mitigated' ? 'damageTakenMitigated'
+    : 'default'
+
   const config =
-    category === 'damage'     ? DAMAGE_CONFIG
-    : category === 'interrupts' ? INTERRUPTS_CONFIG
-    : rawLens                 ? HEALING_RAW_CONFIG
+    category === 'damage'                 ? DAMAGE_CONFIG
+    : category === 'interrupts'           ? INTERRUPTS_CONFIG
+    : category === 'damageTaken'          ? (lensMode === 'damageTakenMitigated' ? DAMAGE_TAKEN_MITIGATED_CONFIG
+                                            : lensMode === 'damageTakenIncoming' ? DAMAGE_TAKEN_INCOMING_CONFIG
+                                            : DAMAGE_TAKEN_EFFECTIVE_CONFIG)
+    : lensMode === 'healingRaw'           ? HEALING_RAW_CONFIG
     : HEALING_EFFECTIVE_CONFIG
 
-  // Under the raw lens we re-rank by raw throughput (effective + overheal per
-  // second) and stack the bar to match, so visual rank lines up with numeric
-  // rank. computeUnitRows returns rows sorted by effective HPS; we don't push
-  // the lens down into that util because the sort is the only thing that
-  // differs — keeping it component-side avoids polluting the filters cache key.
-  // The re-sort produces a fresh array, so the cached base array stays intact.
-  // barScale and overhealPerSec are folded into the same useMemo so the row,
-  // its scale contribution, and its overheal-per-second stay aligned by index.
-  const { rows, barScale, overhealPerSec } = useMemo(() => {
-    if (!rawLens || duration <= 0) {
-      return { rows: baseRows, barScale: baseRows[0]?.value ?? 0, overhealPerSec: null as number[] | null }
+  // Under a non-default lens we re-rank the rows and rescale the bar. Per-row
+  // derived values are folded into the same useMemo so row index, scale
+  // contribution, and derived numbers stay aligned. computeUnitRows stays
+  // lens-agnostic so its cache key doesn't have to cover the lens dimension.
+  //
+  // Per-row value bundle:
+  //   primaryPerSec   — bar's main fill (darker opacity)
+  //   secondaryPerSec — bar's stacked lighter extension (0 = no stack)
+  //   overhealPerSec  — threaded to HEALING_RAW_CONFIG.stats for raw HPS
+  //   mitigatedPerSec — threaded to DAMAGE_TAKEN_{INCOMING,MITIGATED}_CONFIG
+  //
+  // Lens mapping:
+  //   default              → primary = row.value, secondary = 0
+  //   healingRaw           → primary = row.value (effective HPS),
+  //                          secondary = overheal/sec; ranked by raw
+  //   damageTakenIncoming  → primary = row.value (landed DTPS),
+  //                          secondary = mitigated/sec; ranked by gross
+  //   damageTakenMitigated → primary = mitigated/sec, secondary = 0;
+  //                          ranked by mitigated
+  const { rows, barScale, primaryPerSec, secondaryPerSec, overhealPerSec, mitigatedPerSec } = useMemo<{
+    rows: UnitRow[]
+    barScale: number
+    primaryPerSec: number[]
+    secondaryPerSec: number[]
+    overhealPerSec: number[] | null
+    mitigatedPerSec: number[] | null
+  }>(() => {
+    if (lensMode === 'default' || duration <= 0) {
+      return {
+        rows: baseRows,
+        barScale: baseRows[0]?.value ?? 0,
+        primaryPerSec: baseRows.map(r => r.value),
+        secondaryPerSec: baseRows.map(() => 0),
+        overhealPerSec: null,
+        mitigatedPerSec: null,
+      }
     }
+    if (lensMode === 'healingRaw') {
+      const paired = baseRows.map(r => {
+        const oh = (r.overheal ?? 0) / duration
+        return { r, oh, raw: r.value + oh }
+      })
+      paired.sort((a, b) => b.raw - a.raw)
+      return {
+        rows: paired.map(p => p.r),
+        barScale: paired[0]?.raw ?? 0,
+        primaryPerSec: paired.map(p => p.r.value),
+        secondaryPerSec: paired.map(p => p.oh),
+        overhealPerSec: paired.map(p => p.oh),
+        mitigatedPerSec: null,
+      }
+    }
+    if (lensMode === 'damageTakenIncoming') {
+      const paired = baseRows.map(r => {
+        const mps = (r.mitigated ?? 0) / duration
+        return { r, mps, gross: r.value + mps }
+      })
+      paired.sort((a, b) => b.gross - a.gross)
+      return {
+        rows: paired.map(p => p.r),
+        barScale: paired[0]?.gross ?? 0,
+        primaryPerSec: paired.map(p => p.r.value),
+        secondaryPerSec: paired.map(p => p.mps),
+        overhealPerSec: null,
+        mitigatedPerSec: paired.map(p => p.mps),
+      }
+    }
+    // damageTakenMitigated
     const paired = baseRows.map(r => {
-      const oh = (r.overheal ?? 0) / duration
-      return { r, oh, raw: r.value + oh }
+      const mps = (r.mitigated ?? 0) / duration
+      return { r, mps }
     })
-    paired.sort((a, b) => b.raw - a.raw)
+    paired.sort((a, b) => b.mps - a.mps)
     return {
       rows: paired.map(p => p.r),
-      barScale: paired[0]?.raw ?? 0,
-      overhealPerSec: paired.map(p => p.oh),
+      barScale: paired[0]?.mps ?? 0,
+      primaryPerSec: paired.map(p => p.mps),
+      secondaryPerSec: paired.map(() => 0),
+      overhealPerSec: null,
+      mitigatedPerSec: paired.map(p => p.mps),
     }
-  }, [baseRows, rawLens, duration])
+  }, [baseRows, lensMode, duration])
 
-  const totalValue = rows.reduce((sum, r) => sum + r.value, 0)
+  // Row total (footer share %) tracks the lens so visual dominance matches the
+  // reported numbers. Sum of primary + secondary for the incoming lens (where
+  // "share of gross" is the meaningful unit), sum of primary alone otherwise
+  // — which is row.value under default/healingRaw and mitigated/sec under
+  // damageTakenMitigated (where primary is already mitigated).
+  const sumArr = (xs: number[]) => xs.reduce((s, v) => s + v, 0)
+  const totalValue = lensMode === 'damageTakenIncoming'
+    ? sumArr(primaryPerSec) + sumArr(secondaryPerSec)
+    : sumArr(primaryPerSec)
 
   // Only allies are shown in the drill panel; enemy rows have no entry in
   // `currentView.players`, so selecting them would render an empty breakdown.
@@ -251,22 +378,34 @@ function FilteredPlayerTable({
         {rows.length === 0 ? (
           <EmptyState text="No player data yet" />
         ) : (
-          rows.map((row, i) => (
-            <FullPlayerRow
-              key={row.name}
-              row={row}
-              rank={i + 1}
-              barScale={barScale}
-              totalValue={totalValue}
-              overhealPerSec={overhealPerSec ? overhealPerSec[i] : 0}
-              activePct={perspective === 'allies' ? computeActivePct(allies[row.name], duration) : null}
-              config={config}
-              specId={resolveSpecId(playerSpecs, row.name, row.specId)}
-              showActive={perspective === 'allies'}
-              isSelected={rowClickable && selectedPlayer === row.name}
-              onClick={rowClickable ? onRowClick : undefined}
-            />
-          ))
+          rows.map((row, i) => {
+            const primary = primaryPerSec[i] ?? row.value
+            const secondary = secondaryPerSec[i] ?? 0
+            // Incoming lens: "share of gross" lines up with the stacked bar's
+            // total width, matching what the user reads in Total/DTPS. Other
+            // lenses keep the established "share of primary" convention.
+            const shareNumerator = lensMode === 'damageTakenIncoming' ? primary + secondary : primary
+            return (
+              <FullPlayerRow
+                key={row.name}
+                row={row}
+                rank={i + 1}
+                barScale={barScale}
+                totalValue={totalValue}
+                primaryPerSec={primary}
+                secondaryPerSec={secondary}
+                shareNumerator={shareNumerator}
+                overhealPerSec={overhealPerSec ? overhealPerSec[i] : 0}
+                mitigatedPerSec={mitigatedPerSec ? mitigatedPerSec[i] : 0}
+                activePct={perspective === 'allies' ? computeActivePct(allies[row.name], duration) : null}
+                config={config}
+                specId={resolveSpecId(playerSpecs, row.name, row.specId)}
+                showActive={perspective === 'allies'}
+                isSelected={rowClickable && selectedPlayer === row.name}
+                onClick={rowClickable ? onRowClick : undefined}
+              />
+            )
+          })
         )}
       </div>
     </div>
@@ -319,7 +458,11 @@ function FullPlayerRowImpl({
   rank,
   barScale,
   totalValue,
+  primaryPerSec,
+  secondaryPerSec,
+  shareNumerator,
   overhealPerSec,
+  mitigatedPerSec,
   activePct,
   config,
   specId,
@@ -331,7 +474,11 @@ function FullPlayerRowImpl({
   rank: number
   barScale: number
   totalValue: number
-  overhealPerSec: number
+  primaryPerSec: number     // bar's primary fill — lens-aware
+  secondaryPerSec: number   // bar's stacked lighter extension (0 = no stack)
+  shareNumerator: number    // numerator for the bar-cell share%
+  overhealPerSec: number    // config.stats aux (healing-raw)
+  mitigatedPerSec: number   // config.stats aux (damageTaken incoming/mitigated)
   activePct: number | null
   config: MetricConfig
   specId: number | undefined
@@ -342,10 +489,10 @@ function FullPlayerRowImpl({
   const color = getClassColor(specId)
   const specIcon = specIconUrl(specId)
 
-  const fillPct = barScale > 0 ? (row.value / barScale) * 100 : 0
-  const overhealPct = barScale > 0 ? (overhealPerSec / barScale) * 100 : 0
-  const shareOfTotal = totalValue > 0 ? (row.value / totalValue) * 100 : 0
-  const stats = config.stats(row, overhealPerSec)
+  const fillPct = barScale > 0 ? (primaryPerSec / barScale) * 100 : 0
+  const secondaryPct = barScale > 0 ? (secondaryPerSec / barScale) * 100 : 0
+  const shareOfTotal = totalValue > 0 ? (shareNumerator / totalValue) * 100 : 0
+  const stats = config.stats(row, { overhealPerSec, mitigatedPerSec })
   const clickable = !!onClick
 
   return (
@@ -368,7 +515,7 @@ function FullPlayerRowImpl({
     >
       <RankCell rank={rank} />
       <PlayerNameCell name={row.name} color={color} specIcon={specIcon} />
-      <BarCell color={color} fillPct={fillPct} overhealPct={overhealPct} shareOfTotal={shareOfTotal} />
+      <BarCell color={color} fillPct={fillPct} secondaryPct={secondaryPct} shareOfTotal={shareOfTotal} />
       {showActive ? <ActiveCell pct={activePct} /> : <span />}
       {stats.map((s, i) => (
         <StatCell key={i} stat={s} />
@@ -580,14 +727,15 @@ function PlayerNameCell({
 function BarCell({
   color,
   fillPct,
-  overhealPct,
+  secondaryPct,
   shareOfTotal,
 }: {
   color: string
   fillPct: number
-  // Overheal segment stacked after the effective fill. 0 for non-healing metrics
-  // or when the overheal toggle is off.
-  overhealPct: number
+  // Secondary segment stacked after the primary fill with a lighter opacity.
+  // Healing-raw uses it for overheal; damageTaken-incoming uses it for
+  // mitigated. 0 for lenses/metrics without a stacked dimension.
+  secondaryPct: number
   shareOfTotal: number
 }) {
   return (
@@ -607,9 +755,9 @@ function BarCell({
           background: color,
           opacity: 0.85,
         }} />
-        {overhealPct > 0 && (
+        {secondaryPct > 0 && (
           <div style={{
-            width: `${overhealPct}%`,
+            width: `${secondaryPct}%`,
             height: '100%',
             background: color,
             opacity: 0.25,

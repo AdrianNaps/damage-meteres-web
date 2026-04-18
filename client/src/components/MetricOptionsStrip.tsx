@@ -22,6 +22,7 @@ export function MetricOptionsStrip() {
       <div />
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         {metric === 'healing' && <HealingOptions />}
+        {metric === 'damageTaken' && <DamageTakenOptions />}
       </div>
     </div>
   )
@@ -39,6 +40,23 @@ function HealingOptions() {
     }}>
       <LensSegment label="Effective"        active={lens === 'effective'} onClick={() => setLens('effective')} isFirst />
       <LensSegment label="Include overheal" active={lens === 'raw'}       onClick={() => setLens('raw')} />
+    </div>
+  )
+}
+
+function DamageTakenOptions() {
+  const lens = useStore(s => s.damageTakenLens)
+  const setLens = useStore(s => s.setDamageTakenLens)
+  return (
+    <div style={{
+      display: 'inline-flex',
+      border: '1px solid var(--border-default)',
+      borderRadius: 3,
+      overflow: 'hidden',
+    }}>
+      <LensSegment label="Incoming"  active={lens === 'incoming'}  onClick={() => setLens('incoming')} isFirst />
+      <LensSegment label="Effective" active={lens === 'effective'} onClick={() => setLens('effective')} />
+      <LensSegment label="Mitigated" active={lens === 'mitigated'} onClick={() => setLens('mitigated')} />
     </div>
   )
 }

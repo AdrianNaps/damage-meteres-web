@@ -114,6 +114,15 @@ export interface ClientEvent {
   spellId?: string
   amount?: number
   overheal?: number
+  // Damage-only mitigation fields. Omitted when zero (the common case) to
+  // keep the wire thin. See server/types.ts ClientEvent for the wire source.
+  absorbed?: number
+  blocked?: number
+  // Present only on `kind: 'damage'` events representing a full shield absorb.
+  // Required to disambiguate heavy-shield partial absorbs (absorbed > landed)
+  // from true full absorbs (both amount and absorbed equal the absorbed
+  // amount). Without it, `absorbed >= amount` misclassifies the former.
+  fullAbsorb?: boolean
 }
 
 // Classification bucket for a buff on the Full-mode buffs table. Must match

@@ -1,10 +1,10 @@
 import type { ClientEvent, PlayerSnapshot, AuraWindowWire, BuffSection } from '../types'
 import type { FilterState, Metric, Perspective } from '../store'
 
-// Shape returned for damage/healing/interrupts row lists. `value` is the sorted
-// metric (DPS/HPS/count); `total` is the raw sum before dividing by duration.
-// Secondary stats are populated per-category — fields kept optional so the
-// row renderer can stay metric-agnostic.
+// Shape returned for damage/healing/interrupts/damageTaken row lists. `value`
+// is the sorted metric (DPS/HPS/DTPS/count); `total` is the raw sum before
+// dividing by duration. Secondary stats are populated per-category — fields
+// kept optional so the row renderer can stay metric-agnostic.
 export interface UnitRow {
   name: string
   specId?: number
@@ -13,6 +13,10 @@ export interface UnitRow {
   casts?: number
   overheal?: number
   distinctAbilities?: number   // interrupts: # distinct abilities kicked (pre-filter: byKicked)
+  // damageTaken: total mitigated amount (absorbed + blocked) across all hits on
+  // this unit. Used by the Mitigated lens to re-rank and rescale the bar.
+  // Absent for other metrics.
+  mitigated?: number
 }
 
 // One row per death event in the Deaths view. Carries just enough for display;
@@ -53,18 +57,20 @@ export interface BuffRow {
   windowsByTarget: Record<string, AuraWindowWire[]>
 }
 
-// Maps a metric category to the event.kind that feeds it. Damage/healing are
-// 1:1; interrupts and deaths use their own event kinds. Buffs doesn't use
-// the events stream — it has its own aura-window feed — so callers walking
-// events must not reach this function with 'buffs'. FullMeterView branches
-// on metric before calling event-based aggregators.
+// Maps a metric category to the event.kind that feeds it. Damage and
+// damageTaken both feed from the 'damage' event kind — they diverge only in
+// the row subject (see rowSubject). Buffs doesn't use the events stream — it
+// has its own aura-window feed — so callers walking events must not reach
+// this function with 'buffs'. FullMeterView branches on metric before
+// calling event-based aggregators.
 function kindFor(category: Metric): ClientEvent['kind'] {
   switch (category) {
-    case 'damage':     return 'damage'
-    case 'healing':    return 'heal'
-    case 'interrupts': return 'interrupt'
-    case 'deaths':     return 'death'
-    case 'buffs':      throw new Error('kindFor(buffs) — buffs metric has no ClientEvent kind')
+    case 'damage':      return 'damage'
+    case 'damageTaken': return 'damage'
+    case 'healing':     return 'heal'
+    case 'interrupts':  return 'interrupt'
+    case 'deaths':      return 'death'
+    case 'buffs':       throw new Error('kindFor(buffs) — buffs metric has no ClientEvent kind')
   }
 }
 
@@ -77,9 +83,12 @@ function makeAllySet(allies: Record<string, PlayerSnapshot>): Set<string> {
 
 // The row subject for each category — who the row represents.
 // damage/healing/interrupts: source of the action (who dealt / healed / kicked)
-// deaths: destination (the victim) — UX wants "who died," not "who killed"
-function rowSubject(e: ClientEvent): string {
-  return e.kind === 'death' ? e.dst : e.src
+// deaths + damageTaken: destination (the victim / the unit taking damage) —
+// UX wants "who died" / "who was hit," not "who killed" / "who hit them."
+function rowSubject(e: ClientEvent, category: Metric): string {
+  if (e.kind === 'death') return e.dst
+  if (category === 'damageTaken') return e.dst
+  return e.src
 }
 
 // Shared AND-composition predicate. Matches the spec's includeEvent() exactly:
@@ -99,8 +108,8 @@ function passesFilters(e: ClientEvent, filters: FilterState, t0: number): boolea
   return true
 }
 
-function passesPerspective(e: ClientEvent, perspective: Perspective, allySet: Set<string>): boolean {
-  const subject = rowSubject(e)
+function passesPerspective(e: ClientEvent, category: Metric, perspective: Perspective, allySet: Set<string>): boolean {
+  const subject = rowSubject(e, category)
   const isAlly = allySet.has(subject)
   return perspective === 'allies' ? isAlly : !isAlly
 }
@@ -134,11 +143,13 @@ function getOrInit<K extends object, V>(cache: WeakMap<K, Map<string, V>>, key: 
   return sub
 }
 
+type UnitRowsCategory = 'damage' | 'damageTaken' | 'healing' | 'interrupts'
+
 export function computeUnitRows(
   events: ClientEvent[],
   perspective: Perspective,
   filters: FilterState,
-  category: 'damage' | 'healing' | 'interrupts',
+  category: UnitRowsCategory,
   allies: Record<string, PlayerSnapshot>,
   durationSec: number,
 ): UnitRow[] {
@@ -158,40 +169,63 @@ function computeUnitRowsImpl(
   events: ClientEvent[],
   perspective: Perspective,
   filters: FilterState,
-  category: 'damage' | 'healing' | 'interrupts',
+  category: UnitRowsCategory,
   allies: Record<string, PlayerSnapshot>,
   durationSec: number,
 ): UnitRow[] {
   const kind = kindFor(category)
   const allySet = makeAllySet(allies)
   const t0 = scopeT0(events)
-  type Bucket = { total: number; count: number; overheal: number; abilities: Set<string> }
+  type Bucket = { total: number; count: number; overheal: number; mitigated: number; abilities: Set<string> }
   const agg = new Map<string, Bucket>()
 
   for (const e of events) {
     if (e.kind !== kind) continue
-    if (!passesPerspective(e, perspective, allySet)) continue
+    if (!passesPerspective(e, category, perspective, allySet)) continue
     if (!passesFilters(e, filters, t0)) continue
 
-    const subject = rowSubject(e)
+    const subject = rowSubject(e, category)
     if (!subject) continue
 
     let bucket = agg.get(subject)
     if (!bucket) {
-      bucket = { total: 0, count: 0, overheal: 0, abilities: new Set() }
+      bucket = { total: 0, count: 0, overheal: 0, mitigated: 0, abilities: new Set() }
       agg.set(subject, bucket)
     }
-    bucket.total += e.amount ?? 0
+    if (category === 'damageTaken') {
+      // Fully-absorbed hits arrive on the wire with `amount === absorbed` — the
+      // server emits the absorbed amount as `amount` so Damage Done totals
+      // include shield-eaten hits (WCL parity), and flags the event with
+      // `fullAbsorb`. For damage-taken we want `effective = landed` (post-
+      // absorb), so strip the fully-absorbed portion back out here. Partial
+      // absorbs (even heavy-shield cases where absorbed > landed) keep
+      // `amount` as the landed portion.
+      const rawAmount = e.amount ?? 0
+      const absorbed = e.absorbed ?? 0
+      const blocked = e.blocked ?? 0
+      const effective = e.fullAbsorb ? 0 : rawAmount
+      bucket.total += effective
+      bucket.mitigated += absorbed + blocked
+    } else {
+      bucket.total += e.amount ?? 0
+    }
     bucket.count += 1
-    bucket.overheal += e.overheal ?? 0
+    if (category === 'healing')    bucket.overheal += e.overheal ?? 0
     if (category === 'interrupts') bucket.abilities.add(e.ability)
   }
 
   const rows: UnitRow[] = []
   for (const [name, bucket] of agg) {
     // Drop zero-contribution units — spec: "so a warrior with no healing
-    // doesn't show in the Healing view when Ability filters them out."
-    if (category === 'interrupts' ? bucket.count === 0 : bucket.total === 0) continue
+    // doesn't show in the Healing view when Ability filters them out." The
+    // drop test is category-specific: damageTaken keeps rows that only have
+    // mitigation (meaningful under the Mitigated/Incoming lens); interrupts
+    // counts hits rather than summed amount; everything else drops on total.
+    const shouldDrop =
+      category === 'interrupts'  ? bucket.count === 0
+      : category === 'damageTaken' ? (bucket.total === 0 && bucket.mitigated === 0)
+      : bucket.total === 0
+    if (shouldDrop) continue
 
     const value = category === 'interrupts'
       ? bucket.count
@@ -199,9 +233,10 @@ function computeUnitRowsImpl(
 
     const specId = allies[name]?.specId
     const row: UnitRow = { name, specId, value, total: bucket.total }
-    if (category === 'damage')     row.casts = bucket.count
-    if (category === 'healing')    row.overheal = bucket.overheal
-    if (category === 'interrupts') row.distinctAbilities = bucket.abilities.size
+    if (category === 'damage')      row.casts = bucket.count
+    if (category === 'healing')     row.overheal = bucket.overheal
+    if (category === 'interrupts')  row.distinctAbilities = bucket.abilities.size
+    if (category === 'damageTaken') row.mitigated = bucket.mitigated
     rows.push(row)
   }
 
@@ -239,7 +274,7 @@ function computeDeathRowsImpl(
 
   for (const e of events) {
     if (e.kind !== 'death') continue
-    if (!passesPerspective(e, perspective, allySet)) continue
+    if (!passesPerspective(e, 'deaths', perspective, allySet)) continue
     if (!passesFilters(e, filters, t0)) continue
 
     rows.push({
@@ -295,7 +330,7 @@ function computeAbilityUniverseImpl(
 
   for (const e of events) {
     if (e.kind !== kind) continue
-    if (!passesPerspective(e, perspective, allySet)) continue
+    if (!passesPerspective(e, category, perspective, allySet)) continue
     if (sourceFilter && !sourceFilter.includes(e.src)) continue
     if (targetFilter && !targetFilter.includes(e.dst)) continue
 
@@ -304,9 +339,18 @@ function computeAbilityUniverseImpl(
       bucket = { total: 0, count: 0, sources: new Map() }
       byAbility.set(e.ability, bucket)
     }
-    bucket.total += e.amount ?? 0
+    // Impact for the ability picker's %/ranking column. For damageTaken we
+    // rank by gross (landed + mitigated) to match the Incoming lens default —
+    // otherwise a heavy-shield ability that mostly hits into absorbs would
+    // rank below minor abilities that all landed. Full absorbs have
+    // `amount === absorbed`, so we'd double-count without the fullAbsorb
+    // strip. Other categories keep amount-as-landed ranking.
+    const abilityImpact = category === 'damageTaken'
+      ? (e.fullAbsorb ? 0 : (e.amount ?? 0)) + (e.absorbed ?? 0) + (e.blocked ?? 0)
+      : (e.amount ?? 0)
+    bucket.total += abilityImpact
     bucket.count += 1
-    bucket.sources.set(e.src, (bucket.sources.get(e.src) ?? 0) + (e.amount ?? 1))
+    bucket.sources.set(e.src, (bucket.sources.get(e.src) ?? 0) + (abilityImpact || 1))
   }
 
   // Impact metric: amount for damage/healing; count for interrupts/deaths.
@@ -343,7 +387,7 @@ export function hasMatchingData(
   const t0 = scopeT0(events)
   for (const e of events) {
     if (e.kind !== kind) continue
-    if (!passesPerspective(e, perspective, allySet)) continue
+    if (!passesPerspective(e, category, perspective, allySet)) continue
     if (!passesFilters(e, filters, t0)) continue
     return true
   }
@@ -384,7 +428,7 @@ function computeUnitUniverseImpl(
 
   for (const e of events) {
     if (e.kind !== kind) continue
-    if (!passesPerspective(e, perspective, allySet)) continue
+    if (!passesPerspective(e, category, perspective, allySet)) continue
     if (e.src) sources.add(e.src)
     if (e.dst) targets.add(e.dst)
   }
@@ -868,9 +912,14 @@ function projectSnapshot(
   return { total: snapshot.healing.total, rate: rateOf(snapshot.healing.total), spells, targets }
 }
 
+// Category accepted by the breakdown path. 'damage' = dealt by the subject;
+// 'damageTaken' = taken by the subject (subject is `e.dst`, "Targets" tab
+// shows attackers = `e.src`); 'heal' = healed by the subject.
+type BreakdownCategory = 'damage' | 'damageTaken' | 'heal'
+
 function computeAllPlayerBreakdowns(
   events: ClientEvent[],
-  kind: 'damage' | 'heal',
+  category: BreakdownCategory,
   filters: FilterState,
   durationSec: number,
   allies: Record<string, PlayerSnapshot>,
@@ -886,13 +935,19 @@ function computeAllPlayerBreakdowns(
   const timeWindow = filters.TimeWindow
   const t0 = scopeT0(events)
 
+  const kind: ClientEvent['kind'] = category === 'heal' ? 'heal' : 'damage'
+  // For damageTaken the row subject is the victim (dst), and the "Targets" tab
+  // of the drill panel shows the OTHER side of the hit — attackers (src).
+  const byTarget = category === 'damageTaken'
+
   for (const e of events) {
     if (e.kind !== kind) continue
     // The breakdown panel only ever opens on an ally row (FullMeterView gates
-    // enemy-perspective clicks), so bucketing enemy `src`s is wasted work that
-    // grows with trash count on M+ aggregates. Restricting to allies bounds
-    // memory at ~20 buckets regardless of fight size.
-    if (!allies[e.src]) continue
+    // enemy-perspective clicks), so bucketing enemy subjects is wasted work
+    // that grows with trash count on M+ aggregates. For damageTaken the
+    // subject is dst; for everything else it's src.
+    const subject = byTarget ? e.dst : e.src
+    if (!allies[subject]) continue
     if (sourceFilter && !sourceFilter.includes(e.src)) continue
     if (targetFilter && !targetFilter.includes(e.dst)) continue
     if (abilityFilter && !abilityFilter.includes(e.ability)) continue
@@ -900,13 +955,28 @@ function computeAllPlayerBreakdowns(
       const elapsedSec = (e.t - t0) / 1000
       if (elapsedSec < timeWindow.startSec || elapsedSec > timeWindow.endSec) continue
     }
-    const amount = e.amount ?? 0
-    if (amount <= 0) continue
 
-    let player = byPlayer.get(e.src)
+    // Effective-amount reinterpretation for damageTaken: the server's full-
+    // absorb re-emit path sets `fullAbsorb: true` and stuffs the absorb amount
+    // into both `amount` and `absorbed`. Strip it back out so a shield-eaten
+    // hit counts as 0 landed in the breakdown. Partial absorbs already have
+    // `amount` as the post-absorb landed portion — leave them.
+    let amount = e.amount ?? 0
+    if (byTarget && e.fullAbsorb) amount = 0
+    // For damage-dealt and heal we skip zero-amount events (noise). For
+    // damageTaken we keep them so the ability and attacker still surface in
+    // the drill panel with hitCount > 0 — otherwise a tank whose top-level
+    // row shows non-zero Mitigated (only fully-absorbed hits) would open an
+    // empty drill. The spell's Total stays 0 in that case; the row reads as
+    // "Ability X (N hits, 0 damage)" which still points the user at where
+    // the mitigation came from.
+    if (!byTarget && amount <= 0) continue
+    if (byTarget && amount < 0) continue
+
+    let player = byPlayer.get(subject)
     if (!player) {
       player = { total: 0, spells: new Map(), targets: new Map() }
-      byPlayer.set(e.src, player)
+      byPlayer.set(subject, player)
     }
     player.total += amount
 
@@ -920,15 +990,18 @@ function computeAllPlayerBreakdowns(
     }
     spell.total += amount
     spell.hitCount += 1
-    if (kind === 'heal') spell.overheal += e.overheal ?? 0
+    if (category === 'heal') spell.overheal += e.overheal ?? 0
 
-    let target = player.targets.get(e.dst)
+    // "Targets" tab name: the other side of the event. For damageTaken this is
+    // the attacker; for damage/heal it's the original target/recipient.
+    const otherName = byTarget ? e.src : e.dst
+    let target = player.targets.get(otherName)
     if (!target) {
-      target = { targetName: e.dst, total: 0, overheal: 0 }
-      player.targets.set(e.dst, target)
+      target = { targetName: otherName, total: 0, overheal: 0 }
+      player.targets.set(otherName, target)
     }
     target.total += amount
-    if (kind === 'heal') target.overheal += e.overheal ?? 0
+    if (category === 'heal') target.overheal += e.overheal ?? 0
   }
 
   const out = new Map<string, PlayerBreakdown>()
@@ -941,7 +1014,7 @@ function computeAllPlayerBreakdowns(
         total: s.total,
         hitCount: s.hitCount,
       }
-      if (kind === 'heal') row.overheal = s.overheal
+      if (category === 'heal') row.overheal = s.overheal
       spells.push(row)
     }
     spells.sort((a, b) => b.total - a.total)
@@ -949,7 +1022,7 @@ function computeAllPlayerBreakdowns(
     const targets: BreakdownTargetRow[] = []
     for (const t of acc.targets.values()) {
       const row: BreakdownTargetRow = { targetName: t.targetName, total: t.total }
-      if (kind === 'heal') row.overheal = t.overheal
+      if (category === 'heal') row.overheal = t.overheal
       targets.push(row)
     }
     targets.sort((a, b) => b.total - a.total)
@@ -974,16 +1047,19 @@ function computeAllPlayerBreakdowns(
 export function selectPlayerBreakdown(
   events: ClientEvent[],
   playerName: string,
-  kind: 'damage' | 'heal',
+  category: BreakdownCategory,
   filters: FilterState,
   durationSec: number,
   snapshot: PlayerSnapshot | undefined,
   allies: Record<string, PlayerSnapshot>,
 ): PlayerBreakdown {
-  if (snapshot && !hasAnyFilter(filters)) {
-    return projectSnapshot(snapshot, kind, durationSec)
+  // Snapshot fast-path: only valid for damage-dealt and healing-done, since
+  // PlayerSnapshot carries no damage-taken aggregation. damageTaken always
+  // walks events (still fast — one pass over ~20k events).
+  if (snapshot && !hasAnyFilter(filters) && category !== 'damageTaken') {
+    return projectSnapshot(snapshot, category === 'heal' ? 'heal' : 'damage', durationSec)
   }
-  const cacheKey = `${kind}:${durationSec}:${filterCacheKey(filters)}`
+  const cacheKey = `${category}:${durationSec}:${filterCacheKey(filters)}`
   let perEvents = breakdownCache.get(events)
   if (!perEvents) {
     perEvents = new Map()
@@ -991,7 +1067,7 @@ export function selectPlayerBreakdown(
   }
   let perKey = perEvents.get(cacheKey)
   if (!perKey) {
-    perKey = computeAllPlayerBreakdowns(events, kind, filters, durationSec, allies)
+    perKey = computeAllPlayerBreakdowns(events, category, filters, durationSec, allies)
     perEvents.set(cacheKey, perKey)
   }
   return perKey.get(playerName) ?? EMPTY_BREAKDOWN

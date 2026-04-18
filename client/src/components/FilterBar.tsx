@@ -22,9 +22,11 @@ const EMPTY_EVENTS: ClientEvent[] = []
 const EMPTY_PLAYERS: Record<string, PlayerSnapshot> = {}
 const EMPTY_AURAS: AuraWindowWire[] = []
 
-// Picker label overrides for the buffs metric — the underlying filter state
-// shape doesn't change (Source/Target/Ability) but the semantics do, so the
-// chip labels need to read as what they *do*.
+// Picker label overrides for metrics with non-default axis semantics. The
+// underlying filter state shape doesn't change (Source/Target/Ability) but the
+// semantics do — e.g. under buffs "Source" means the buff caster, under
+// damageTaken "Source" means the attacker — so the chip labels read as what
+// they *do*.
 interface AxisLabels { label: string; defaultLabel: string }
 function axisLabels(metric: Metric, axis: FilterAxis): AxisLabels {
   if (metric === 'buffs') {
@@ -32,6 +34,13 @@ function axisLabels(metric: Metric, axis: FilterAxis): AxisLabels {
       case 'Source':  return { label: 'Caster',    defaultLabel: 'Any caster' }
       case 'Target':  return { label: 'Recipient', defaultLabel: 'Any recipient' }
       case 'Ability': return { label: 'Buff',      defaultLabel: 'All buffs' }
+    }
+  }
+  if (metric === 'damageTaken') {
+    switch (axis) {
+      case 'Source':  return { label: 'Attacker', defaultLabel: 'Any attacker' }
+      case 'Target':  return { label: 'Victim',   defaultLabel: 'Any victim' }
+      case 'Ability': return { label: 'Ability',  defaultLabel: 'All abilities' }
     }
   }
   switch (axis) {
@@ -72,6 +81,11 @@ export function FilterBar() {
   const deferredFilterSource = useDeferredValue(filters.Source)
   const deferredFilterTarget = useDeferredValue(filters.Target)
   const isBuffsMetric = deferredMetric === 'buffs'
+  // damageTaken is an allies-only view (a "who took damage" table only makes
+  // sense for the group, not for enemies). Mirrors buffs's no-perspective
+  // pattern — toggle hidden, store.setMetric snaps perspective to allies on
+  // entry.
+  const isDamageTakenMetric = deferredMetric === 'damageTaken'
 
   // Picker options are derived on render. Cheap for a few hundred units / a
   // few hundred abilities; if this ever becomes a bottleneck, memoize on
@@ -128,9 +142,11 @@ export function FilterBar() {
         flexWrap: 'wrap',
         background: 'var(--bg-root)',
       }}>
-        {/* Perspective is ally-only in buffs v1 (enemy-cast buffs are dropped
-            at the parser), so the allies/enemies toggle is hidden there. */}
-        {!isBuffsMetric && (
+        {/* Perspective is ally-only for buffs (enemy-cast buffs are dropped
+            at the parser) and for damageTaken (enemy-as-victim is the same
+            data as Damage Done viewed from the other side), so the toggle
+            is hidden for both. */}
+        {!isBuffsMetric && !isDamageTakenMetric && (
           <>
             <PerspectiveToggle perspective={perspective} onChange={setPerspective} />
             <Divider />
@@ -397,6 +413,13 @@ function buildPickerPlaceholder(metric: Metric, axis: FilterAxis): string {
       case 'Source':  return 'Search casters…'
       case 'Target':  return 'Search recipients…'
       case 'Ability': return 'Search buffs…'
+    }
+  }
+  if (metric === 'damageTaken') {
+    switch (axis) {
+      case 'Source':  return 'Search attackers…'
+      case 'Target':  return 'Search victims…'
+      case 'Ability': return 'Search abilities…'
     }
   }
   if (axis === 'Ability') return 'Search abilities…'

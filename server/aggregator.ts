@@ -1,4 +1,4 @@
-import type { ParsedEvent, DamagePayload, HealPayload, CombatantInfoPayload, DeathPayload, DeathRecapEvent, AuraPayload } from './types.js'
+import type { ParsedEvent, DamagePayload, HealPayload, CombatantInfoPayload, DeathPayload, DeathRecapEvent, AuraPayload, ClientEvent } from './types.js'
 import { PET_FLAG, GUARDIAN_FLAG, REDISTRIBUTION_DAMAGE_SPELLS } from './types.js'
 
 import type { Segment, PlayerData, SpellDamageStats, SpellHealStats, TargetDamageStats, PlayerDeathRecord } from './store.js'
@@ -209,7 +209,7 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
       // damage is skipped here to avoid ballooning the payload with trash-mob
       // crossfire that nobody queries on.
       if (isPlayerGuid(event.dest.guid)) {
-        segment.events.push({
+        const enemyEvt: ClientEvent = {
           t: event.timestamp,
           kind: 'damage',
           src: event.source.name,
@@ -217,7 +217,11 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
           ability: dmg.spellName,
           spellId: dmg.spellId,
           amount: dmg.amount - Math.max(dmg.overkill, 0),
-        })
+        }
+        if (dmg.absorbed > 0) enemyEvt.absorbed = dmg.absorbed
+        if (dmg.blocked > 0) enemyEvt.blocked = dmg.blocked
+        if (dmg.fullAbsorb) enemyEvt.fullAbsorb = true
+        segment.events.push(enemyEvt)
       }
       return
     }
@@ -704,7 +708,7 @@ function applyDamage(segment: Segment, sourceName: string, sourceGuid: string, d
   const amount = payload.amount - Math.max(payload.overkill, 0)
 
   const eventIndex = segment.events.length
-  segment.events.push({
+  const evt: ClientEvent = {
     t: timestamp,
     kind: 'damage',
     src: sourceName,
@@ -712,7 +716,11 @@ function applyDamage(segment: Segment, sourceName: string, sourceGuid: string, d
     ability: spellName,
     spellId,
     amount,
-  })
+  }
+  if (absorbed > 0) evt.absorbed = absorbed
+  if (blocked > 0) evt.blocked = blocked
+  if (payload.fullAbsorb) evt.fullAbsorb = true
+  segment.events.push(evt)
 
   player.damage.total += amount
 

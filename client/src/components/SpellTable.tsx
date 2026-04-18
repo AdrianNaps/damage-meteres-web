@@ -247,9 +247,13 @@ interface FullDamageProps {
   // Denominator for the % column. Pass breakdown.total so percentages always
   // sum to 100% across visible rows, whether or not filters are active.
   playerTotal: number
+  // Rate column label. Defaults to 'DPS' for damage-dealt; damageTaken passes
+  // 'DTPS' so the header reads as the metric it belongs to. The underlying
+  // computation is the same — total/duration.
+  rateLabel?: 'DPS' | 'DTPS'
 }
 
-export function FullDamageSpellTable({ spells, classColor, duration, playerTotal }: FullDamageProps) {
+export function FullDamageSpellTable({ spells, classColor, duration, playerTotal, rateLabel = 'DPS' }: FullDamageProps) {
   const totalForPct = playerTotal > 0 ? playerTotal : spells.reduce((s, r) => s + r.total, 0)
   const topShare = spells[0] && totalForPct > 0 ? spells[0].total / totalForPct : 0
 
@@ -262,7 +266,7 @@ export function FullDamageSpellTable({ spells, classColor, duration, playerTotal
         <span style={{ textAlign: 'right' }}>Hits</span>
         <span style={{ textAlign: 'right' }}>Avg Hit</span>
         <span style={{ textAlign: 'right' }}>Crit</span>
-        <span style={{ textAlign: 'right' }}>DPS</span>
+        <span style={{ textAlign: 'right' }}>{rateLabel}</span>
       </div>
       {spells.map(s => {
         const share = totalForPct > 0 ? s.total / totalForPct : 0

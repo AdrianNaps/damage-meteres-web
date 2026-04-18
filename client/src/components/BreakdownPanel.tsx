@@ -1,5 +1,5 @@
 import { useDeferredValue, useEffect, useState } from 'react'
-import { useStore, selectCurrentView, resolveSpecId } from '../store'
+import { useStore, selectCurrentView, resolveSpecId, type FilterAxis } from '../store'
 import { getClassColor } from './PlayerRow'
 import {
   DamageSpellTable,
@@ -16,6 +16,7 @@ import type { ClientEvent, PlayerSnapshot } from '../types'
 
 const METRIC_LABELS: Record<string, string> = {
   damage: 'Damage',
+  damageTaken: 'Damage Taken',
   healing: 'Healing',
   deaths: 'Deaths',
   interrupts: 'Interrupts',
@@ -41,18 +42,20 @@ export function BreakdownPanel() {
   // Must sit above any early return — hooks rules.
   const deferredFilters = useDeferredValue(filters)
 
-  // Drill is a derived view of the global Target filter: a single-value
-  // Target filter IS the drill state. Setting it from the FilterBar opens the
-  // drill; clearing the chip exits it. Multi-value Target filters narrow
-  // breakdown content but don't trigger the drill frame.
-  const targetFilter = filters.Target
-  const drillTarget = targetFilter && targetFilter.length === 1 ? targetFilter[0] : null
+  // The "other side" axis — what the drilled tab is scoped against. For damage
+  // and healing the other side is Target (who was hit / healed). For damage
+  // taken the row subject IS the victim, so the other side flips to Source
+  // (the attacker). All "open drill / close drill / Escape" plumbing keys off
+  // this axis so the drill frame and the global filter chip stay in sync.
+  const otherSideAxis: FilterAxis = metric === 'damageTaken' ? 'Source' : 'Target'
+  const drillFilter = filters[otherSideAxis]
+  const drillValue = drillFilter && drillFilter.length === 1 ? drillFilter[0] : null
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        if (drillTarget) {
-          setFilter('Target', undefined)
+        if (drillValue) {
+          setFilter(otherSideAxis, undefined)
         } else {
           setSelectedPlayer(null)
         }
@@ -60,7 +63,7 @@ export function BreakdownPanel() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [drillTarget, setFilter, setSelectedPlayer])
+  }, [drillValue, otherSideAxis, setFilter, setSelectedPlayer])
 
   if (!selectedPlayer || !currentView) return null
 
@@ -83,9 +86,13 @@ export function BreakdownPanel() {
   // and the drilled target view — so they all agree by construction.
   const events = currentView.events ?? EMPTY_EVENTS
   const allies = currentView.players ?? EMPTY_PLAYERS
-  const breakdownKind = metric === 'damage' ? 'damage' : metric === 'healing' ? 'heal' : null
-  const breakdown = breakdownKind
-    ? selectPlayerBreakdown(events, selectedPlayer, breakdownKind, deferredFilters, duration, player, allies)
+  const breakdownCategory =
+    metric === 'damage' ? 'damage' as const
+    : metric === 'damageTaken' ? 'damageTaken' as const
+    : metric === 'healing' ? 'heal' as const
+    : null
+  const breakdown = breakdownCategory
+    ? selectPlayerBreakdown(events, selectedPlayer, breakdownCategory, deferredFilters, duration, player, allies)
     : null
 
   const value = breakdown ? breakdown.rate : player.interrupts.total
@@ -93,11 +100,11 @@ export function BreakdownPanel() {
 
   function handleModeChange(nextViewMode: 'spells' | 'targets') {
     setViewMode(nextViewMode)
-    // Switching to "Spells" implies "all targets" — clear a single-value
-    // Target filter (the drill state). Multi-value Target filters are
-    // user-set from the FilterBar; leave them alone.
-    if (nextViewMode !== 'targets' && targetFilter && targetFilter.length === 1) {
-      setFilter('Target', undefined)
+    // Switching to "Spells" implies "all <other-side>" — clear a single-value
+    // drill filter (the open-drill state). Multi-value filters on that axis
+    // are user-set from the FilterBar; leave them alone.
+    if (nextViewMode !== 'targets' && drillFilter && drillFilter.length === 1) {
+      setFilter(otherSideAxis, undefined)
     }
   }
 
@@ -121,6 +128,8 @@ export function BreakdownPanel() {
     }
 
     const isHealing = metric === 'healing'
+    const isDamageTaken = metric === 'damageTaken'
+    const rateLabel = isHealing ? 'HPS' : isDamageTaken ? 'DTPS' : 'DPS'
     // Player-aware row decorator: resolves healing sources/targets to their own
     // class color, spec icon, and short name. Reused by the targets list and
     // the drill-down heading so the whole healing flow reads consistently.
@@ -130,21 +139,22 @@ export function BreakdownPanel() {
       return { displayName: shortName(name), color: getClassColor(specId), specId }
     }
 
-    if (drillTarget) {
-      // The breakdown's spells[] is already scoped to this target (the Target
-      // filter pinned it). The drill view is just the regular Full-mode spell
-      // table inside a back-button frame.
-      const headingStyle = isHealing ? playerRowStyle(drillTarget) : null
+    if (drillValue) {
+      // The breakdown's spells[] is already scoped to this attacker/target
+      // (the drill filter pinned it). The drill view is just the regular
+      // Full-mode spell table inside a back-button frame.
+      const headingStyle = isHealing ? playerRowStyle(drillValue) : null
       return (
         <TargetScopedView
-          targetName={drillTarget}
+          targetName={drillValue}
           headingStyle={headingStyle}
-          onBack={() => setFilter('Target', undefined)}
+          backLabel={isDamageTaken ? 'Attackers' : 'Targets'}
+          onBack={() => setFilter(otherSideAxis, undefined)}
         >
           {mode === 'full' ? (
             isHealing
               ? <FullHealSpellTable spells={breakdown.spells} classColor={color} duration={duration} playerTotal={breakdown.total} />
-              : <FullDamageSpellTable spells={breakdown.spells} classColor={color} duration={duration} playerTotal={breakdown.total} />
+              : <FullDamageSpellTable spells={breakdown.spells} classColor={color} duration={duration} playerTotal={breakdown.total} rateLabel={isDamageTaken ? 'DTPS' : 'DPS'} />
           ) : (
             isHealing
               ? <HealSpellTable spells={breakdown.spells} classColor={color} />
@@ -160,17 +170,18 @@ export function BreakdownPanel() {
           targets={breakdown.targets}
           totalAmount={breakdown.total}
           duration={duration}
-          rateLabel={isHealing ? 'HPS' : 'DPS'}
+          rateLabel={rateLabel}
+          columnLabel={isDamageTaken ? 'Attacker' : 'Target'}
           classColor={color}
           resolveRow={resolveRow}
-          onSelect={(name) => setFilter('Target', [name])}
+          onSelect={(name) => setFilter(otherSideAxis, [name])}
         />
       )
     }
     if (mode === 'full') {
       return isHealing
         ? <FullHealSpellTable spells={breakdown.spells} classColor={color} duration={duration} playerTotal={breakdown.total} />
-        : <FullDamageSpellTable spells={breakdown.spells} classColor={color} duration={duration} playerTotal={breakdown.total} />
+        : <FullDamageSpellTable spells={breakdown.spells} classColor={color} duration={duration} playerTotal={breakdown.total} rateLabel={isDamageTaken ? 'DTPS' : 'DPS'} />
     }
     return isHealing
       ? <HealSpellTable spells={breakdown.spells} classColor={color} />
@@ -201,7 +212,7 @@ export function BreakdownPanel() {
           <div style={{ fontSize: 12, fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', marginTop: 2 }}>
             {metric === 'interrupts'
               ? `${total} interrupts`
-              : `${formatNum(total)} total \u00b7 ${formatNum(value)} ${metric === 'damage' ? 'DPS' : 'HPS'}`}
+              : `${formatNum(total)} total \u00b7 ${formatNum(value)} ${metric === 'damage' ? 'DPS' : metric === 'damageTaken' ? 'DTPS' : 'HPS'}`}
           </div>
         </div>
         <button
@@ -224,12 +235,14 @@ export function BreakdownPanel() {
       </div>
 
       {/* View mode toggle */}
-      {(metric === 'damage' || metric === 'healing') && (
+      {(metric === 'damage' || metric === 'healing' || metric === 'damageTaken') && (
         <div className="px-4 pt-2.5">
           <SegmentedControl
             options={[
               { key: 'spells', label: 'Spells' },
-              { key: 'targets', label: 'Targets' },
+              // "Attackers" for damageTaken — the list under this tab is
+              // enemy sources rather than friendly targets.
+              { key: 'targets', label: metric === 'damageTaken' ? 'Attackers' : 'Targets' },
             ]}
             active={viewMode}
             onChange={handleModeChange}
@@ -314,11 +327,13 @@ function SegmentedControl<T extends string>({
 function TargetScopedView({
   targetName,
   headingStyle,
+  backLabel = 'Targets',
   onBack,
   children,
 }: {
   targetName: string
   headingStyle: TargetRowStyle | null
+  backLabel?: string
   onBack: () => void
   children: React.ReactNode
 }) {
@@ -342,7 +357,7 @@ function TargetScopedView({
         onMouseEnter={e => { e.currentTarget.style.color = 'var(--text-primary)' }}
         onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-secondary)' }}
       >
-        &larr; Targets
+        &larr; {backLabel}
       </button>
       <div style={{ marginBottom: 8, padding: '0 16px', display: 'flex', alignItems: 'center', gap: 8 }}>
         {headingIcon && (

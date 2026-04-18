@@ -373,6 +373,7 @@ export function parseLine(raw: string): ParsedEvent | ParsedEvent[] | null {
           resisted: 0,
           blocked: 0,
           absorbed: amount, // entire hit went into an absorb shield
+          fullAbsorb: true,
           critical: fields[criticalIdx] === '1',
           glancing: false,
           crushing: false,

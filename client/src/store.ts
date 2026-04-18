@@ -10,13 +10,21 @@ export interface BootInfoState {
 // reset helpers and the graph component share a single source of truth.
 export const GRAPH_GROUP_AVG_KEY = '__group_avg__'
 
-export type Metric = 'damage' | 'healing' | 'deaths' | 'interrupts' | 'buffs'
+export type Metric = 'damage' | 'damageTaken' | 'healing' | 'deaths' | 'interrupts' | 'buffs'
 export type Mode = 'summary' | 'full'
 export type Perspective = 'allies' | 'enemies'
 // Healing lens. Effective = treat overheal as noise (column hidden, bar solid,
 // ranked by HPS). Raw = surface overheal everywhere (extra column with %raw
 // suffix, bar stacks effective + overheal, ranked by raw throughput).
 export type HealingLens = 'effective' | 'raw'
+// Damage-taken lens. Incoming = gross (landed + mitigated) — the bar stacks
+// landed as the primary fill and mitigated as a lighter-shade extension,
+// mirroring the healing-raw overheal pattern. Effective = landed only
+// (post-absorb/block). Mitigated = prevented only (absorbed + blocked).
+// Incoming is the default because a tank/raider wants to see what came in
+// before getting to the "landed vs prevented" split. Graph stays lens-
+// independent so flipping the lens doesn't reshape the curve.
+export type DamageTakenLens = 'incoming' | 'effective' | 'mitigated'
 export type FilterAxis = 'Source' | 'Target' | 'Ability'
 export type SourceKind = 'live' | 'archive'
 
@@ -197,9 +205,9 @@ interface AppState {
   // rows are framed (columns, bar fill, and ranking). Distinct from `metric`
   // (Damage/Healing/…) and `mode` (Summary/Full). User preference, not scope-
   // or source-scoped: flipping the lens should persist across segments and
-  // sources. Today only Healing has a lens; other metrics will gain their own
-  // as needs appear (e.g. damage dealt vs. taken).
+  // sources.
   healingLens: HealingLens
+  damageTakenLens: DamageTakenLens
 
   // Per-source-state setters. sourceId defaults to activeSourceId so existing
   // call sites (component clicks) keep working unchanged. WS message handlers
@@ -232,6 +240,7 @@ interface AppState {
   setSettingsOpen: (open: boolean) => void
   setLogPickerOpen: (open: boolean) => void
   setHealingLens: (lens: HealingLens) => void
+  setDamageTakenLens: (lens: DamageTakenLens) => void
   refreshBootInfo: () => Promise<void>
 
   // Source registry actions.
@@ -439,6 +448,7 @@ export const useStore = create<AppState>((set) => ({
   settingsOpen: false,
   logPickerOpen: false,
   healingLens: 'effective',
+  damageTakenLens: 'incoming',
 
   setSelectedSegment: (s, sourceId) => set(state => {
     const sid = sourceId ?? state.activeSourceId
@@ -698,6 +708,13 @@ export const useStore = create<AppState>((set) => ({
         patch.graphFocused = stripped
       }
     }
+    // damageTaken is allies-only (FilterBar hides the perspective toggle).
+    // Snap to allies on entry so the view renders cleanly; leaving the user
+    // on enemies would either produce an empty view or a nonsense one (enemy
+    // victims of ally damage — just Damage Done viewed from the other side).
+    if (m === 'damageTaken' && slice.perspective === 'enemies') {
+      patch.perspective = 'allies'
+    }
     return applySliceUpdate(state, sid, patch)
   }),
 
@@ -708,10 +725,11 @@ export const useStore = create<AppState>((set) => ({
     // when the loaded snapshot is in progress; allow it pre-load — the
     // snapshot setters will downgrade once data arrives if needed.
     if (m === 'full' && isActiveScopeInProgress(slice)) return {}
-    // Buffs is a Full-only metric. Flipping back to Summary while on buffs
-    // would leave the Summary with a category it can't render — snap to
-    // damage.
-    const nextMetric: Metric = m === 'summary' && slice.metric === 'buffs'
+    // Buffs and Damage Taken are Full-only metrics. Flipping back to Summary
+    // while on either would leave Summary with a category it can't render —
+    // snap to damage.
+    const isFullOnlyMetric = slice.metric === 'buffs' || slice.metric === 'damageTaken'
+    const nextMetric: Metric = m === 'summary' && isFullOnlyMetric
       ? 'damage'
       : slice.metric
     return applySliceUpdate(state, sid, {
@@ -855,6 +873,7 @@ export const useStore = create<AppState>((set) => ({
   setSettingsOpen: (open) => set({ settingsOpen: open }),
   setLogPickerOpen: (open) => set({ logPickerOpen: open }),
   setHealingLens: (lens) => set({ healingLens: lens }),
+  setDamageTakenLens: (lens) => set({ damageTakenLens: lens }),
 
   setActiveSource: (sourceId) => set(state => {
     if (sourceId === state.activeSourceId) return {}

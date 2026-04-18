@@ -118,9 +118,17 @@ function ContentPanel() {
 
       {/* Graph appears in both modes. On the Overall aggregate tab, it shows
           an inactive placeholder (no per-segment timeline to plot). In Full
-          mode with enemies perspective, graph series use enemy-derived data. */}
+          mode with enemies perspective, graph series use enemy-derived data.
+          damageTaken + enemies is not a supported combo (graphPlayers indexes
+          enemies by damage dealt, not taken) — force the inactive state so the
+          graph doesn't silently render wrong zeroes. */}
       {currentView && (isOverall || Object.keys(graphPlayers).length > 0) && (
-        <GraphContainer metric={metric} players={graphPlayers} duration={duration} inactive={isOverall} />
+        <GraphContainer
+          metric={metric}
+          players={graphPlayers}
+          duration={duration}
+          inactive={isOverall || (metric === 'damageTaken' && perspective === 'enemies')}
+        />
       )}
 
       {/* Table-scoped view controls. Full-only; always rendered so switching
@@ -167,8 +175,16 @@ const SUMMARY_CATEGORIES: { key: Metric; label: string }[] = [
   { key: 'deaths', label: 'Deaths' },
 ]
 
+// Full mode adds Damage Taken (between Damage and Healing) and Buffs. Damage
+// Taken is Full-only because the mitigated lens + per-attacker drilldown need
+// the filter bar to be useful; buffs is Full-only because it requires the
+// server's aura windows.
 const FULL_CATEGORIES: { key: Metric; label: string }[] = [
-  ...SUMMARY_CATEGORIES,
+  { key: 'damage', label: 'Damage Done' },
+  { key: 'damageTaken', label: 'Damage Taken' },
+  { key: 'healing', label: 'Healing' },
+  { key: 'interrupts', label: 'Interrupts' },
+  { key: 'deaths', label: 'Deaths' },
   { key: 'buffs', label: 'Buffs' },
 ]
 

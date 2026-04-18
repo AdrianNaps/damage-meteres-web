@@ -60,6 +60,13 @@ export interface DamagePayload {
   critical: boolean
   glancing: boolean
   crushing: boolean
+  // Set true only on the SWING_MISSED/SPELL_MISSED(ABSORB) re-emit path where the
+  // entire hit went into an absorb shield. In that case both `amount` and
+  // `absorbed` carry the same absorb amount, and the Damage-Taken view needs
+  // to know this unambiguously — the alternative of sniffing `absorbed >= amount`
+  // misclassifies heavy-shield partial absorbs (e.g. 100 incoming, 70 absorbed,
+  // 30 landed) because it can't distinguish those from full absorbs.
+  fullAbsorb?: boolean
   swingOwnerGuid?: string | null  // set on SWING_DAMAGE from pets/guardians; owner GUID from advanced-log fields
   supportSourceGuid?: string | null  // set on *_SUPPORT events: GUID of the buffer (e.g. Aug Evoker) who actually owns this damage
   // Dest unit's HP snapshot from the advanced-log block. Populated on SPELL_DAMAGE,
@@ -241,6 +248,12 @@ export interface AuraWindowWire {
 // Keys are short because the array runs to 10k+ per fight; every byte matters
 // on the wire. `t` is absolute ms (same epoch as ParsedEvent.timestamp) so the
 // client doesn't need to know segment start offsets — it filters on its own.
+//
+// Damage mitigation fields (absorbed, blocked) are emitted only on 'damage'
+// events and only when non-zero — the Damage Taken view needs them to compute
+// gross vs effective, but the common case (hit with no mitigation) is the vast
+// majority and benefits from the omission. Legacy snapshots without these
+// fields read as undefined and degrade gracefully to effective-only.
 export interface ClientEvent {
   t: number
   kind: 'damage' | 'heal' | 'interrupt' | 'death'
@@ -250,4 +263,11 @@ export interface ClientEvent {
   spellId?: string
   amount?: number          // damage/heal value (excludes overkill, matches meter totals)
   overheal?: number        // heal only
+  absorbed?: number        // damage only; omitted when 0
+  blocked?: number         // damage only; omitted when 0
+  // Damage only; present as `true` only when the entire hit was absorbed by a
+  // shield (SPELL_MISSED / SWING_MISSED with ABSORB result). Disambiguates
+  // heavy-shield partial absorbs from true full absorbs, which the Damage
+  // Taken view can't do from `amount`/`absorbed` alone.
+  fullAbsorb?: boolean
 }

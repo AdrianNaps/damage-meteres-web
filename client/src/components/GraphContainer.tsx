@@ -5,7 +5,7 @@ import { useStore, resolveSpecId, GRAPH_GROUP_AVG_KEY, selectGraphTimeOffset, se
 import { formatNum, shortName, formatTime } from '../utils/format'
 
 interface Props {
-  metric: 'damage' | 'healing' | 'deaths' | 'interrupts' | 'buffs'
+  metric: 'damage' | 'damageTaken' | 'healing' | 'deaths' | 'interrupts' | 'buffs'
   players: Record<string, PlayerSnapshot>
   duration: number
   inactive?: boolean
@@ -203,7 +203,46 @@ export function GraphContainer({ metric, players, duration, inactive }: Props) {
 
   const isBar = metric === 'deaths' || metric === 'interrupts'
   const isBuffs = metric === 'buffs'
+  const isDamageTaken = metric === 'damageTaken'
   const dragEnabled = !inactive && !isBar && mode === 'full'
+
+  // Per-ally gross damage-taken-per-sec map, derived from raw events so we
+  // don't have to bolt a damageTaken field onto PlayerSnapshot. Only computed
+  // when metric === 'damageTaken'; other metrics use `p.dps` / `p.hps`
+  // directly off the players map.
+  //
+  // Gross = landed + mitigated (matches the Incoming lens default, which is
+  // the framing a tank cares about most). Not lens-aware — flipping between
+  // Incoming/Effective/Mitigated in the table doesn't reshape this curve, so
+  // the graph stays as "what came in" regardless of table framing. If a user
+  // wants a curve scoped to landed-only or mitigated-only, that's a future
+  // lens-aware-graph feature.
+  const damageTakenPerSec = useMemo<Map<string, number>>(() => {
+    if (!isDamageTaken || !currentView || duration <= 0) return new Map()
+    const events = currentView.events ?? []
+    const totals = new Map<string, number>()
+    for (const e of events) {
+      if (e.kind !== 'damage') continue
+      const dst = e.dst
+      if (!dst) continue
+      // Gross = landed + mitigated, matching how the Incoming lens frames
+      // totals. Full absorbs (flagged by the server) have `amount === absorbed`
+      // so we have to strip the landed component to 0 before adding mitigation
+      // back — otherwise we'd double-count. Partial absorbs, including the
+      // heavy-shield case where absorbed > landed, already have `amount` as
+      // the post-absorb landed portion.
+      const rawAmount = e.amount ?? 0
+      const absorbed = e.absorbed ?? 0
+      const blocked = e.blocked ?? 0
+      const landed = e.fullAbsorb ? 0 : rawAmount
+      const gross = landed + absorbed + blocked
+      if (gross === 0) continue
+      totals.set(dst, (totals.get(dst) ?? 0) + gross)
+    }
+    const out = new Map<string, number>()
+    for (const [name, total] of totals) out.set(name, total / duration)
+    return out
+  }, [isDamageTaken, currentView, duration])
 
   // Buffs-legend toggle semantics are inverted vs damage/healing: both lines
   // are ON by default, and clicking a legend entry HIDES that line. Keeping
@@ -316,7 +355,10 @@ export function GraphContainer({ metric, players, duration, inactive }: Props) {
       return { series, avgData: [], points, bucketSec, maxVal }
     }
 
-    const rateFn = metric === 'damage' ? (p: PlayerSnapshot) => p.dps : (p: PlayerSnapshot) => p.hps
+    const rateFn: (p: PlayerSnapshot) => number =
+      metric === 'damage'      ? p => p.dps
+      : metric === 'damageTaken' ? p => damageTakenPerSec.get(p.name) ?? 0
+      : p => p.hps
     const sorted = [...playerList].sort((a, b) => rateFn(b) - rateFn(a)).slice(0, 5)
     if (sorted.length === 0 || rateFn(sorted[0]) === 0) return null
 
@@ -342,7 +384,7 @@ export function GraphContainer({ metric, players, duration, inactive }: Props) {
     maxVal *= 1.1
 
     return { series, avgData, points, bucketSec, maxVal }
-  }, [isBar, isBuffs, metric, playerList, playerSpecs, duration])
+  }, [isBar, isBuffs, metric, playerList, playerSpecs, duration, damageTakenPerSec])
 
   // Clear hover state when the underlying data goes away (e.g. switching to a
   // bar metric). The slice/bucket index would otherwise point into a stale series.
@@ -469,9 +511,10 @@ export function GraphContainer({ metric, players, duration, inactive }: Props) {
   }, [draw])
 
   // Build legend data
-  const legendEntries = buildLegend(playerList, playerSpecs, metric, isBar)
+  const legendEntries = buildLegend(playerList, playerSpecs, metric, isBar, damageTakenPerSec)
 
   const title = metric === 'damage' ? 'DPS Over Time'
+    : metric === 'damageTaken' ? 'Incoming DTPS Over Time'
     : metric === 'healing' ? 'HPS Over Time'
     : metric === 'deaths' ? 'Deaths Over Time'
     : metric === 'buffs' ? 'Throughput Over Time'
@@ -786,8 +829,9 @@ interface LegendEntry { key: string; label: string; color: string }
 function buildLegend(
   playerList: PlayerSnapshot[],
   playerSpecs: Record<string, number>,
-  metric: 'damage' | 'healing' | 'deaths' | 'interrupts' | 'buffs',
+  metric: 'damage' | 'damageTaken' | 'healing' | 'deaths' | 'interrupts' | 'buffs',
   isBar: boolean,
+  damageTakenPerSec: Map<string, number>,
 ): LegendEntry[] {
   const entries: LegendEntry[] = []
 
@@ -809,7 +853,10 @@ function buildLegend(
       entries.push({ key: p.name, label: shortName(p.name), color: getClassColor(specId) })
     })
   } else {
-    const rateFn = metric === 'damage' ? (p: PlayerSnapshot) => p.dps : (p: PlayerSnapshot) => p.hps
+    const rateFn: (p: PlayerSnapshot) => number =
+      metric === 'damage'      ? p => p.dps
+      : metric === 'damageTaken' ? p => damageTakenPerSec.get(p.name) ?? 0
+      : p => p.hps
     const sorted = [...playerList].sort((a, b) => rateFn(b) - rateFn(a)).slice(0, 5)
     sorted.forEach(p => {
       const specId = resolveSpecId(playerSpecs, p.name, p.specId)

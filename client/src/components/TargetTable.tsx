@@ -18,7 +18,11 @@ interface Props {
   targets: BreakdownTargetRow[]
   totalAmount: number
   duration: number
-  rateLabel: 'DPS' | 'HPS'
+  rateLabel: 'DPS' | 'HPS' | 'DTPS'
+  // Row axis label. "Target" for damage/healing (the recipient of the action)
+  // and "Attacker" for damageTaken (the source of the incoming hit). Header
+  // and row content are otherwise identical.
+  columnLabel?: 'Target' | 'Attacker'
   classColor: string
   resolveRow?: (targetName: string) => TargetRowStyle | null
   onSelect: (targetName: string) => void
@@ -82,13 +86,13 @@ function BarFill({ pct, color }: { pct: number; color: string }) {
   )
 }
 
-export function TargetTable({ targets, totalAmount, duration, rateLabel, classColor, resolveRow, onSelect }: Props) {
+export function TargetTable({ targets, totalAmount, duration, rateLabel, columnLabel = 'Target', classColor, resolveRow, onSelect }: Props) {
   const topTotal = targets[0]?.total ?? 1
 
   return (
     <div>
       <div style={headerStyle}>
-        <span style={{ flex: 1 }}>Target</span>
+        <span style={{ flex: 1 }}>{columnLabel}</span>
         <span style={{ width: 56, textAlign: 'right' }}>Total</span>
         <span style={{ width: 48, textAlign: 'right' }}>{rateLabel}</span>
         <span style={{ width: 36, textAlign: 'right' }}>%</span>
