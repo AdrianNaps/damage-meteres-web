@@ -93,7 +93,9 @@ export interface SourceState {
   snapshotCache: Map<string, AnySnapshot>
   // Per-scope filter+perspective memory. Restored when the user returns to a
   // previously-visited scope. Default entries (no filters, allies) are not
-  // stored — absence implies defaults.
+  // stored — absence implies defaults. Intentionally unbounded: each entry is
+  // tiny (a FilterState object plus a Perspective string) and a single source's
+  // realistic scope count stays in the low hundreds even for long sessions.
   filterStateByScope: Map<string, ScopeFilterState>
 }
 
@@ -274,9 +276,9 @@ function mergeIcons(
 // filterStateByScope and as the basis for hydration on scope change. Mirrors
 // the snapshotCache key prefixes (`seg:`, `kr:`, `bs:`).
 function activeScopeKey(slice: SourceState): string | null {
-  if (slice.selectedKeyRunId) return `kr:${slice.selectedKeyRunId}`
-  if (slice.selectedBossSectionId) return `bs:${slice.selectedBossSectionId}`
-  if (slice.selectedSegmentId) return `seg:${slice.selectedSegmentId}`
+  if (slice.selectedKeyRunId !== null) return `kr:${slice.selectedKeyRunId}`
+  if (slice.selectedBossSectionId !== null) return `bs:${slice.selectedBossSectionId}`
+  if (slice.selectedSegmentId !== null) return `seg:${slice.selectedSegmentId}`
   return null
 }
 
@@ -864,7 +866,7 @@ export const selectCurrentSegment = (s: AppState): SegmentSnapshot | null =>
 // filter chips would otherwise risk going stale as combat continues.
 // Snapshot-not-loaded returns false so the UI doesn't disable Full pre-load.
 export const selectIsActiveScopeInProgress = (s: AppState): boolean => {
-  const view = s.selectedKeyRun ?? s.selectedBossSection ?? s.selectedSegment
+  const view = selectCurrentView(s)
   return view !== null && view.endTime === null
 }
 

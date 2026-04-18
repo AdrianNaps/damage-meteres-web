@@ -250,7 +250,7 @@ function ModeToggle({
             key={opt.key}
             onClick={() => { if (!disabled) setMode(opt.key) }}
             disabled={disabled}
-            title={disabled ? 'Full view is available on completed segments only' : undefined}
+            title={disabled ? 'Full view is available once the segment has ended' : undefined}
             style={{
               padding: '4px 14px',
               fontSize: 12,
