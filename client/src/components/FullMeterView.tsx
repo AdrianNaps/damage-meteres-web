@@ -32,7 +32,10 @@ type NumericStat = { label: string; value: number; format: StatFormat; bold?: bo
 
 interface MetricConfig {
   labels: string[]
-  stats: (row: UnitRow) => NumericStat[]
+  // overhealPerSec is threaded through so the raw-lens healing config can
+  // compute raw HPS locally. Other configs accept fewer params (TS is happy
+  // with that via function-type param contravariance) or ignore the value.
+  stats: (row: UnitRow, overhealPerSec: number) => NumericStat[]
 }
 
 const DAMAGE_CONFIG: MetricConfig = {
@@ -43,10 +46,11 @@ const DAMAGE_CONFIG: MetricConfig = {
   ],
 }
 
-// Two shapes for Healing depending on the overheal toggle. When off, the
-// Overheal column is hidden (the column is noise if the user isn't thinking
-// about it). When on, the column appears AND the bar renders as stacked
-// effective + overheal — see FilteredPlayerTable for the bar scale logic.
+// Two shapes for Healing depending on the lens. Effective hides the Overheal
+// column and reports effective Total / HPS. Raw reports raw Total (effective +
+// overheal) and raw HPS so the three visible columns add up coherently: Total
+// = Overheal + Effective contribution, and the bar (stacked effective +
+// overheal) is scaled to the same raw throughput that Total and HPS display.
 const HEALING_EFFECTIVE_CONFIG: MetricConfig = {
   labels: ['Total', 'HPS'],
   stats: r => [
@@ -55,18 +59,19 @@ const HEALING_EFFECTIVE_CONFIG: MetricConfig = {
   ],
 }
 
-const HEALING_WITH_OVERHEAL_CONFIG: MetricConfig = {
+const HEALING_RAW_CONFIG: MetricConfig = {
   labels: ['Total', 'Overheal', 'HPS'],
-  stats: r => {
+  stats: (r, ohps) => {
     const oh = r.overheal ?? 0
-    const raw = r.total + oh
-    // Share of raw throughput that was overheal. Guard raw===0 so a row with
-    // zero healing doesn't render "(NaN%)".
-    const ohPct = raw > 0 ? (oh / raw) * 100 : 0
+    const rawTotal = r.total + oh
+    // Share of raw throughput that was overheal. Guard rawTotal===0 so a row
+    // with zero healing doesn't render "(NaN%)".
+    const ohPct = rawTotal > 0 ? (oh / rawTotal) * 100 : 0
+    const rawHps = r.value + ohps
     return [
-      { label: 'Total', value: r.total, format: 'shorthand' },
-      { label: 'Overheal', value: oh, format: 'shorthand', suffix: raw > 0 ? `(${Math.round(ohPct)}%)` : undefined },
-      { label: 'HPS', value: r.value, format: 'shorthand', bold: true },
+      { label: 'Total', value: rawTotal, format: 'shorthand' },
+      { label: 'Overheal', value: oh, format: 'shorthand', suffix: rawTotal > 0 ? `(${Math.round(ohPct)}%)` : undefined },
+      { label: 'HPS', value: rawHps, format: 'shorthand', bold: true },
     ]
   },
 }
@@ -196,7 +201,7 @@ function FilteredPlayerTable({
   const config =
     category === 'damage'     ? DAMAGE_CONFIG
     : category === 'interrupts' ? INTERRUPTS_CONFIG
-    : rawLens                 ? HEALING_WITH_OVERHEAL_CONFIG
+    : rawLens                 ? HEALING_RAW_CONFIG
     : HEALING_EFFECTIVE_CONFIG
 
   // Under the raw lens we re-rank by raw throughput (effective + overheal per
@@ -340,7 +345,7 @@ function FullPlayerRowImpl({
   const fillPct = barScale > 0 ? (row.value / barScale) * 100 : 0
   const overhealPct = barScale > 0 ? (overhealPerSec / barScale) * 100 : 0
   const shareOfTotal = totalValue > 0 ? (row.value / totalValue) * 100 : 0
-  const stats = config.stats(row)
+  const stats = config.stats(row, overhealPerSec)
   const clickable = !!onClick
 
   return (

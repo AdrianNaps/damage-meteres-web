@@ -37,8 +37,8 @@ function HealingOptions() {
       borderRadius: 3,
       overflow: 'hidden',
     }}>
-      <LensSegment label="Effective" active={lens === 'effective'} onClick={() => setLens('effective')} isFirst />
-      <LensSegment label="Raw"       active={lens === 'raw'}       onClick={() => setLens('raw')} />
+      <LensSegment label="Effective"        active={lens === 'effective'} onClick={() => setLens('effective')} isFirst />
+      <LensSegment label="Include overheal" active={lens === 'raw'}       onClick={() => setLens('raw')} />
     </div>
   )
 }
