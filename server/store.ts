@@ -275,6 +275,30 @@ export function classifyAuras(windows: AuraWindow[], allyNames: Set<string>): Re
 // for the model. `segStartMs` is seg.firstEventTime ?? seg.startTime; `segDurSec`
 // is (segEnd - segStart)/1000. PlayerData `lastDamageTime`/`lastHealTime` give us
 // "did they act after their last death?" without needing to walk events.
+// Collect every spellId the client could render an icon for — ally
+// ability maps, aura windows, AND every damage event's spellId. The events
+// sweep is what picks up enemy-cast abilities (e.g. boss casts on allies);
+// without it, the Damage Taken breakdown shows empty icon slots for every
+// enemy ability. Cheap — a single pass over events, one Set insert per hit.
+function collectIconSpellIds(
+  players: Record<string, PlayerSnapshot>,
+  auras: AuraWindow[],
+  events: ClientEvent[],
+): Set<string> {
+  const ids = new Set<string>()
+  for (const p of Object.values(players)) {
+    for (const sid of Object.keys(p.damage.spells)) ids.add(sid)
+    for (const sid of Object.keys(p.healing.spells)) ids.add(sid)
+    for (const sid of Object.keys(p.interrupts.byKicker)) ids.add(sid)
+    for (const sid of Object.keys(p.interrupts.byKicked)) ids.add(sid)
+  }
+  for (const w of auras) ids.add(w.spellId)
+  for (const e of events) {
+    if (e.spellId) ids.add(e.spellId)
+  }
+  return ids
+}
+
 export function segmentActiveSec(sp: PlayerData, segStartMs: number, segDurSec: number): number {
   if (sp.deaths.length === 0) return segDurSec
   const lastDeathMs = sp.deaths.reduce((m, d) => Math.max(m, d.timeOfDeath), 0)
@@ -568,15 +592,8 @@ export class SegmentStore {
       ? classifyAuras(allAuras, new Set(Object.keys(players)))
       : undefined
 
-    const spellIds = new Set<string>()
-    for (const p of Object.values(players)) {
-      for (const sid of Object.keys(p.damage.spells)) spellIds.add(sid)
-      for (const sid of Object.keys(p.healing.spells)) spellIds.add(sid)
-      for (const sid of Object.keys(p.interrupts.byKicker)) spellIds.add(sid)
-      for (const sid of Object.keys(p.interrupts.byKicked)) spellIds.add(sid)
-    }
-    for (const w of allAuras) spellIds.add(w.spellId)
-    this.iconResolver.requestMany(spellIds)
+    const events = segs.flatMap(s => s.events)
+    this.iconResolver.requestMany(collectIconSpellIds(players, allAuras, events))
     return {
       type: 'boss_section',
       bossSectionId: meta.bossSectionId,
@@ -590,7 +607,7 @@ export class SegmentStore {
       kills: segs.filter(s => s.success === true).length,
       players,
       spellIcons: this.iconResolver.getAll(),
-      events: segs.flatMap(s => s.events),
+      events,
       auras,
       buffClassification,
     }
@@ -833,15 +850,8 @@ export class SegmentStore {
       ? classifyAuras(allAuras, new Set(Object.keys(players)))
       : undefined
 
-    const spellIds = new Set<string>()
-    for (const p of Object.values(players)) {
-      for (const sid of Object.keys(p.damage.spells)) spellIds.add(sid)
-      for (const sid of Object.keys(p.healing.spells)) spellIds.add(sid)
-      for (const sid of Object.keys(p.interrupts.byKicker)) spellIds.add(sid)
-      for (const sid of Object.keys(p.interrupts.byKicked)) spellIds.add(sid)
-    }
-    for (const w of allAuras) spellIds.add(w.spellId)
-    this.iconResolver.requestMany(spellIds)
+    const events = segs.flatMap(s => s.events)
+    this.iconResolver.requestMany(collectIconSpellIds(players, allAuras, events))
 
     return {
       type: 'key_run',
@@ -849,7 +859,7 @@ export class SegmentStore {
       activeDurationSec,
       players,
       spellIcons: this.iconResolver.getAll(),
-      events: segs.flatMap(s => s.events),
+      events,
       auras,
       buffClassification,
     }
@@ -889,15 +899,7 @@ export class SegmentStore {
       ? classifyAuras(materialAuras, new Set(Object.keys(players)))
       : undefined
 
-    const spellIds = new Set<string>()
-    for (const p of Object.values(players)) {
-      for (const sid of Object.keys(p.damage.spells)) spellIds.add(sid)
-      for (const sid of Object.keys(p.healing.spells)) spellIds.add(sid)
-      for (const sid of Object.keys(p.interrupts.byKicker)) spellIds.add(sid)
-      for (const sid of Object.keys(p.interrupts.byKicked)) spellIds.add(sid)
-    }
-    for (const w of materialAuras) spellIds.add(w.spellId)
-    this.iconResolver.requestMany(spellIds)
+    this.iconResolver.requestMany(collectIconSpellIds(players, materialAuras, segment.events))
 
     const {
       supportOwnedSpellIds: _supportOwned,
