@@ -1,5 +1,5 @@
 import { useStore, LIVE_SOURCE_ID, type SourceMeta } from './store'
-import type { HistoryItem } from './types'
+import type { HistoryItem, SegmentSummary } from './types'
 
 let ws: WebSocket | null = null
 
@@ -131,7 +131,28 @@ export function connectWs() {
           break
         }
         case 'segment_list': {
+          // Capture the pre-update history so we can diff for newly-appeared
+          // live segments below. Must happen BEFORE setSegmentHistory mutates
+          // the slice — otherwise old and new both point at the same array.
+          const prevSegments = state.sources.get(sourceId)?.segmentHistory ?? []
+
           setSegmentHistory(msg.segments, sourceId)
+
+          // A new live pull just appeared (combat started) → jump straight to
+          // it. Intentionally overrides whatever the user had selected: if a
+          // boss is being pulled, that's the view they want. Archives never
+          // produce new live segments, so the gate on LIVE keeps this quiet
+          // when the user is viewing a static log.
+          if (sourceId === LIVE_SOURCE_ID) {
+            const newLive = findNewlyAppearedLiveSegment(prevSegments, msg.segments as HistoryItem[])
+            if (newLive) {
+              const store = useStore.getState()
+              store.setSelectedSegmentId(newLive.id, sourceId)
+              send({ type: 'get_segment', sourceId, segmentId: newLive.id })
+              break
+            }
+          }
+
           // If the user hasn't picked anything in this source yet, auto-select
           // the most recent top-level instance so an opened log lands on real
           // data instead of an empty "waiting" state. Once anything is
@@ -270,4 +291,34 @@ export function requestLogsListing(): Promise<{ dir: string; files: { name: stri
 // handler picks up.
 export function openArchiveSource(filePath: string): void {
   send({ type: 'open_source', filePath })
+}
+
+// Walk both top-level standalone segments and segments nested inside key-runs
+// / boss-sections. Flattening keeps the diff logic below source-shape-agnostic.
+function flattenSegments(items: HistoryItem[]): SegmentSummary[] {
+  const out: SegmentSummary[] = []
+  for (const it of items) {
+    if (it.type === 'segment') out.push(it)
+    else out.push(...it.segments)  // key_run | boss_section → inner segments
+  }
+  return out
+}
+
+// Find a live segment (endTime === null) that wasn't in `prev` — i.e. combat
+// just started and the server just broadcast a new in-progress pull. The id
+// check also filters out the steady-state case where the same live segment
+// keeps re-arriving on every list delivery during an ongoing fight. Latest
+// startTime wins when multiple live segments somehow appear at once (rare,
+// but keeps behaviour deterministic).
+function findNewlyAppearedLiveSegment(prev: HistoryItem[], next: HistoryItem[]): SegmentSummary | null {
+  const prevIds = new Set<string>()
+  for (const s of flattenSegments(prev)) prevIds.add(s.id)
+
+  let winner: SegmentSummary | null = null
+  for (const s of flattenSegments(next)) {
+    if (s.endTime !== null) continue
+    if (prevIds.has(s.id)) continue
+    if (!winner || s.startTime > winner.startTime) winner = s
+  }
+  return winner
 }
