@@ -24,6 +24,32 @@ const BUFFS_HEALING_COLOR = '#10b981'
 const BUFFS_DAMAGE_KEY = '__buffs_damage__'
 const BUFFS_HEALING_KEY = '__buffs_healing__'
 
+// Spell-ID allowlist for the group haste-buff family (Bloodlust / Heroism /
+// Time Warp / etc.). Overlaid on every line graph so "when was lust up" is
+// always visible context for the DPS/HPS curves, regardless of which metric
+// or scope the user is looking at. Explicit allowlist rather than relying on
+// the classifier's 'raid' bucket because lust is a specific, universally-
+// recognized visual cue — we want it consistent across M+ (where fan-out
+// heuristics get fuzzy with 5 players) and raid. Update when a new
+// expansion adds a new drum or class lust.
+const LUST_SPELL_IDS = new Set<string>([
+  '2825',   // Bloodlust          (Shaman, Horde)
+  '32182',  // Heroism            (Shaman, Alliance)
+  '80353',  // Time Warp          (Mage)
+  '264667', // Primal Rage        (Hunter — core hound / wolf / etc.)
+  '390386', // Fury of the Aspects (Evoker)
+  '230935', // Drums of the Mountain
+  '309658', // Drums of Deathly Ferocity
+  '309656', // Drums of the Mountain (BfA variant)
+  '256740', // Drums of the Maelstrom (Legion fallback)
+])
+const LUST_FILL = 'rgba(99, 179, 237, 0.10)'
+const LUST_BORDER = 'rgba(99, 179, 237, 0.55)'
+// Sentinel for the Lust legend toggle. Inverted semantics vs damage/healing:
+// presence in graphFocused = hidden, absent = visible. Matches the buffs
+// two-line toggle pattern so the shared toggleFocus setter stays usable.
+const LUST_LEGEND_KEY = '__lust_overlay__'
+
 // Below this pixel threshold, a mousedown→mouseup counts as a click (passes
 // through to existing hover/focus behaviors). Past the threshold, we treat it
 // as an intentional time-window selection.
@@ -154,6 +180,17 @@ export function GraphContainer({ metric, players, duration, inactive }: Props) {
       : 0
     const tEnd = currentView.endTime ?? (t0 + durationSec * 1000)
     return { t0, tEnd }
+  }, [currentView])
+
+  // Lust windows pulled from the snapshot's aura data. Rendered as an
+  // always-on overlay on every line graph — independent of the buffs metric
+  // drill selection — so the correlation between lust and throughput spikes
+  // is visible at a glance. Bar graphs skip it (the vertical bars would
+  // collide visually).
+  const lustWindows = useMemo<AuraWindowWire[] | null>(() => {
+    if (!currentView?.auras) return null
+    const matches = currentView.auras.filter(w => LUST_SPELL_IDS.has(w.id))
+    return matches.length > 0 ? matches : null
   }, [currentView])
 
   const [hover, setHover] = useState<HoverState | null>(null)
@@ -394,6 +431,14 @@ export function GraphContainer({ metric, players, duration, inactive }: Props) {
       const hoverSlice = drag ? null : (hover?.slice ?? null)
       drawLineGraph(ctx, h, plotW, plotH, lineData, focused, duration, timeOffset, hoverSlice, isBuffs)
 
+      // Always-on lust band (Bloodlust / Heroism / Time Warp / …). Drawn
+      // first so a more-specific drill selection (amber) layers cleanly on
+      // top when the user picks lust itself from the buffs table. Gated on
+      // the Lust legend toggle — absent from storedFocused means visible.
+      if (lustWindows && selectedBuffScope && !storedFocused.has(LUST_LEGEND_KEY)) {
+        drawLustBand(ctx, plotW, plotH, lustWindows, selectedBuffScope.t0, selectedBuffScope.tEnd)
+      }
+
       // Selected-buff uptime band: render beneath the drag/time-window
       // overlays so those still win visually when both are active.
       if (isBuffs && selectedBuffWindows && selectedBuffScope) {
@@ -412,7 +457,7 @@ export function GraphContainer({ metric, players, duration, inactive }: Props) {
     } else {
       drawEmptyState(ctx, w, h)
     }
-  }, [isBar, isBuffs, barData, lineData, focused, duration, timeOffset, hover, barHover, inactive, drag, timeWindowFilter, selectedBuffWindows, selectedBuffScope])
+  }, [isBar, isBuffs, barData, lineData, focused, duration, timeOffset, hover, barHover, inactive, drag, timeWindowFilter, selectedBuffWindows, selectedBuffScope, lustWindows, storedFocused])
 
   useEffect(() => {
     draw()
@@ -597,6 +642,33 @@ export function GraphContainer({ metric, players, duration, inactive }: Props) {
               </div>
             )
           })}
+          {/* Lust toggle — only rendered when lust data exists in the current
+              scope (no point showing a toggle for an empty overlay) and on
+              line graphs (bar graphs skip the overlay draw). Inverted focus
+              semantics: visible when ABSENT from storedFocused, so the
+              default is on. */}
+          {!inactive && !isBar && lustWindows && (() => {
+            const lustVisible = !storedFocused.has(LUST_LEGEND_KEY)
+            return (
+              <div
+                onClick={() => toggleFocus(LUST_LEGEND_KEY)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 4, fontSize: 10,
+                  color: 'var(--text-secondary)',
+                  opacity: lustVisible ? 1 : UNFOCUSED_ALPHA + 0.22,
+                  cursor: 'pointer',
+                  userSelect: 'none',
+                  transition: 'opacity 120ms ease',
+                }}
+              >
+                <div style={{
+                  width: 8, height: 4,
+                  background: LUST_BORDER, borderRadius: 1,
+                }} />
+                Lust
+              </div>
+            )
+          })()}
         </div>
       </div>
       <div style={{ position: 'relative' }}>
@@ -900,6 +972,63 @@ function drawDragRect(
   ctx.moveTo(x1 - 0.5, PAD.top)
   ctx.lineTo(x1 - 0.5, PAD.top + plotH)
   ctx.stroke()
+}
+
+// Always-on lust highlight. Paints a translucent cyan-blue band across every
+// continuous lust window (Bloodlust / Heroism / Time Warp / …), with a
+// slightly stronger left edge marking the cast moment. Windows from multiple
+// casters are unioned — if two shamans somehow overlap, it reads as one
+// block rather than stacking visual weight. Layers beneath the selected-buff
+// amber so drilling into lust in the buffs table still reads cleanly.
+function drawLustBand(
+  ctx: CanvasRenderingContext2D,
+  plotW: number,
+  plotH: number,
+  windows: AuraWindowWire[],
+  t0Ms: number,
+  tEndMs: number,
+) {
+  const scopeMs = tEndMs - t0Ms
+  if (scopeMs <= 0 || windows.length === 0) return
+
+  const sorted = windows
+    .map<[number, number]>(w => [Math.max(w.s, t0Ms), Math.min(w.e, tEndMs)])
+    .filter(([s, e]) => e > s)
+    .sort((a, b) => a[0] - b[0])
+  if (sorted.length === 0) return
+
+  ctx.save()
+  ctx.fillStyle = LUST_FILL
+  ctx.strokeStyle = LUST_BORDER
+  ctx.lineWidth = 1
+
+  let curStart = sorted[0][0]
+  let curEnd = sorted[0][1]
+  const flush = () => {
+    const x0 = PAD.left + ((curStart - t0Ms) / scopeMs) * plotW
+    const x1 = PAD.left + ((curEnd - t0Ms) / scopeMs) * plotW
+    const w = Math.max(1, x1 - x0)
+    ctx.fillRect(x0, PAD.top, w, plotH)
+    // Left edge gets the cast-moment tick — right edge is left faint so the
+    // eye reads the run as "starts here, rolling through" rather than a
+    // boxed window. Half-pixel offset keeps the 1px stroke crisp.
+    ctx.beginPath()
+    ctx.moveTo(x0 + 0.5, PAD.top)
+    ctx.lineTo(x0 + 0.5, PAD.top + plotH)
+    ctx.stroke()
+  }
+  for (let i = 1; i < sorted.length; i++) {
+    const [s, e] = sorted[i]
+    if (s <= curEnd) {
+      if (e > curEnd) curEnd = e
+    } else {
+      flush()
+      curStart = s
+      curEnd = e
+    }
+  }
+  flush()
+  ctx.restore()
 }
 
 // Selected-buff uptime highlight. Unions the windows and paints a translucent
