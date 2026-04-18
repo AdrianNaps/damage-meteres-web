@@ -1,3 +1,5 @@
+import { useMemo } from 'react'
+import { useStore } from '../store'
 import { formatNum, pct } from '../utils/format'
 import { specIconUrl } from '../utils/icons'
 
@@ -82,7 +84,15 @@ function BarFill({ pct, color }: { pct: number; color: string }) {
 }
 
 export function TargetTable({ targets, totalAmount, duration, rateLabel, classColor, resolveRow, onSelect }: Props) {
-  const rows = Object.values(targets).sort((a, b) => b.total - a.total)
+  // Honor a multi-value Target filter by hiding non-matching rows. A
+  // single-value Target filter is the drill state and is intercepted upstream
+  // in BreakdownPanel — the targets list itself never renders in that case.
+  const filterTarget = useStore(s => s.filters.Target)
+  const rows = useMemo(() => {
+    const arr = Object.values(targets)
+    const visible = filterTarget ? arr.filter(t => filterTarget.includes(t.targetName)) : arr
+    return [...visible].sort((a, b) => b.total - a.total)
+  }, [targets, filterTarget])
   const topTotal = rows[0]?.total ?? 1
 
   return (

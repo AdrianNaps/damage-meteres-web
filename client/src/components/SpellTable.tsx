@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import type { ClientEvent, SpellDamageStats, SpellHealStats, InterruptSpellStats } from '../types'
-import { useStore } from '../store'
+import { useStore, type FilterState } from '../store'
 import { spellIconUrl } from '../utils/icons'
 
 // Aggregates events scoped to a single (attacker, target) pair into per-spell
@@ -24,11 +24,21 @@ function aggregateSpellsAgainstTarget(
   src: string,
   dst: string,
   kind: 'damage' | 'heal',
+  filters?: FilterState,
 ): ScopedSpellStat[] {
+  // Source is already pinned to `src` and Target to `dst`, so the only filter
+  // axis with meaningful narrowing power here is Ability. We still honor the
+  // Source filter as a safety check — if the user has Source set to a list
+  // that excludes the drilled player, the drill should render empty rather
+  // than ignore their filter.
+  const sourceFilter = filters?.Source
+  const abilityFilter = filters?.Ability
   const byKey = new Map<string, ScopedSpellStat>()
   for (const e of events) {
     if (e.kind !== kind) continue
     if (e.src !== src || e.dst !== dst) continue
+    if (sourceFilter && !sourceFilter.includes(e.src)) continue
+    if (abilityFilter && !abilityFilter.includes(e.ability)) continue
     const amt = e.amount ?? 0
     if (amt <= 0) continue
     const key = e.spellId || `name:${e.ability}`
@@ -150,10 +160,30 @@ function BarFill({ pct, color }: { pct: number; color: string }) {
   )
 }
 
+// Apply the Ability filter to a pre-aggregated spells dict by hiding rows
+// whose name isn't in the filter. The breakdown's Target/Source filters can't
+// be honored against pre-aggregated data without re-aggregating from events
+// (a follow-up); the Ability filter is the only one this hide-row shortcut
+// can satisfy honestly.
+function useAbilityFilteredRows<T extends { spellName: string }>(
+  spells: Record<string, T>,
+  sortBy: (a: T, b: T) => number,
+): T[] {
+  const filterAbility = useStore(s => s.filters.Ability)
+  return useMemo(() => {
+    const arr = Object.values(spells)
+    const visible = filterAbility ? arr.filter(s => filterAbility.includes(s.spellName)) : arr
+    return [...visible].sort(sortBy)
+  }, [spells, filterAbility, sortBy])
+}
+
+const sortByTotal = <T extends { total: number }>(a: T, b: T) => b.total - a.total
+const sortByCount = <T extends { count: number }>(a: T, b: T) => b.count - a.count
+
 interface DamageProps { spells: Record<string, SpellDamageStats>; classColor: string }
 
 export function DamageSpellTable({ spells, classColor }: DamageProps) {
-  const rows = Object.values(spells).sort((a, b) => b.total - a.total)
+  const rows = useAbilityFilteredRows(spells, sortByTotal)
   const topTotal = rows[0]?.total ?? 1
 
   return (
@@ -194,7 +224,7 @@ interface InterruptProps {
 }
 
 export function InterruptSpellTable({ spells, heading, classColor }: InterruptProps) {
-  const rows = Object.values(spells).sort((a, b) => b.count - a.count)
+  const rows = useAbilityFilteredRows(spells, sortByCount)
   const total = rows.reduce((sum, s) => sum + s.count, 0)
   const topCount = rows[0]?.count ?? 1
 
@@ -293,7 +323,11 @@ interface FullDamageProps {
 }
 
 export function FullDamageSpellTable({ spells, classColor, duration, playerTotal }: FullDamageProps) {
-  const rows = Object.values(spells).sort((a, b) => b.total - a.total)
+  const rows = useAbilityFilteredRows(spells, sortByTotal)
+  // Percent denominator stays at the player's full total so a row's % keeps
+  // the same meaning ("share of this player's total") whether or not other
+  // abilities are filtered out. Visible rows will sum to <100% under a
+  // filter — that's the honest reading.
   const totalForPct = playerTotal > 0 ? playerTotal : rows.reduce((s, r) => s + r.total, 0)
   const topShare = rows[0] && totalForPct > 0 ? rows[0].total / totalForPct : 0
 
@@ -347,7 +381,7 @@ interface FullHealProps {
 }
 
 export function FullHealSpellTable({ spells, classColor, duration, playerTotal }: FullHealProps) {
-  const rows = Object.values(spells).sort((a, b) => b.total - a.total)
+  const rows = useAbilityFilteredRows(spells, sortByTotal)
   const totalForPct = playerTotal > 0 ? playerTotal : rows.reduce((s, r) => s + r.total, 0)
   const topShare = rows[0] && totalForPct > 0 ? rows[0].total / totalForPct : 0
 
@@ -396,7 +430,7 @@ export function FullHealSpellTable({ spells, classColor, duration, playerTotal }
 interface HealProps { spells: Record<string, SpellHealStats>; classColor: string }
 
 export function HealSpellTable({ spells, classColor }: HealProps) {
-  const rows = Object.values(spells).sort((a, b) => b.total - a.total)
+  const rows = useAbilityFilteredRows(spells, sortByTotal)
   const topTotal = rows[0]?.total ?? 1
 
   return (
@@ -443,9 +477,10 @@ interface ScopedSummaryProps {
 }
 
 export function TargetScopedSpellTable({ events, playerName, targetName, kind, classColor }: ScopedSummaryProps) {
+  const filters = useStore(s => s.filters)
   const rows = useMemo(
-    () => aggregateSpellsAgainstTarget(events, playerName, targetName, kind),
-    [events, playerName, targetName, kind],
+    () => aggregateSpellsAgainstTarget(events, playerName, targetName, kind, filters),
+    [events, playerName, targetName, kind, filters],
   )
   const topTotal = rows[0]?.total ?? 1
 
@@ -498,9 +533,10 @@ interface ScopedFullProps {
 const SCOPED_FULL_COLUMNS = '1fr 64px 44px 44px 56px 60px'
 
 export function FullTargetScopedSpellTable({ events, playerName, targetName, kind, classColor, duration }: ScopedFullProps) {
+  const filters = useStore(s => s.filters)
   const rows = useMemo(
-    () => aggregateSpellsAgainstTarget(events, playerName, targetName, kind),
-    [events, playerName, targetName, kind],
+    () => aggregateSpellsAgainstTarget(events, playerName, targetName, kind, filters),
+    [events, playerName, targetName, kind, filters],
   )
   const scopedTotal = rows.reduce((s, r) => s + r.total, 0)
   const topShare = rows[0] && scopedTotal > 0 ? rows[0].total / scopedTotal : 0

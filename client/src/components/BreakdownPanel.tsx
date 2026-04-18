@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useStore, selectCurrentView, selectCurrentScopeKey, resolveSpecId } from '../store'
+import { useStore, selectCurrentView, resolveSpecId } from '../store'
 import { getClassColor } from './PlayerRow'
 import {
   DamageSpellTable,
@@ -25,27 +25,26 @@ const METRIC_LABELS: Record<string, string> = {
 export function BreakdownPanel() {
   const selectedPlayer = useStore(s => s.selectedPlayer)
   const currentView = useStore(selectCurrentView)
-  const scopeKey = useStore(selectCurrentScopeKey)
   const metric = useStore(s => s.drillMetric ?? s.metric)
   const mode = useStore(s => s.mode)
   const setSelectedPlayer = useStore(s => s.setSelectedPlayer)
+  const targetFilter = useStore(s => s.filters.Target)
+  const setFilter = useStore(s => s.setFilter)
   const [viewMode, setViewMode] = useState<'spells' | 'targets'>('spells')
-  const [drillTarget, setDrillTarget] = useState<string | null>(null)
   const playerSpecs = useStore(s => s.playerSpecs)
 
-  // Reset drill state when the player, metric, or view scope changes — a
-  // scope swap (e.g. segment → key-run aggregate) can leave a stale target
-  // that no longer exists in the new view's events, and metric flips would
-  // otherwise show damage-world targets under a "Healing" heading.
-  useEffect(() => {
-    setDrillTarget(null)
-  }, [selectedPlayer, metric, scopeKey])
+  // Drill is now a derived view of the global Target filter: a single-value
+  // Target filter IS the drill state. Setting it from the FilterBar opens the
+  // drill; clearing the chip exits it. Multi-value Target filters skip the
+  // drill view (the breakdown's spell/target lists don't yet aggregate against
+  // a target *set* — that's a follow-up).
+  const drillTarget = targetFilter && targetFilter.length === 1 ? targetFilter[0] : null
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         if (drillTarget) {
-          setDrillTarget(null)
+          setFilter('Target', undefined)
         } else {
           setSelectedPlayer(null)
         }
@@ -53,7 +52,7 @@ export function BreakdownPanel() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [drillTarget, setSelectedPlayer])
+  }, [drillTarget, setFilter, setSelectedPlayer])
 
   if (!selectedPlayer || !currentView) return null
 
@@ -79,8 +78,11 @@ export function BreakdownPanel() {
 
   function handleModeChange(nextViewMode: 'spells' | 'targets') {
     setViewMode(nextViewMode)
-    if (nextViewMode !== 'targets') {
-      setDrillTarget(null)
+    // Switching to "Spells" implies "all targets", so clear a single-value
+    // Target filter (which is the drill state). Multi-value Target filters
+    // are user-set from the FilterBar — leave them alone.
+    if (nextViewMode !== 'targets' && targetFilter && targetFilter.length === 1) {
+      setFilter('Target', undefined)
     }
   }
 
@@ -112,7 +114,7 @@ export function BreakdownPanel() {
         <TargetScopedView
           targetName={drillTarget}
           headingStyle={headingStyle}
-          onBack={() => setDrillTarget(null)}
+          onBack={() => setFilter('Target', undefined)}
         >
           {mode === 'full' ? (
             <FullTargetScopedSpellTable
@@ -145,7 +147,7 @@ export function BreakdownPanel() {
           rateLabel={isHealing ? 'HPS' : 'DPS'}
           classColor={color}
           resolveRow={resolveRow}
-          onSelect={(name) => setDrillTarget(name)}
+          onSelect={(name) => setFilter('Target', [name])}
         />
       )
     }
