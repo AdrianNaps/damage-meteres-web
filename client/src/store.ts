@@ -16,10 +16,19 @@ export type Perspective = 'allies' | 'enemies'
 export type FilterAxis = 'Source' | 'Target' | 'Ability'
 export type SourceKind = 'live' | 'archive'
 
+// Drag-selected segment on the line graph, stored in seconds-from-scope-start
+// to match the graph's visible x-axis. Converted to absolute ms inside the
+// filter predicate via the scope's first-event timestamp.
+export interface TimeWindow {
+  startSec: number
+  endSec: number
+}
+
 export interface FilterState {
   Source?: string[]
   Target?: string[]
   Ability?: string[]
+  TimeWindow?: TimeWindow
 }
 
 // Empty filter object shared for equality checks and defaults. Frozen so the
@@ -196,6 +205,7 @@ interface AppState {
   setPerspective: (p: Perspective) => void
   setFilter: (axis: FilterAxis, names: string[] | undefined) => void
   toggleFilterValue: (axis: FilterAxis, name: string) => void
+  setTimeWindowFilter: (window: TimeWindow | undefined) => void
   clearAllFilters: () => void
 
   // Truly global setters.
@@ -655,12 +665,17 @@ export const useStore = create<AppState>((set) => ({
 
   // Flipping perspective inverts the source/target universes (allies ↔ enemies),
   // so keeping the old Source/Target/Ability names would reference units that
-  // no longer exist on the active side. Spec says clear all three.
+  // no longer exist on the active side. Spec says clear those three. TimeWindow
+  // is perspective-independent (a slice of the fight's timeline), so it rides
+  // through perspective swaps.
   setPerspective: (p) => set(state => {
     const sid = state.activeSourceId
     const slice = state.sources.get(sid) ?? makeEmptySourceState()
     if (slice.perspective === p) return {}
-    const nextFilters = EMPTY_FILTERS
+    const preservedWindow = slice.filters.TimeWindow
+    const nextFilters = preservedWindow
+      ? normalizeFilters({ TimeWindow: preservedWindow })
+      : EMPTY_FILTERS
     const scopeKey = activeScopeKey(slice)
     const filterStateByScope = writeFilterStateToScope(
       slice.filterStateByScope,
@@ -704,6 +719,29 @@ export const useStore = create<AppState>((set) => ({
     const next: FilterState = { ...slice.filters }
     if (nextList.length === 0) delete next[axis]
     else next[axis] = nextList
+    const nextFilters = normalizeFilters(next)
+    const scopeKey = activeScopeKey(slice)
+    const filterStateByScope = writeFilterStateToScope(
+      slice.filterStateByScope,
+      scopeKey,
+      { filters: nextFilters, perspective: slice.perspective },
+    )
+    return applySliceUpdate(state, sid, { filters: nextFilters, filterStateByScope })
+  }),
+
+  setTimeWindowFilter: (window) => set(state => {
+    const sid = state.activeSourceId
+    const slice = state.sources.get(sid) ?? makeEmptySourceState()
+    const current = slice.filters.TimeWindow
+    // No-op when the window is unchanged so reference-equality short-circuits
+    // downstream useMemo deps stay intact.
+    if (
+      (!window && !current)
+      || (window && current && window.startSec === current.startSec && window.endSec === current.endSec)
+    ) return {}
+    const next: FilterState = { ...slice.filters }
+    if (!window) delete next.TimeWindow
+    else next.TimeWindow = window
     const nextFilters = normalizeFilters(next)
     const scopeKey = activeScopeKey(slice)
     const filterStateByScope = writeFilterStateToScope(

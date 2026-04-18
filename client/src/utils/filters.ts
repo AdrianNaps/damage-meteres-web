@@ -65,10 +65,18 @@ function rowSubject(e: ClientEvent): string {
 
 // Shared AND-composition predicate. Matches the spec's includeEvent() exactly:
 // an event contributes only if it passes every active filter.
-function passesFilters(e: ClientEvent, filters: FilterState): boolean {
+// `t0` is the absolute-ms timestamp of the first event in the scope; required
+// when TimeWindow is set so we can translate its segment-relative seconds into
+// the event's absolute-ms basis. Callers that never set TimeWindow can pass 0.
+function passesFilters(e: ClientEvent, filters: FilterState, t0: number): boolean {
   if (filters.Source  && !filters.Source.includes(e.src)) return false
   if (filters.Target  && !filters.Target.includes(e.dst)) return false
   if (filters.Ability && !filters.Ability.includes(e.ability)) return false
+  if (filters.TimeWindow) {
+    const elapsedSec = (e.t - t0) / 1000
+    if (elapsedSec < filters.TimeWindow.startSec) return false
+    if (elapsedSec > filters.TimeWindow.endSec) return false
+  }
   return true
 }
 
@@ -79,7 +87,15 @@ function passesPerspective(e: ClientEvent, perspective: Perspective, allySet: Se
 }
 
 function hasAnyFilter(filters: FilterState): boolean {
-  return !!(filters.Source || filters.Target || filters.Ability)
+  return !!(filters.Source || filters.Target || filters.Ability || filters.TimeWindow)
+}
+
+// Scope-relative time basis for TimeWindow translation. events[0].t is the
+// convention elsewhere in this file (see computeEnemyPlayers' combatElapsed
+// derivation). Returns 0 for an empty events array — harmless because no
+// events will loop anyway.
+function scopeT0(events: ClientEvent[]): number {
+  return events.length > 0 ? events[0].t : 0
 }
 
 // Per-events-array caches for derived rows/universes under default filters.
@@ -129,13 +145,14 @@ function computeUnitRowsImpl(
 ): UnitRow[] {
   const kind = kindFor(category)
   const allySet = makeAllySet(allies)
+  const t0 = scopeT0(events)
   type Bucket = { total: number; count: number; overheal: number; abilities: Set<string> }
   const agg = new Map<string, Bucket>()
 
   for (const e of events) {
     if (e.kind !== kind) continue
     if (!passesPerspective(e, perspective, allySet)) continue
-    if (!passesFilters(e, filters)) continue
+    if (!passesFilters(e, filters, t0)) continue
 
     const subject = rowSubject(e)
     if (!subject) continue
@@ -198,12 +215,13 @@ function computeDeathRowsImpl(
   allies: Record<string, PlayerSnapshot>,
 ): DeathRow[] {
   const allySet = makeAllySet(allies)
+  const t0 = scopeT0(events)
   const rows: DeathRow[] = []
 
   for (const e of events) {
     if (e.kind !== 'death') continue
     if (!passesPerspective(e, perspective, allySet)) continue
-    if (!passesFilters(e, filters)) continue
+    if (!passesFilters(e, filters, t0)) continue
 
     rows.push({
       t: e.t,
@@ -303,10 +321,11 @@ export function hasMatchingData(
 ): boolean {
   const kind = kindFor(category)
   const allySet = makeAllySet(allies)
+  const t0 = scopeT0(events)
   for (const e of events) {
     if (e.kind !== kind) continue
     if (!passesPerspective(e, perspective, allySet)) continue
-    if (!passesFilters(e, filters)) continue
+    if (!passesFilters(e, filters, t0)) continue
     return true
   }
   return false
@@ -523,12 +542,13 @@ function filterCacheKey(filters: FilterState): string {
   // JSON shape sidesteps separator collisions (e.g. a unit name containing
   // `|` or `;`). Per-axis values are sorted for canonicality so chip order
   // doesn't churn the key. Cost is negligible — small object, microseconds.
-  const canonical: Record<string, string[]> = {}
+  const canonical: Record<string, string[] | { startSec: number; endSec: number }> = {}
   for (const axis of ['Source', 'Target', 'Ability'] as const) {
     const v = filters[axis]
     if (!v || v.length === 0) continue
     canonical[axis] = [...v].sort()
   }
+  if (filters.TimeWindow) canonical.TimeWindow = filters.TimeWindow
   return JSON.stringify(canonical)
 }
 
@@ -593,6 +613,8 @@ function computeAllPlayerBreakdowns(
   const sourceFilter = filters.Source
   const targetFilter = filters.Target
   const abilityFilter = filters.Ability
+  const timeWindow = filters.TimeWindow
+  const t0 = scopeT0(events)
 
   for (const e of events) {
     if (e.kind !== kind) continue
@@ -604,6 +626,10 @@ function computeAllPlayerBreakdowns(
     if (sourceFilter && !sourceFilter.includes(e.src)) continue
     if (targetFilter && !targetFilter.includes(e.dst)) continue
     if (abilityFilter && !abilityFilter.includes(e.ability)) continue
+    if (timeWindow) {
+      const elapsedSec = (e.t - t0) / 1000
+      if (elapsedSec < timeWindow.startSec || elapsedSec > timeWindow.endSec) continue
+    }
     const amount = e.amount ?? 0
     if (amount <= 0) continue
 
@@ -712,13 +738,19 @@ export function mostRestrictiveFilter(
   category: Metric,
   allies: Record<string, PlayerSnapshot>,
 ): { axis: keyof FilterState; label: string } | null {
-  const axes: (keyof FilterState)[] = ['Ability', 'Target', 'Source']
+  // Order matters: check the narrower, more deliberately-set filters first.
+  // TimeWindow is typically the most specific (drag-selected range), so it
+  // leads. Falls back to chip filters otherwise.
+  const axes: (keyof FilterState)[] = ['TimeWindow', 'Ability', 'Target', 'Source']
   for (const axis of axes) {
     if (!filters[axis]) continue
     const stripped: FilterState = { ...filters }
     delete stripped[axis]
     if (hasMatchingData(events, perspective, stripped, category, allies)) {
-      const values = filters[axis] ?? []
+      if (axis === 'TimeWindow') {
+        return { axis, label: 'Time window' }
+      }
+      const values = (filters[axis] as string[] | undefined) ?? []
       const label = values.length === 1 ? `${axis}: ${values[0]}` : `${axis} filter`
       return { axis, label }
     }

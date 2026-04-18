@@ -1,9 +1,10 @@
 import { forwardRef, useDeferredValue, useMemo, useRef, useState } from 'react'
-import { useStore, selectCurrentView, type FilterAxis, type Perspective, resolveSpecId } from '../store'
+import { useStore, selectCurrentView, type FilterAxis, type FilterState, type Perspective, type TimeWindow, resolveSpecId } from '../store'
 import { computeAbilityUniverse, computeUnitUniverse } from '../utils/filters'
 import type { ClientEvent, PlayerSnapshot } from '../types'
 import { FilterPicker, type PickerOption } from './FilterPicker'
 import { getClassColor } from './PlayerRow'
+import { formatTime } from '../utils/format'
 
 // Single-select state for the active popover. Only one picker is open at a
 // time — clicking a different picker button swaps which is open; clicking the
@@ -24,6 +25,7 @@ export function FilterBar() {
   const setPerspective = useStore(s => s.setPerspective)
   const toggleFilterValue = useStore(s => s.toggleFilterValue)
   const setFilter = useStore(s => s.setFilter)
+  const setTimeWindowFilter = useStore(s => s.setTimeWindowFilter)
   const clearAllFilters = useStore(s => s.clearAllFilters)
 
   const [open, setOpen] = useState<OpenPicker>(null)
@@ -79,7 +81,7 @@ export function FilterBar() {
     setOpen(prev => prev === axis ? null : axis)
   }
 
-  const hasAnyFilter = !!(filters.Source || filters.Target || filters.Ability)
+  const hasAnyFilter = !!(filters.Source || filters.Target || filters.Ability || filters.TimeWindow)
 
   return (
     <>
@@ -121,7 +123,12 @@ export function FilterBar() {
           onClick={() => togglePicker('Ability')}
         />
         <div style={{ flex: 1 }} />
-        <ActiveFilterChips filters={filters} onRemove={(axis, value) => toggleFilterValue(axis, value)} onClearAxis={axis => setFilter(axis, undefined)} />
+        <ActiveFilterChips
+          filters={filters}
+          onRemove={(axis, value) => toggleFilterValue(axis, value)}
+          onClearAxis={axis => setFilter(axis, undefined)}
+          onClearTimeWindow={() => setTimeWindowFilter(undefined)}
+        />
         {hasAnyFilter && (
           <button
             onClick={clearAllFilters}
@@ -306,17 +313,20 @@ function ActiveFilterChips({
   filters,
   onRemove,
   onClearAxis,
+  onClearTimeWindow,
 }: {
-  filters: { Source?: string[]; Target?: string[]; Ability?: string[] }
+  filters: FilterState
   onRemove: (axis: FilterAxis, value: string) => void
   onClearAxis: (axis: FilterAxis) => void
+  onClearTimeWindow: () => void
 }) {
   const chips: { axis: FilterAxis; values: string[] }[] = []
   for (const axis of ['Source', 'Target', 'Ability'] as const) {
     const values = filters[axis]
     if (values && values.length > 0) chips.push({ axis, values })
   }
-  if (chips.length === 0) return null
+  const tw = filters.TimeWindow
+  if (chips.length === 0 && !tw) return null
 
   return (
     <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -325,23 +335,29 @@ function ActiveFilterChips({
         // Multi-value: show "axis: first +N" with × to clear the whole axis.
         if (values.length === 1) {
           return (
-            <Chip key={axis} axis={axis} value={values[0]} onRemove={() => onRemove(axis, values[0])} />
+            <Chip key={axis} label={axis} value={values[0]} onRemove={() => onRemove(axis, values[0])} />
           )
         }
         return (
           <Chip
             key={axis}
-            axis={axis}
+            label={axis}
             value={`${values[0]} +${values.length - 1}`}
             onRemove={() => onClearAxis(axis)}
           />
         )
       })}
+      {tw && <Chip label="Time" value={formatTimeWindow(tw)} onRemove={onClearTimeWindow} />}
     </div>
   )
 }
 
-function Chip({ axis, value, onRemove }: { axis: FilterAxis; value: string; onRemove: () => void }) {
+// "0:12–0:45" with an en-dash so the range reads cleanly in the filter bar.
+function formatTimeWindow(tw: TimeWindow): string {
+  return `${formatTime(tw.startSec)}–${formatTime(tw.endSec)}`
+}
+
+function Chip({ label, value, onRemove }: { label: string; value: string; onRemove: () => void }) {
   return (
     <span style={{
       display: 'inline-flex',
@@ -360,7 +376,7 @@ function Chip({ axis, value, onRemove }: { axis: FilterAxis; value: string; onRe
         fontSize: 9,
         letterSpacing: '0.06em',
       }}>
-        {axis}
+        {label}
       </span>
       {value}
       <span

@@ -2,7 +2,7 @@ import { useRef, useEffect, useCallback, useMemo, useState } from 'react'
 import type { PlayerSnapshot } from '../types'
 import { getClassColor } from './PlayerRow'
 import { useStore, resolveSpecId, GRAPH_GROUP_AVG_KEY, selectGraphTimeOffset } from '../store'
-import { formatNum, shortName } from '../utils/format'
+import { formatNum, shortName, formatTime } from '../utils/format'
 
 interface Props {
   metric: 'damage' | 'healing' | 'deaths' | 'interrupts'
@@ -15,6 +15,14 @@ const PAD = { top: 4, right: 8, bottom: 16, left: 40 }
 
 const UNFOCUSED_ALPHA = 0.18
 const GROUP_AVG_COLOR = '#f59e0b'
+
+// Below this pixel threshold, a mousedown→mouseup counts as a click (passes
+// through to existing hover/focus behaviors). Past the threshold, we treat it
+// as an intentional time-window selection.
+const MIN_DRAG_PX = 3
+const TIME_WINDOW_FILL = 'rgba(59, 130, 246, 0.14)'
+const TIME_WINDOW_BORDER = 'rgba(96, 165, 250, 0.55)'
+const TIME_WINDOW_SHADE = 'rgba(8, 10, 14, 0.55)'
 
 // Slice width for the line graph series. Scaled with duration so short fights
 // get fine-grained sampling and long dungeon overalls don't produce thousands
@@ -37,12 +45,6 @@ function hashStr(str: string): number {
   let h = 0
   for (let i = 0; i < str.length; i++) h = ((h << 5) - h + str.charCodeAt(i)) | 0
   return Math.abs(h)
-}
-
-function formatTime(sec: number): string {
-  const m = Math.floor(sec / 60)
-  const s = sec % 60
-  return `${m}:${String(s).padStart(2, '0')}`
 }
 
 // Deterministic pseudo-random series for a player, seeded by name
@@ -112,10 +114,26 @@ export function GraphContainer({ metric, players, duration, inactive }: Props) {
   const toggleFocus = useStore(s => s.toggleGraphFocus)
   const timeOffset = useStore(selectGraphTimeOffset)
 
+  // TimeWindow filter (drag-selected band). Stored in segment-relative seconds
+  // so the overlay lines up with the graph's visible x-axis without needing a
+  // separate time basis from the events array. Drag-to-select is gated to Full
+  // mode because that's the only mode where filters actually narrow data — a
+  // drag in Summary would set a chip the user can't see (FilterBar is hidden)
+  // and have no effect on the pre-aggregated snapshot values.
+  const timeWindowFilter = useStore(s => s.filters.TimeWindow)
+  const setTimeWindowFilter = useStore(s => s.setTimeWindowFilter)
+  const mode = useStore(s => s.mode)
+
   const [hover, setHover] = useState<HoverState | null>(null)
   const [barHover, setBarHover] = useState<BarHoverState | null>(null)
+  // Drag-select state. Both fields are canvas-CSS-pixel x coordinates (relative
+  // to the canvas left edge). A drag is "active" whenever this is non-null; on
+  // mouseup we decide whether to commit (movement past MIN_DRAG_PX) or discard
+  // (treat as a click and leave hover/focus behaviors to the existing handlers).
+  const [drag, setDrag] = useState<{ startX: number; currentX: number } | null>(null)
 
   const isBar = metric === 'deaths' || metric === 'interrupts'
+  const dragEnabled = !inactive && !isBar && mode === 'full'
 
   // Bar data — bucketed counts plus per-bucket tooltip records. Computed once
   // per metric/players/duration change so the renderer and the hover tooltip
@@ -231,6 +249,53 @@ export function GraphContainer({ metric, players, duration, inactive }: Props) {
     if (!barData) setBarHover(null)
   }, [barData])
 
+  // Cancel any in-flight drag when the underlying line data vanishes (e.g. the
+  // user navigates to a different scope mid-drag) or the graph flips into its
+  // inactive placeholder state. Without this, a silent mouseup would still
+  // commit a TimeWindow filter against the wrong scope.
+  useEffect(() => {
+    if ((!lineData || inactive) && drag) setDrag(null)
+  }, [lineData, inactive, drag])
+
+  // Window-level mouseup so a drag that escapes the canvas still commits. Only
+  // bound while a drag is active; tears down immediately after. The commit
+  // logic: short drags (<MIN_DRAG_PX) are treated as clicks and discarded so
+  // they don't accidentally clobber an existing TimeWindow filter.
+  useEffect(() => {
+    if (!drag) return
+    const canvas = canvasRef.current
+    if (!canvas) return
+
+    const onUp = () => {
+      const rect = canvas.getBoundingClientRect()
+      const pixelDelta = Math.abs(drag.currentX - drag.startX)
+      if (pixelDelta < MIN_DRAG_PX) {
+        setDrag(null)
+        return
+      }
+      // Inline pixel→seconds conversion so this effect closure doesn't depend
+      // on the un-memoized helper (would re-bind every render). Same math as
+      // secondsFromCanvasX — if you change one, change the other.
+      const plotW = rect.width - PAD.left - PAD.right
+      const toSec = (xCss: number) => {
+        if (plotW <= 0) return 0
+        const xInPlot = Math.max(0, Math.min(plotW, xCss - PAD.left))
+        return (xInPlot / plotW) * duration
+      }
+      const startSec = toSec(Math.min(drag.startX, drag.currentX))
+      const endSec = toSec(Math.max(drag.startX, drag.currentX))
+      // Guard against zero-width after rounding/clamping (happens when the
+      // whole drag lives in the padding region on a tiny canvas).
+      if (endSec > startSec) {
+        setTimeWindowFilter({ startSec, endSec })
+      }
+      setDrag(null)
+    }
+
+    window.addEventListener('mouseup', onUp)
+    return () => window.removeEventListener('mouseup', onUp)
+  }, [drag, duration, setTimeWindowFilter])
+
   const draw = useCallback(() => {
     const canvas = canvasRef.current
     if (!canvas) return
@@ -257,11 +322,24 @@ export function GraphContainer({ metric, players, duration, inactive }: Props) {
       if (barData) drawBars(ctx, h, plotW, plotH, barData, timeOffset, barHover?.bucket ?? null, barHover?.seriesIndex ?? null)
       else drawEmptyState(ctx, w, h)
     } else if (lineData) {
-      drawLineGraph(ctx, h, plotW, plotH, lineData, focused, duration, timeOffset, hover?.slice ?? null)
+      // Suppress the hover crosshair during an active drag — the drag rect
+      // becomes the primary visual, and the crosshair would clutter it.
+      const hoverSlice = drag ? null : (hover?.slice ?? null)
+      drawLineGraph(ctx, h, plotW, plotH, lineData, focused, duration, timeOffset, hoverSlice)
+
+      // Overlay stack on top of the line graph:
+      //   1. An active drag always wins — shows the live selection rect only.
+      //   2. Otherwise, if a TimeWindow filter is committed, shade outside
+      //      the window so the selected band stays bright.
+      if (drag) {
+        drawDragRect(ctx, plotW, plotH, drag)
+      } else if (timeWindowFilter && duration > 0) {
+        shadeOutsideWindow(ctx, plotW, plotH, duration, timeWindowFilter.startSec, timeWindowFilter.endSec)
+      }
     } else {
       drawEmptyState(ctx, w, h)
     }
-  }, [isBar, barData, lineData, focused, duration, timeOffset, hover, barHover, inactive])
+  }, [isBar, barData, lineData, focused, duration, timeOffset, hover, barHover, inactive, drag, timeWindowFilter])
 
   useEffect(() => {
     draw()
@@ -280,11 +358,42 @@ export function GraphContainer({ metric, players, duration, inactive }: Props) {
     : metric === 'deaths' ? 'Deaths Over Time'
     : 'Interrupts Over Time'
 
+  // Canvas CSS-pixel x (relative to canvas left edge) of a mouse event.
+  // Clamped so a drag that escapes the plot still produces a usable selection.
+  function canvasXFromEvent(e: MouseEvent | React.MouseEvent, rect: DOMRect): number {
+    return Math.max(PAD.left, Math.min(rect.width - PAD.right, e.clientX - rect.left))
+  }
+
+  function handleMouseDown(e: React.MouseEvent<HTMLCanvasElement>) {
+    // Guard: inactive graph, non-line graphs, Summary mode, and empty data
+    // all skip drag. Only primary button starts a selection; other buttons
+    // pass through so right-click menus still work.
+    if (!dragEnabled || !lineData || e.button !== 0) return
+    const rect = e.currentTarget.getBoundingClientRect()
+    const xInPlot = e.clientX - rect.left - PAD.left
+    const plotW = rect.width - PAD.left - PAD.right
+    if (xInPlot < 0 || xInPlot > plotW) return
+
+    const xCss = canvasXFromEvent(e, rect)
+    setDrag({ startX: xCss, currentX: xCss })
+    // Clear hover so the crosshair doesn't flash during the drag; the draw()
+    // branch suppresses it via `drag` anyway, but clearing keeps state tidy.
+    if (hover) setHover(null)
+  }
+
   function handleMouseMove(e: React.MouseEvent<HTMLCanvasElement>) {
     if (inactive) return
     const rect = e.currentTarget.getBoundingClientRect()
     const plotW = rect.width - PAD.left - PAD.right
     const xInPlot = e.clientX - rect.left - PAD.left
+
+    // Active drag: extend the selection. The window-level mouseup listener
+    // below handles commit/discard when the button is released.
+    if (drag) {
+      const xCss = canvasXFromEvent(e, rect)
+      if (xCss !== drag.currentX) setDrag({ startX: drag.startX, currentX: xCss })
+      return
+    }
 
     if (lineData) {
       if (xInPlot < 0 || xInPlot > plotW) {
@@ -419,9 +528,21 @@ export function GraphContainer({ metric, players, duration, inactive }: Props) {
       <div style={{ position: 'relative' }}>
         <canvas
           ref={canvasRef}
+          onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseLeave={handleMouseLeave}
-          style={{ width: '100%', height: 120, display: 'block' }}
+          style={{
+            width: '100%',
+            height: 120,
+            display: 'block',
+            // Crosshair only when drag-select is actually available — it
+            // signals a distinct affordance, so we don't want to imply it in
+            // Summary mode, on bar metrics, or over inactive/empty graphs.
+            cursor: dragEnabled && lineData ? 'crosshair' : 'default',
+            // Prevent the browser's default text-selection-on-drag from
+            // highlighting legend/title text during a range selection.
+            userSelect: drag ? 'none' : 'auto',
+          }}
         />
         {tooltip && hover && (
           <div
@@ -656,6 +777,74 @@ function drawDot(ctx: CanvasRenderingContext2D, x: number, y: number, color: str
   ctx.beginPath()
   ctx.arc(x, y, 3, 0, Math.PI * 2)
   ctx.fill()
+  ctx.stroke()
+}
+
+// Live drag rectangle drawn during a drag-select. Coordinates come from state
+// in canvas-CSS pixels (relative to the canvas left edge, not the plot area),
+// and are clamped to the plot bounds here so the overlay never bleeds into the
+// y-axis label gutter or the x-axis label strip.
+function drawDragRect(
+  ctx: CanvasRenderingContext2D,
+  plotW: number,
+  plotH: number,
+  drag: { startX: number; currentX: number },
+) {
+  const plotLeft = PAD.left
+  const plotRight = PAD.left + plotW
+  const x0 = Math.max(plotLeft, Math.min(plotRight, Math.min(drag.startX, drag.currentX)))
+  const x1 = Math.max(plotLeft, Math.min(plotRight, Math.max(drag.startX, drag.currentX)))
+  const width = x1 - x0
+  if (width <= 0) return
+
+  ctx.fillStyle = TIME_WINDOW_FILL
+  ctx.fillRect(x0, PAD.top, width, plotH)
+  ctx.strokeStyle = TIME_WINDOW_BORDER
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  ctx.moveTo(x0 + 0.5, PAD.top)
+  ctx.lineTo(x0 + 0.5, PAD.top + plotH)
+  ctx.moveTo(x1 - 0.5, PAD.top)
+  ctx.lineTo(x1 - 0.5, PAD.top + plotH)
+  ctx.stroke()
+}
+
+// Committed TimeWindow indicator: dim the regions OUTSIDE [startSec, endSec]
+// so the selected band stays bright and fully visible. Rendered on top of the
+// line graph but under the hover tooltip.
+function shadeOutsideWindow(
+  ctx: CanvasRenderingContext2D,
+  plotW: number,
+  plotH: number,
+  duration: number,
+  startSec: number,
+  endSec: number,
+) {
+  if (duration <= 0) return
+  const startX = PAD.left + (Math.max(0, startSec) / duration) * plotW
+  const endX = PAD.left + (Math.min(duration, endSec) / duration) * plotW
+  if (endX <= startX) return
+
+  ctx.fillStyle = TIME_WINDOW_SHADE
+  // Left of window
+  if (startX > PAD.left) {
+    ctx.fillRect(PAD.left, PAD.top, startX - PAD.left, plotH)
+  }
+  // Right of window
+  const plotRight = PAD.left + plotW
+  if (endX < plotRight) {
+    ctx.fillRect(endX, PAD.top, plotRight - endX, plotH)
+  }
+
+  // Subtle border markers at the window edges so the band is legible even when
+  // the graph underneath is mostly flat.
+  ctx.strokeStyle = TIME_WINDOW_BORDER
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  ctx.moveTo(startX + 0.5, PAD.top)
+  ctx.lineTo(startX + 0.5, PAD.top + plotH)
+  ctx.moveTo(endX - 0.5, PAD.top)
+  ctx.lineTo(endX - 0.5, PAD.top + plotH)
   ctx.stroke()
 }
 
