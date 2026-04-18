@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useDeferredValue, useEffect, useState } from 'react'
 import { useStore, selectCurrentView, resolveSpecId } from '../store'
 import { getClassColor } from './PlayerRow'
 import {
@@ -12,6 +12,7 @@ import { TargetTable, type TargetRowStyle } from './TargetTable'
 import { selectPlayerBreakdown } from '../utils/filters'
 import { specIconUrl } from '../utils/icons'
 import { formatNum, shortName } from '../utils/format'
+import type { ClientEvent, PlayerSnapshot } from '../types'
 
 const METRIC_LABELS: Record<string, string> = {
   damage: 'Damage',
@@ -19,6 +20,11 @@ const METRIC_LABELS: Record<string, string> = {
   deaths: 'Deaths',
   interrupts: 'Interrupts',
 }
+
+// Stable references when currentView lacks events/players, so the breakdown
+// cache (WeakMap-keyed on the events array) doesn't miss every render.
+const EMPTY_EVENTS: ClientEvent[] = []
+const EMPTY_PLAYERS: Record<string, PlayerSnapshot> = {}
 
 export function BreakdownPanel() {
   const selectedPlayer = useStore(s => s.selectedPlayer)
@@ -30,6 +36,10 @@ export function BreakdownPanel() {
   const setFilter = useStore(s => s.setFilter)
   const [viewMode, setViewMode] = useState<'spells' | 'targets'>('spells')
   const playerSpecs = useStore(s => s.playerSpecs)
+  // Defer the filter input so a chip toggle yields two renders (old rows stay
+  // visible while new rows compute at lower priority). Mirrors FullMeterView.
+  // Must sit above any early return — hooks rules.
+  const deferredFilters = useDeferredValue(filters)
 
   // Drill is a derived view of the global Target filter: a single-value
   // Target filter IS the drill state. Setting it from the FilterBar opens the
@@ -71,10 +81,11 @@ export function BreakdownPanel() {
   // (with shared per-events caching) when any filter is active. The returned
   // shape feeds every surface — header total/rate, spell list, targets list,
   // and the drilled target view — so they all agree by construction.
-  const events = currentView.events ?? []
+  const events = currentView.events ?? EMPTY_EVENTS
+  const allies = currentView.players ?? EMPTY_PLAYERS
   const breakdownKind = metric === 'damage' ? 'damage' : metric === 'healing' ? 'heal' : null
   const breakdown = breakdownKind
-    ? selectPlayerBreakdown(events, selectedPlayer, breakdownKind, filters, duration, player)
+    ? selectPlayerBreakdown(events, selectedPlayer, breakdownKind, deferredFilters, duration, player, allies)
     : null
 
   const value = breakdown ? breakdown.rate : player.interrupts.total
@@ -100,6 +111,14 @@ export function BreakdownPanel() {
       )
     }
     if (!breakdown) return null
+
+    // Empty state covers two cases: filters narrow this player to nothing, or
+    // the player has no data of this kind to begin with (e.g. healer drilled
+    // into damage). One inline message handles both — the FilterBar chips
+    // make the cause obvious.
+    if (breakdown.spells.length === 0 && breakdown.targets.length === 0) {
+      return <BreakdownEmptyState />
+    }
 
     const isHealing = metric === 'healing'
     // Player-aware row decorator: resolves healing sources/targets to their own
@@ -222,6 +241,19 @@ export function BreakdownPanel() {
         {renderContent()}
       </div>
     </>
+  )
+}
+
+function BreakdownEmptyState() {
+  return (
+    <div style={{
+      padding: '32px 16px',
+      textAlign: 'center',
+      color: 'var(--text-muted)',
+      fontSize: 12,
+    }}>
+      No data for the current filters.
+    </div>
   )
 }
 

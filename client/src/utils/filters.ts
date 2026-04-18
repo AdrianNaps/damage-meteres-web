@@ -462,23 +462,40 @@ export function computeEnemyPlayers(
 //     fields (until the wire enrichment lands).
 // The renderer treats critCount/normalMax as optional; absent values render
 // "—" rather than 0.
+//
+// Path-divergence trade-off: snapshot.{damage,healing}.total is server-authored
+// and may include events the client-side walk drops (e.g. amount === 0 from
+// fully-absorbed hits). So toggling a filter that *should* be a no-op (e.g.
+// Source = [the only player]) can make the header total tick down by the
+// dropped contribution. Acceptable today because (a) Full mode requires
+// completed segments so the divergence is stable, not flickering, and (b) the
+// drill view has always behaved this way pre-refactor. Revisit if the
+// divergence becomes user-visible enough to confuse.
+//
+// hitCount semantics: the events path counts each `kind === 'damage' | 'heal'`
+// event as one hit. The snapshot's hitCount is server-authored — if those
+// definitions diverge (e.g. server excludes periodic ticks), the no-filter and
+// filtered values won't match. Server convention should mirror "one event =
+// one hit"; verify if a parity bug shows up.
 
 export interface BreakdownSpellRow {
   spellId: string
   spellName: string
   total: number
   hitCount: number
-  // Only populated on the no-filter path until ClientEvent grows a `crit` flag.
+  // critCount / normalMax: only populated on the snapshot (no-filter) path
+  // until ClientEvent grows a `crit` flag. Renderer shows "—" when absent.
   critCount?: number
   normalMax?: number
-  // Healing only.
+  // overheal: healing rows only. Populated on BOTH paths for heal kind (events
+  // carry e.overheal); damage rows leave it undefined.
   overheal?: number
 }
 
 export interface BreakdownTargetRow {
   targetName: string
   total: number
-  // Healing only.
+  // Healing only; populated on both paths.
   overheal?: number
 }
 
@@ -503,14 +520,16 @@ const EMPTY_BREAKDOWN: PlayerBreakdown = {
 const breakdownCache = new WeakMap<ClientEvent[], Map<string, Map<string, PlayerBreakdown>>>()
 
 function filterCacheKey(filters: FilterState): string {
-  // Canonical: sort each axis' values so chip order doesn't churn the key.
-  const parts: string[] = []
+  // JSON shape sidesteps separator collisions (e.g. a unit name containing
+  // `|` or `;`). Per-axis values are sorted for canonicality so chip order
+  // doesn't churn the key. Cost is negligible — small object, microseconds.
+  const canonical: Record<string, string[]> = {}
   for (const axis of ['Source', 'Target', 'Ability'] as const) {
     const v = filters[axis]
     if (!v || v.length === 0) continue
-    parts.push(`${axis}:${[...v].sort().join('|')}`)
+    canonical[axis] = [...v].sort()
   }
-  return parts.join(';')
+  return JSON.stringify(canonical)
 }
 
 // Project a PlayerSnapshot's pre-aggregated damage/heal stats into the
@@ -521,7 +540,9 @@ function projectSnapshot(
   kind: 'damage' | 'heal',
   durationSec: number,
 ): PlayerBreakdown {
-  const dur = durationSec > 0 ? durationSec : 1
+  // rate=0 (rather than total/1) when duration is zero/unknown — avoids
+  // surfacing nonsense like "1.2M DPS" for a zero-length fight.
+  const rateOf = (total: number) => durationSec > 0 ? total / durationSec : 0
   if (kind === 'damage') {
     const spells: BreakdownSpellRow[] = Object.values(snapshot.damage.spells).map(s => ({
       spellId: s.spellId,
@@ -537,7 +558,7 @@ function projectSnapshot(
       total: t.total,
     }))
     targets.sort((a, b) => b.total - a.total)
-    return { total: snapshot.damage.total, rate: snapshot.damage.total / dur, spells, targets }
+    return { total: snapshot.damage.total, rate: rateOf(snapshot.damage.total), spells, targets }
   }
   const spells: BreakdownSpellRow[] = Object.values(snapshot.healing.spells).map(s => ({
     spellId: s.spellId,
@@ -554,7 +575,7 @@ function projectSnapshot(
     overheal: t.overheal,
   }))
   targets.sort((a, b) => b.total - a.total)
-  return { total: snapshot.healing.total, rate: snapshot.healing.total / dur, spells, targets }
+  return { total: snapshot.healing.total, rate: rateOf(snapshot.healing.total), spells, targets }
 }
 
 function computeAllPlayerBreakdowns(
@@ -562,6 +583,7 @@ function computeAllPlayerBreakdowns(
   kind: 'damage' | 'heal',
   filters: FilterState,
   durationSec: number,
+  allies: Record<string, PlayerSnapshot>,
 ): Map<string, PlayerBreakdown> {
   type SpellAcc = { spellId: string; spellName: string; total: number; hitCount: number; overheal: number }
   type TargetAcc = { targetName: string; total: number; overheal: number }
@@ -574,6 +596,11 @@ function computeAllPlayerBreakdowns(
 
   for (const e of events) {
     if (e.kind !== kind) continue
+    // The breakdown panel only ever opens on an ally row (FullMeterView gates
+    // enemy-perspective clicks), so bucketing enemy `src`s is wasted work that
+    // grows with trash count on M+ aggregates. Restricting to allies bounds
+    // memory at ~20 buckets regardless of fight size.
+    if (!allies[e.src]) continue
     if (sourceFilter && !sourceFilter.includes(e.src)) continue
     if (targetFilter && !targetFilter.includes(e.dst)) continue
     if (abilityFilter && !abilityFilter.includes(e.ability)) continue
@@ -608,7 +635,6 @@ function computeAllPlayerBreakdowns(
     if (kind === 'heal') target.overheal += e.overheal ?? 0
   }
 
-  const dur = durationSec > 0 ? durationSec : 1
   const out = new Map<string, PlayerBreakdown>()
   for (const [name, acc] of byPlayer) {
     const spells: BreakdownSpellRow[] = []
@@ -632,7 +658,12 @@ function computeAllPlayerBreakdowns(
     }
     targets.sort((a, b) => b.total - a.total)
 
-    out.set(name, { total: acc.total, rate: acc.total / dur, spells, targets })
+    out.set(name, {
+      total: acc.total,
+      rate: durationSec > 0 ? acc.total / durationSec : 0,
+      spells,
+      targets,
+    })
   }
   return out
 }
@@ -640,6 +671,10 @@ function computeAllPlayerBreakdowns(
 // Pick the cheaper, richer path when no filter is active; fall through to
 // event aggregation otherwise. Returning EMPTY_BREAKDOWN for unknown players
 // keeps the renderer trivially safe — empty rows + zero total render "no data."
+//
+// Duration in the cache key is OK because Full mode (the only mode where
+// filters are exposed) requires a completed scope — duration is stable across
+// renders for any cached entry.
 export function selectPlayerBreakdown(
   events: ClientEvent[],
   playerName: string,
@@ -647,6 +682,7 @@ export function selectPlayerBreakdown(
   filters: FilterState,
   durationSec: number,
   snapshot: PlayerSnapshot | undefined,
+  allies: Record<string, PlayerSnapshot>,
 ): PlayerBreakdown {
   if (snapshot && !hasAnyFilter(filters)) {
     return projectSnapshot(snapshot, kind, durationSec)
@@ -659,7 +695,7 @@ export function selectPlayerBreakdown(
   }
   let perKey = perEvents.get(cacheKey)
   if (!perKey) {
-    perKey = computeAllPlayerBreakdowns(events, kind, filters, durationSec)
+    perKey = computeAllPlayerBreakdowns(events, kind, filters, durationSec, allies)
     perEvents.set(cacheKey, perKey)
   }
   return perKey.get(playerName) ?? EMPTY_BREAKDOWN
