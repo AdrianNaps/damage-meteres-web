@@ -1,6 +1,6 @@
 import { useEffect, useMemo } from 'react'
 import { connectWs } from './ws'
-import { useStore, selectCurrentView, selectCurrentScopeKey, selectIsOverall, type Metric, type Mode } from './store'
+import { useStore, selectCurrentView, selectCurrentScopeKey, selectIsOverall, selectIsActiveScopeInProgress, type Metric, type Mode } from './store'
 import { EncounterHeader } from './components/EncounterHeader'
 import { SegmentTabs } from './components/SegmentTabs'
 import { SummaryView } from './components/SummaryView'
@@ -55,6 +55,7 @@ function ContentPanel() {
   const setMode = useStore(s => s.setMode)
   const currentView = useStore(selectCurrentView)
   const isOverall = useStore(selectIsOverall)
+  const isInProgress = useStore(selectIsActiveScopeInProgress)
   const perspective = useStore(s => s.perspective)
   const selectedPlayer = useStore(s => s.selectedPlayer)
   const selectedDeath = useStore(s => s.selectedDeath)
@@ -97,7 +98,13 @@ function ContentPanel() {
       minHeight: 0,
     }}>
       {/* Toggle bar: CategoryTabs + ModeToggle */}
-      <ToggleBar metric={metric} setMetric={setMetric} mode={mode} setMode={setMode} />
+      <ToggleBar
+        metric={metric}
+        setMetric={setMetric}
+        mode={mode}
+        setMode={setMode}
+        fullDisabled={isInProgress}
+      />
 
       {/* Full-mode filter bar — Summary stays unfiltered for now. */}
       {mode === 'full' && <FilterBar />}
@@ -150,11 +157,13 @@ function ToggleBar({
   setMetric,
   mode,
   setMode,
+  fullDisabled,
 }: {
   metric: Metric
   setMetric: (m: Metric) => void
   mode: Mode
   setMode: (m: Mode) => void
+  fullDisabled: boolean
 }) {
   return (
     <div style={{
@@ -167,7 +176,7 @@ function ToggleBar({
       flexShrink: 0,
     }}>
       <CategoryBar metric={metric} setMetric={setMetric} />
-      <ModeToggle mode={mode} setMode={setMode} />
+      <ModeToggle mode={mode} setMode={setMode} fullDisabled={fullDisabled} />
     </div>
   )
 }
@@ -213,7 +222,15 @@ function CategoryTab({ label, active, onClick }: { label: string; active: boolea
   )
 }
 
-function ModeToggle({ mode, setMode }: { mode: Mode; setMode: (m: Mode) => void }) {
+function ModeToggle({
+  mode,
+  setMode,
+  fullDisabled,
+}: {
+  mode: Mode
+  setMode: (m: Mode) => void
+  fullDisabled: boolean
+}) {
   const options: { key: Mode; label: string }[] = [
     { key: 'summary', label: 'Summary' },
     { key: 'full', label: 'Full' },
@@ -227,30 +244,36 @@ function ModeToggle({ mode, setMode }: { mode: Mode; setMode: (m: Mode) => void 
     }}>
       {options.map((opt, i) => {
         const active = mode === opt.key
+        const disabled = opt.key === 'full' && fullDisabled
         return (
           <button
             key={opt.key}
-            onClick={() => setMode(opt.key)}
+            onClick={() => { if (!disabled) setMode(opt.key) }}
+            disabled={disabled}
+            title={disabled ? 'Full view is available on completed segments only' : undefined}
             style={{
               padding: '4px 14px',
               fontSize: 12,
               fontWeight: 500,
               fontFamily: 'inherit',
               background: active ? 'var(--bg-active)' : 'transparent',
-              color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
+              color: disabled
+                ? 'var(--text-muted)'
+                : active ? 'var(--text-primary)' : 'var(--text-secondary)',
               border: 'none',
               borderLeft: i === 0 ? 'none' : '1px solid var(--border-default)',
-              cursor: 'pointer',
+              cursor: disabled ? 'not-allowed' : 'pointer',
+              opacity: disabled ? 0.5 : 1,
               transition: 'background 0.15s, color 0.15s',
             }}
             onMouseEnter={e => {
-              if (!active) {
+              if (!active && !disabled) {
                 e.currentTarget.style.background = 'var(--bg-hover)'
                 e.currentTarget.style.color = 'var(--text-primary)'
               }
             }}
             onMouseLeave={e => {
-              if (!active) {
+              if (!active && !disabled) {
                 e.currentTarget.style.background = 'transparent'
                 e.currentTarget.style.color = 'var(--text-secondary)'
               }

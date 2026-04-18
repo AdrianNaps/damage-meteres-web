@@ -61,6 +61,14 @@ function cacheEvictAggregates(cache: Map<string, AnySnapshot>): Map<string, AnyS
   return next ?? cache
 }
 
+// Per-scope filter+perspective record. Stored in a per-source map keyed by
+// scope key (`seg:id` | `kr:id` | `bs:id`) so each completed segment/key-run/
+// boss-section keeps its own filter configuration across navigation.
+export interface ScopeFilterState {
+  filters: FilterState
+  perspective: Perspective
+}
+
 // Per-source slice. One of these exists per LogSource on the server. Each tab
 // in the future SourceSwitcher swaps which slice is "active" — components
 // continue to read flat top-level fields, which mirror the active slice.
@@ -83,6 +91,10 @@ export interface SourceState {
   perspective: Perspective
   filters: FilterState
   snapshotCache: Map<string, AnySnapshot>
+  // Per-scope filter+perspective memory. Restored when the user returns to a
+  // previously-visited scope. Default entries (no filters, allies) are not
+  // stored — absence implies defaults.
+  filterStateByScope: Map<string, ScopeFilterState>
 }
 
 // Per-source metadata, pushed by the server. Distinct from SourceState because
@@ -119,6 +131,7 @@ function makeEmptySourceState(): SourceState {
     perspective: 'allies',
     filters: EMPTY_FILTERS,
     snapshotCache: new Map(),
+    filterStateByScope: new Map(),
   }
 }
 
@@ -257,14 +270,70 @@ function mergeIcons(
   return next
 }
 
-// Segment/key-run/boss-section switches drop Source and Target — the name sets
-// may no longer make sense in the new scope (e.g. "Commander Venel" doesn't
-// exist in a different dungeon). Ability survives because spell names often
-// persist across fights; if they don't, they drop silently during aggregation.
-function clearUnitFiltersOnScopeChange(filters: FilterState): FilterState {
-  if (!filters.Source && !filters.Target) return filters
-  if (!filters.Ability) return EMPTY_FILTERS
-  return { Ability: filters.Ability }
+// Active scope key for a slice — used both as the lookup key in
+// filterStateByScope and as the basis for hydration on scope change. Mirrors
+// the snapshotCache key prefixes (`seg:`, `kr:`, `bs:`).
+function activeScopeKey(slice: SourceState): string | null {
+  if (slice.selectedKeyRunId) return `kr:${slice.selectedKeyRunId}`
+  if (slice.selectedBossSectionId) return `bs:${slice.selectedBossSectionId}`
+  if (slice.selectedSegmentId) return `seg:${slice.selectedSegmentId}`
+  return null
+}
+
+// Resolve the snapshot the user is currently looking at (key run > boss
+// section > segment, matching selectCurrentView precedence).
+function activeSnapshot(slice: SourceState): AnySnapshot | null {
+  return slice.selectedKeyRun ?? slice.selectedBossSection ?? slice.selectedSegment
+}
+
+// True when the active scope has a loaded snapshot that hasn't ended yet.
+// Snapshot-not-loaded counts as "not in progress" so Full mode is permitted
+// pre-load; the snapshot landing will downgrade the mode if needed.
+function isActiveScopeInProgress(slice: SourceState): boolean {
+  const snap = activeSnapshot(slice)
+  return snap !== null && snap.endTime === null
+}
+
+// Defaults the slice falls back to when a scope has never had filters set
+// (or when no scope is active).
+const DEFAULT_SCOPE_FILTER_STATE: ScopeFilterState = {
+  filters: EMPTY_FILTERS,
+  perspective: 'allies',
+}
+
+// Look up filter+perspective state for a scope, falling back to defaults.
+function hydrateFilterStateForScope(
+  slice: SourceState,
+  scopeKey: string | null,
+): ScopeFilterState {
+  if (scopeKey === null) return DEFAULT_SCOPE_FILTER_STATE
+  return slice.filterStateByScope.get(scopeKey) ?? DEFAULT_SCOPE_FILTER_STATE
+}
+
+// Persist the active scope's current filter+perspective. Default state evicts
+// the entry to keep the map small and to keep "no filters" a single canonical
+// representation. Returns the same map reference when nothing changed so
+// reference-equality short-circuits propagate.
+function writeFilterStateToScope(
+  map: Map<string, ScopeFilterState>,
+  scopeKey: string | null,
+  next: ScopeFilterState,
+): Map<string, ScopeFilterState> {
+  if (scopeKey === null) return map
+  const isDefault = next.filters === EMPTY_FILTERS && next.perspective === 'allies'
+  const existing = map.get(scopeKey)
+  if (isDefault) {
+    if (!existing) return map
+    const out = new Map(map)
+    out.delete(scopeKey)
+    return out
+  }
+  if (existing && existing.filters === next.filters && existing.perspective === next.perspective) {
+    return map
+  }
+  const out = new Map(map)
+  out.set(scopeKey, next)
+  return out
 }
 
 function stringArraysEqual(a: string[] | undefined, b: string[] | undefined): boolean {
@@ -349,6 +418,14 @@ export const useStore = create<AppState>((set) => ({
       selectedSegment: s,
       snapshotCache: nextCache,
     }
+    // Snapshot landed and the segment is in-progress — Full mode isn't valid
+    // for live data, so flip back to Summary.
+    if (s && s.endTime === null && slice.mode === 'full') {
+      sliceUpdate.mode = 'summary'
+      sliceUpdate.selectedPlayer = null
+      sliceUpdate.selectedDeath = null
+      sliceUpdate.drillMetric = null
+    }
     const out = applySliceUpdate(state, sid, sliceUpdate)
     // Specs and icons accumulate globally — independent of which source.
     return {
@@ -380,7 +457,9 @@ export const useStore = create<AppState>((set) => ({
     } else if (id !== slice.selectedSegmentId) {
       nextSegment = (slice.snapshotCache.get(`seg:${id}`) as SegmentSnapshot | undefined) ?? null
     }
-    return applySliceUpdate(state, sid, {
+    const oldKey = activeScopeKey(slice)
+    const newKey = id !== null ? `seg:${id}` : null
+    const patch: Partial<SourceState> = {
       selectedSegmentId: id,
       selectedSegment: nextSegment,
       selectedPlayer: null,
@@ -390,8 +469,19 @@ export const useStore = create<AppState>((set) => ({
       selectedKeyRun: null,
       selectedBossSectionId: null,
       selectedBossSection: null,
-      filters: clearUnitFiltersOnScopeChange(slice.filters),
-    })
+    }
+    if (oldKey !== newKey) {
+      const hydrated = hydrateFilterStateForScope(slice, newKey)
+      patch.filters = hydrated.filters
+      patch.perspective = hydrated.perspective
+    }
+    // Full mode is completed-segments-only. If we know the new scope's
+    // snapshot is in progress, downgrade. If the snapshot hasn't loaded yet,
+    // setSelectedSegment will downgrade once it does.
+    if (slice.mode === 'full' && nextSegment !== null && nextSegment.endTime === null) {
+      patch.mode = 'summary'
+    }
+    return applySliceUpdate(state, sid, patch)
   }),
 
   setSelectedKeyRunId: (id, sourceId) => set(state => {
@@ -400,7 +490,9 @@ export const useStore = create<AppState>((set) => ({
     const cached = id !== null
       ? (slice.snapshotCache.get(`kr:${id}`) as KeyRunSnapshot | undefined) ?? null
       : null
-    return applySliceUpdate(state, sid, {
+    const oldKey = activeScopeKey(slice)
+    const newKey = id !== null ? `kr:${id}` : null
+    const patch: Partial<SourceState> = {
       selectedKeyRunId: id,
       selectedKeyRun: cached,
       selectedSegmentId: null,
@@ -410,8 +502,16 @@ export const useStore = create<AppState>((set) => ({
       selectedPlayer: null,
       selectedDeath: null,
       drillMetric: null,
-      filters: clearUnitFiltersOnScopeChange(slice.filters),
-    })
+    }
+    if (oldKey !== newKey) {
+      const hydrated = hydrateFilterStateForScope(slice, newKey)
+      patch.filters = hydrated.filters
+      patch.perspective = hydrated.perspective
+    }
+    if (slice.mode === 'full' && cached !== null && cached.endTime === null) {
+      patch.mode = 'summary'
+    }
+    return applySliceUpdate(state, sid, patch)
   }),
 
   setSelectedKeyRun: (s, sourceId) => set(state => {
@@ -420,10 +520,17 @@ export const useStore = create<AppState>((set) => ({
     const nextCache = (s && s.endTime !== null)
       ? cachePut(slice.snapshotCache, `kr:${s.keyRunId}`, s)
       : slice.snapshotCache
-    const out = applySliceUpdate(state, sid, {
+    const sliceUpdate: Partial<SourceState> = {
       selectedKeyRun: s,
       snapshotCache: nextCache,
-    })
+    }
+    if (s && s.endTime === null && slice.mode === 'full') {
+      sliceUpdate.mode = 'summary'
+      sliceUpdate.selectedPlayer = null
+      sliceUpdate.selectedDeath = null
+      sliceUpdate.drillMetric = null
+    }
+    const out = applySliceUpdate(state, sid, sliceUpdate)
     return {
       ...out,
       playerSpecs: mergeSpecs(state.playerSpecs, s?.players),
@@ -437,7 +544,9 @@ export const useStore = create<AppState>((set) => ({
     const cached = id !== null
       ? (slice.snapshotCache.get(`bs:${id}`) as BossSectionSnapshot | undefined) ?? null
       : null
-    return applySliceUpdate(state, sid, {
+    const oldKey = activeScopeKey(slice)
+    const newKey = id !== null ? `bs:${id}` : null
+    const patch: Partial<SourceState> = {
       selectedBossSectionId: id,
       selectedBossSection: cached,
       selectedSegmentId: null,
@@ -447,8 +556,16 @@ export const useStore = create<AppState>((set) => ({
       selectedPlayer: null,
       selectedDeath: null,
       drillMetric: null,
-      filters: clearUnitFiltersOnScopeChange(slice.filters),
-    })
+    }
+    if (oldKey !== newKey) {
+      const hydrated = hydrateFilterStateForScope(slice, newKey)
+      patch.filters = hydrated.filters
+      patch.perspective = hydrated.perspective
+    }
+    if (slice.mode === 'full' && cached !== null && cached.endTime === null) {
+      patch.mode = 'summary'
+    }
+    return applySliceUpdate(state, sid, patch)
   }),
 
   setSelectedBossSection: (s, sourceId) => set(state => {
@@ -457,10 +574,17 @@ export const useStore = create<AppState>((set) => ({
     const nextCache = (s && s.endTime !== null)
       ? cachePut(slice.snapshotCache, `bs:${s.bossSectionId}`, s)
       : slice.snapshotCache
-    const out = applySliceUpdate(state, sid, {
+    const sliceUpdate: Partial<SourceState> = {
       selectedBossSection: s,
       snapshotCache: nextCache,
-    })
+    }
+    if (s && s.endTime === null && slice.mode === 'full') {
+      sliceUpdate.mode = 'summary'
+      sliceUpdate.selectedPlayer = null
+      sliceUpdate.selectedDeath = null
+      sliceUpdate.drillMetric = null
+    }
+    const out = applySliceUpdate(state, sid, sliceUpdate)
     return {
       ...out,
       playerSpecs: mergeSpecs(state.playerSpecs, s?.players),
@@ -488,12 +612,20 @@ export const useStore = create<AppState>((set) => ({
   // shows whatever was clicked (tracked via drillMetric), not whatever is focused.
   setMetric: (m) => set(state => applySliceUpdate(state, state.activeSourceId, { metric: m })),
 
-  setMode: (m) => set(state => applySliceUpdate(state, state.activeSourceId, {
-    mode: m,
-    selectedPlayer: null,
-    selectedDeath: null,
-    drillMetric: null,
-  })),
+  setMode: (m) => set(state => {
+    const sid = state.activeSourceId
+    const slice = state.sources.get(sid) ?? makeEmptySourceState()
+    // Full mode requires a completed scope (frozen data). Block the upgrade
+    // when the loaded snapshot is in progress; allow it pre-load — the
+    // snapshot setters will downgrade once data arrives if needed.
+    if (m === 'full' && isActiveScopeInProgress(slice)) return {}
+    return applySliceUpdate(state, sid, {
+      mode: m,
+      selectedPlayer: null,
+      selectedDeath: null,
+      drillMetric: null,
+    })
+  }),
 
   setTargetDetail: (d) => set(state => applySliceUpdate(state, state.activeSourceId, { targetDetail: d })),
 
@@ -526,10 +658,18 @@ export const useStore = create<AppState>((set) => ({
     const sid = state.activeSourceId
     const slice = state.sources.get(sid) ?? makeEmptySourceState()
     if (slice.perspective === p) return {}
-    if (slice.filters === EMPTY_FILTERS) {
-      return applySliceUpdate(state, sid, { perspective: p })
-    }
-    return applySliceUpdate(state, sid, { perspective: p, filters: EMPTY_FILTERS })
+    const nextFilters = EMPTY_FILTERS
+    const scopeKey = activeScopeKey(slice)
+    const filterStateByScope = writeFilterStateToScope(
+      slice.filterStateByScope,
+      scopeKey,
+      { filters: nextFilters, perspective: p },
+    )
+    return applySliceUpdate(state, sid, {
+      perspective: p,
+      filters: nextFilters,
+      filterStateByScope,
+    })
   }),
 
   setFilter: (axis, names) => set(state => {
@@ -543,7 +683,14 @@ export const useStore = create<AppState>((set) => ({
     const next: FilterState = { ...slice.filters }
     if (desired === undefined) delete next[axis]
     else next[axis] = desired
-    return applySliceUpdate(state, sid, { filters: normalizeFilters(next) })
+    const nextFilters = normalizeFilters(next)
+    const scopeKey = activeScopeKey(slice)
+    const filterStateByScope = writeFilterStateToScope(
+      slice.filterStateByScope,
+      scopeKey,
+      { filters: nextFilters, perspective: slice.perspective },
+    )
+    return applySliceUpdate(state, sid, { filters: nextFilters, filterStateByScope })
   }),
 
   toggleFilterValue: (axis, name) => set(state => {
@@ -555,14 +702,27 @@ export const useStore = create<AppState>((set) => ({
     const next: FilterState = { ...slice.filters }
     if (nextList.length === 0) delete next[axis]
     else next[axis] = nextList
-    return applySliceUpdate(state, sid, { filters: normalizeFilters(next) })
+    const nextFilters = normalizeFilters(next)
+    const scopeKey = activeScopeKey(slice)
+    const filterStateByScope = writeFilterStateToScope(
+      slice.filterStateByScope,
+      scopeKey,
+      { filters: nextFilters, perspective: slice.perspective },
+    )
+    return applySliceUpdate(state, sid, { filters: nextFilters, filterStateByScope })
   }),
 
   clearAllFilters: () => set(state => {
     const sid = state.activeSourceId
     const slice = state.sources.get(sid) ?? makeEmptySourceState()
     if (slice.filters === EMPTY_FILTERS) return {}
-    return applySliceUpdate(state, sid, { filters: EMPTY_FILTERS })
+    const scopeKey = activeScopeKey(slice)
+    const filterStateByScope = writeFilterStateToScope(
+      slice.filterStateByScope,
+      scopeKey,
+      { filters: EMPTY_FILTERS, perspective: slice.perspective },
+    )
+    return applySliceUpdate(state, sid, { filters: EMPTY_FILTERS, filterStateByScope })
   }),
 
   setWsStatus: (s) => set({ wsStatus: s }),
@@ -698,6 +858,15 @@ export function resolveSpecId(
 // Kept for components that only care about individual segment data (e.g. target drill-down)
 export const selectCurrentSegment = (s: AppState): SegmentSnapshot | null =>
   s.selectedSegment
+
+// True when the active scope's loaded snapshot is in progress (endTime is
+// null). Used to gate Full mode, which is completed-segments-only because its
+// filter chips would otherwise risk going stale as combat continues.
+// Snapshot-not-loaded returns false so the UI doesn't disable Full pre-load.
+export const selectIsActiveScopeInProgress = (s: AppState): boolean => {
+  const view = s.selectedKeyRun ?? s.selectedBossSection ?? s.selectedSegment
+  return view !== null && view.endTime === null
+}
 
 // True when data is on the way and the view should render a loading skeleton
 // instead of either stale data or the empty "no encounter" state. Two cases:
