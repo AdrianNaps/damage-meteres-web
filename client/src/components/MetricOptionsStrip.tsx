@@ -1,4 +1,4 @@
-import { useStore, type Metric } from '../store'
+import { useStore } from '../store'
 
 // Reserved slot between the graph and the table in Full mode. Rendered for
 // every metric (even when empty) so the table doesn't shift vertically when
@@ -21,39 +21,15 @@ export function MetricOptionsStrip() {
     }}>
       <div />
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <MetricOptions metric={metric} />
+        {metric === 'healing' && <HealingOptions />}
       </div>
     </div>
   )
 }
 
-function MetricOptions({ metric }: { metric: Metric }) {
-  if (metric === 'healing') return <HealingOptions />
-  return null
-}
-
 function HealingOptions() {
   const show = useStore(s => s.healingShowOverheal)
   const setShow = useStore(s => s.setHealingShowOverheal)
-  return <SegmentedToggle
-    options={[
-      { value: false, label: 'Effective' },
-      { value: true,  label: 'Include overheal' },
-    ]}
-    value={show}
-    onChange={setShow}
-  />
-}
-
-function SegmentedToggle<T extends string | number | boolean>({
-  options,
-  value,
-  onChange,
-}: {
-  options: { value: T; label: string }[]
-  value: T
-  onChange: (v: T) => void
-}) {
   return (
     <div style={{
       display: 'inline-flex',
@@ -61,42 +37,53 @@ function SegmentedToggle<T extends string | number | boolean>({
       borderRadius: 3,
       overflow: 'hidden',
     }}>
-      {options.map((o, i) => {
-        const active = value === o.value
-        return (
-          <button
-            key={String(o.value)}
-            onClick={() => onChange(o.value)}
-            style={{
-              padding: '2px 10px',
-              height: 22,
-              fontSize: 11,
-              fontWeight: 500,
-              fontFamily: 'var(--font-sans)',
-              background: active ? 'var(--bg-active)' : 'transparent',
-              border: 'none',
-              borderLeft: i === 0 ? 'none' : '1px solid var(--border-default)',
-              color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
-              cursor: 'pointer',
-              transition: 'background 0.15s, color 0.15s',
-            }}
-            onMouseEnter={e => {
-              if (!active) {
-                e.currentTarget.style.background = 'var(--bg-hover)'
-                e.currentTarget.style.color = 'var(--text-primary)'
-              }
-            }}
-            onMouseLeave={e => {
-              if (!active) {
-                e.currentTarget.style.background = 'transparent'
-                e.currentTarget.style.color = 'var(--text-secondary)'
-              }
-            }}
-          >
-            {o.label}
-          </button>
-        )
-      })}
+      <OverhealSegment label="Effective" active={!show} onClick={() => setShow(false)} isFirst />
+      <OverhealSegment label="Include overheal" active={show} onClick={() => setShow(true)} />
     </div>
+  )
+}
+
+function OverhealSegment({
+  label,
+  active,
+  onClick,
+  isFirst,
+}: {
+  label: string
+  active: boolean
+  onClick: () => void
+  isFirst?: boolean
+}) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        padding: '2px 10px',
+        height: 22,
+        fontSize: 11,
+        fontWeight: 500,
+        fontFamily: 'var(--font-sans)',
+        background: active ? 'var(--bg-active)' : 'transparent',
+        border: 'none',
+        borderLeft: isFirst ? 'none' : '1px solid var(--border-default)',
+        color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
+        cursor: 'pointer',
+        transition: 'background 0.15s, color 0.15s',
+      }}
+      onMouseEnter={e => {
+        if (!active) {
+          e.currentTarget.style.background = 'var(--bg-hover)'
+          e.currentTarget.style.color = 'var(--text-primary)'
+        }
+      }}
+      onMouseLeave={e => {
+        if (!active) {
+          e.currentTarget.style.background = 'transparent'
+          e.currentTarget.style.color = 'var(--text-secondary)'
+        }
+      }}
+    >
+      {label}
+    </button>
   )
 }

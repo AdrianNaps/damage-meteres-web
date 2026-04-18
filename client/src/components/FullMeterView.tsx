@@ -199,15 +199,25 @@ function FilteredPlayerTable({
     : showOverheal            ? HEALING_WITH_OVERHEAL_CONFIG
     : HEALING_EFFECTIVE_CONFIG
 
-  const topValue = rows[0]?.value ?? 0
   const totalValue = rows.reduce((sum, r) => sum + r.value, 0)
 
   // When overheal is on the bar stacks effective + overheal, so the scale must
   // expand to include the top row's overheal too — otherwise the stacked bar
   // would clip past 100%. Ranking stays by effective HPS (row order unchanged).
-  const barScale = showOverheal && duration > 0
-    ? rows.reduce((m, r) => Math.max(m, r.value + (r.overheal ?? 0) / duration), 0)
-    : topValue
+  // Computed in one pass so the per-second overheal values are available at
+  // row render time without recomputing them from cumulative overheal/duration.
+  const { barScale, overhealPerSec } = useMemo(() => {
+    if (!showOverheal || duration <= 0) {
+      return { barScale: rows[0]?.value ?? 0, overhealPerSec: null as number[] | null }
+    }
+    const ohs = rows.map(r => (r.overheal ?? 0) / duration)
+    let scale = 0
+    for (let i = 0; i < rows.length; i++) {
+      const stacked = rows[i].value + ohs[i]
+      if (stacked > scale) scale = stacked
+    }
+    return { barScale: scale, overhealPerSec: ohs }
+  }, [rows, showOverheal, duration])
 
   // Only allies are shown in the drill panel; enemy rows have no entry in
   // `currentView.players`, so selecting them would render an empty breakdown.
@@ -237,7 +247,7 @@ function FilteredPlayerTable({
               rank={i + 1}
               barScale={barScale}
               totalValue={totalValue}
-              overhealPerSec={showOverheal && duration > 0 ? (row.overheal ?? 0) / duration : 0}
+              overhealPerSec={overhealPerSec ? overhealPerSec[i] : 0}
               activePct={perspective === 'allies' ? computeActivePct(allies[row.name], duration) : null}
               config={config}
               specId={resolveSpecId(playerSpecs, row.name, row.specId)}
