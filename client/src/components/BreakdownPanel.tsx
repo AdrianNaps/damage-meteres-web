@@ -7,13 +7,11 @@ import {
   InterruptSpellTable,
   FullDamageSpellTable,
   FullHealSpellTable,
-  TargetScopedSpellTable,
-  FullTargetScopedSpellTable,
 } from './SpellTable'
 import { TargetTable, type TargetRowStyle } from './TargetTable'
+import { selectPlayerBreakdown } from '../utils/filters'
 import { specIconUrl } from '../utils/icons'
 import { formatNum, shortName } from '../utils/format'
-import type { ClientEvent } from '../types'
 
 const METRIC_LABELS: Record<string, string> = {
   damage: 'Damage',
@@ -28,16 +26,16 @@ export function BreakdownPanel() {
   const metric = useStore(s => s.drillMetric ?? s.metric)
   const mode = useStore(s => s.mode)
   const setSelectedPlayer = useStore(s => s.setSelectedPlayer)
-  const targetFilter = useStore(s => s.filters.Target)
+  const filters = useStore(s => s.filters)
   const setFilter = useStore(s => s.setFilter)
   const [viewMode, setViewMode] = useState<'spells' | 'targets'>('spells')
   const playerSpecs = useStore(s => s.playerSpecs)
 
-  // Drill is now a derived view of the global Target filter: a single-value
+  // Drill is a derived view of the global Target filter: a single-value
   // Target filter IS the drill state. Setting it from the FilterBar opens the
-  // drill; clearing the chip exits it. Multi-value Target filters skip the
-  // drill view (the breakdown's spell/target lists don't yet aggregate against
-  // a target *set* — that's a follow-up).
+  // drill; clearing the chip exits it. Multi-value Target filters narrow
+  // breakdown content but don't trigger the drill frame.
+  const targetFilter = filters.Target
   const drillTarget = targetFilter && targetFilter.length === 1 ? targetFilter[0] : null
 
   useEffect(() => {
@@ -60,14 +58,6 @@ export function BreakdownPanel() {
   if (!player) return null
 
   const color = getClassColor(resolveSpecId(playerSpecs, selectedPlayer, player.specId))
-  const value =
-    metric === 'damage' ? player.dps
-    : metric === 'healing' ? player.hps
-    : player.interrupts.total
-  const total =
-    metric === 'damage' ? player.damage.total
-    : metric === 'healing' ? player.healing.total
-    : player.interrupts.total
   // Duration shape varies by view: segments carry `duration`, while key-run
   // and boss-section aggregates carry `activeDurationSec`. Per-spell DPS/HPS
   // cells come out as 0 on aggregate views if we don't handle both.
@@ -76,18 +66,31 @@ export function BreakdownPanel() {
     : 'activeDurationSec' in currentView ? currentView.activeDurationSec
     : 0
 
+  // Pull the unified breakdown for damage/healing. selectPlayerBreakdown picks
+  // the cheap pre-aggregated path when no filter is active, and walks events
+  // (with shared per-events caching) when any filter is active. The returned
+  // shape feeds every surface — header total/rate, spell list, targets list,
+  // and the drilled target view — so they all agree by construction.
+  const events = currentView.events ?? []
+  const breakdownKind = metric === 'damage' ? 'damage' : metric === 'healing' ? 'heal' : null
+  const breakdown = breakdownKind
+    ? selectPlayerBreakdown(events, selectedPlayer, breakdownKind, filters, duration, player)
+    : null
+
+  const value = breakdown ? breakdown.rate : player.interrupts.total
+  const total = breakdown ? breakdown.total : player.interrupts.total
+
   function handleModeChange(nextViewMode: 'spells' | 'targets') {
     setViewMode(nextViewMode)
-    // Switching to "Spells" implies "all targets", so clear a single-value
-    // Target filter (which is the drill state). Multi-value Target filters
-    // are user-set from the FilterBar — leave them alone.
+    // Switching to "Spells" implies "all targets" — clear a single-value
+    // Target filter (the drill state). Multi-value Target filters are
+    // user-set from the FilterBar; leave them alone.
     if (nextViewMode !== 'targets' && targetFilter && targetFilter.length === 1) {
       setFilter('Target', undefined)
     }
   }
 
   function renderContent() {
-    if (!currentView) return null
     if (metric === 'interrupts') {
       return (
         <>
@@ -96,6 +99,8 @@ export function BreakdownPanel() {
         </>
       )
     }
+    if (!breakdown) return null
+
     const isHealing = metric === 'healing'
     // Player-aware row decorator: resolves healing sources/targets to their own
     // class color, spec icon, and short name. Reused by the targets list and
@@ -107,8 +112,9 @@ export function BreakdownPanel() {
     }
 
     if (drillTarget) {
-      const events: ClientEvent[] = currentView.events ?? []
-      const kind = isHealing ? 'heal' : 'damage'
+      // The breakdown's spells[] is already scoped to this target (the Target
+      // filter pinned it). The drill view is just the regular Full-mode spell
+      // table inside a back-button frame.
       const headingStyle = isHealing ? playerRowStyle(drillTarget) : null
       return (
         <TargetScopedView
@@ -117,22 +123,13 @@ export function BreakdownPanel() {
           onBack={() => setFilter('Target', undefined)}
         >
           {mode === 'full' ? (
-            <FullTargetScopedSpellTable
-              events={events}
-              playerName={player.name}
-              targetName={drillTarget}
-              kind={kind}
-              classColor={color}
-              duration={duration}
-            />
+            isHealing
+              ? <FullHealSpellTable spells={breakdown.spells} classColor={color} duration={duration} playerTotal={breakdown.total} />
+              : <FullDamageSpellTable spells={breakdown.spells} classColor={color} duration={duration} playerTotal={breakdown.total} />
           ) : (
-            <TargetScopedSpellTable
-              events={events}
-              playerName={player.name}
-              targetName={drillTarget}
-              kind={kind}
-              classColor={color}
-            />
+            isHealing
+              ? <HealSpellTable spells={breakdown.spells} classColor={color} />
+              : <DamageSpellTable spells={breakdown.spells} classColor={color} />
           )}
         </TargetScopedView>
       )
@@ -141,8 +138,8 @@ export function BreakdownPanel() {
       const resolveRow = isHealing ? playerRowStyle : undefined
       return (
         <TargetTable
-          targets={isHealing ? player.healing.targets : player.damage.targets}
-          totalAmount={isHealing ? player.healing.total : player.damage.total}
+          targets={breakdown.targets}
+          totalAmount={breakdown.total}
           duration={duration}
           rateLabel={isHealing ? 'HPS' : 'DPS'}
           classColor={color}
@@ -153,12 +150,12 @@ export function BreakdownPanel() {
     }
     if (mode === 'full') {
       return isHealing
-        ? <FullHealSpellTable spells={player.healing.spells} classColor={color} duration={duration} playerTotal={player.healing.total} />
-        : <FullDamageSpellTable spells={player.damage.spells} classColor={color} duration={duration} playerTotal={player.damage.total} />
+        ? <FullHealSpellTable spells={breakdown.spells} classColor={color} duration={duration} playerTotal={breakdown.total} />
+        : <FullDamageSpellTable spells={breakdown.spells} classColor={color} duration={duration} playerTotal={breakdown.total} />
     }
     return isHealing
-      ? <HealSpellTable spells={player.healing.spells} classColor={color} />
-      : <DamageSpellTable spells={player.damage.spells} classColor={color} />
+      ? <HealSpellTable spells={breakdown.spells} classColor={color} />
+      : <DamageSpellTable spells={breakdown.spells} classColor={color} />
   }
 
   return (

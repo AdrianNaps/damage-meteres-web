@@ -452,6 +452,219 @@ export function computeEnemyPlayers(
   return result
 }
 
+// ─── Per-player breakdown aggregation ──────────────────────────────────────
+// The breakdown panel projects all of its surfaces (header total/rate, spells
+// list, targets list, drill view) from one shape so they always agree under
+// any filter combination. Two paths produce that shape:
+//   - No filter active → project the server's pre-aggregated PlayerSnapshot,
+//     preserving critCount/normalMax that ClientEvent doesn't yet carry.
+//   - Any filter active → walk events through `passesFilters`, lose those
+//     fields (until the wire enrichment lands).
+// The renderer treats critCount/normalMax as optional; absent values render
+// "—" rather than 0.
+
+export interface BreakdownSpellRow {
+  spellId: string
+  spellName: string
+  total: number
+  hitCount: number
+  // Only populated on the no-filter path until ClientEvent grows a `crit` flag.
+  critCount?: number
+  normalMax?: number
+  // Healing only.
+  overheal?: number
+}
+
+export interface BreakdownTargetRow {
+  targetName: string
+  total: number
+  // Healing only.
+  overheal?: number
+}
+
+export interface PlayerBreakdown {
+  total: number
+  rate: number       // total / durationSec
+  spells: BreakdownSpellRow[]   // sorted by total desc
+  targets: BreakdownTargetRow[] // sorted by total desc
+}
+
+const EMPTY_BREAKDOWN: PlayerBreakdown = {
+  total: 0,
+  rate: 0,
+  spells: [],
+  targets: [],
+}
+
+// Cache layout: events → (cacheKey → (playerName → breakdown)). One walk over
+// events fills the inner Map for every player at once; subsequent breakdown
+// lookups for other players are O(1). WeakMap-keyed on the events array so
+// entries auto-evict when the snapshot leaves snapshotCache.
+const breakdownCache = new WeakMap<ClientEvent[], Map<string, Map<string, PlayerBreakdown>>>()
+
+function filterCacheKey(filters: FilterState): string {
+  // Canonical: sort each axis' values so chip order doesn't churn the key.
+  const parts: string[] = []
+  for (const axis of ['Source', 'Target', 'Ability'] as const) {
+    const v = filters[axis]
+    if (!v || v.length === 0) continue
+    parts.push(`${axis}:${[...v].sort().join('|')}`)
+  }
+  return parts.join(';')
+}
+
+// Project a PlayerSnapshot's pre-aggregated damage/heal stats into the
+// unified breakdown shape. Only valid in the no-filter case — the snapshot's
+// totals are over the entire segment.
+function projectSnapshot(
+  snapshot: PlayerSnapshot,
+  kind: 'damage' | 'heal',
+  durationSec: number,
+): PlayerBreakdown {
+  const dur = durationSec > 0 ? durationSec : 1
+  if (kind === 'damage') {
+    const spells: BreakdownSpellRow[] = Object.values(snapshot.damage.spells).map(s => ({
+      spellId: s.spellId,
+      spellName: s.spellName,
+      total: s.total,
+      hitCount: s.hitCount,
+      critCount: s.critCount,
+      normalMax: s.normalMax,
+    }))
+    spells.sort((a, b) => b.total - a.total)
+    const targets: BreakdownTargetRow[] = Object.values(snapshot.damage.targets).map(t => ({
+      targetName: t.targetName,
+      total: t.total,
+    }))
+    targets.sort((a, b) => b.total - a.total)
+    return { total: snapshot.damage.total, rate: snapshot.damage.total / dur, spells, targets }
+  }
+  const spells: BreakdownSpellRow[] = Object.values(snapshot.healing.spells).map(s => ({
+    spellId: s.spellId,
+    spellName: s.spellName,
+    total: s.total,
+    hitCount: s.hitCount,
+    critCount: s.critCount,
+    overheal: s.overheal,
+  }))
+  spells.sort((a, b) => b.total - a.total)
+  const targets: BreakdownTargetRow[] = Object.values(snapshot.healing.targets).map(t => ({
+    targetName: t.targetName,
+    total: t.total,
+    overheal: t.overheal,
+  }))
+  targets.sort((a, b) => b.total - a.total)
+  return { total: snapshot.healing.total, rate: snapshot.healing.total / dur, spells, targets }
+}
+
+function computeAllPlayerBreakdowns(
+  events: ClientEvent[],
+  kind: 'damage' | 'heal',
+  filters: FilterState,
+  durationSec: number,
+): Map<string, PlayerBreakdown> {
+  type SpellAcc = { spellId: string; spellName: string; total: number; hitCount: number; overheal: number }
+  type TargetAcc = { targetName: string; total: number; overheal: number }
+  type PlayerAcc = { total: number; spells: Map<string, SpellAcc>; targets: Map<string, TargetAcc> }
+  const byPlayer = new Map<string, PlayerAcc>()
+
+  const sourceFilter = filters.Source
+  const targetFilter = filters.Target
+  const abilityFilter = filters.Ability
+
+  for (const e of events) {
+    if (e.kind !== kind) continue
+    if (sourceFilter && !sourceFilter.includes(e.src)) continue
+    if (targetFilter && !targetFilter.includes(e.dst)) continue
+    if (abilityFilter && !abilityFilter.includes(e.ability)) continue
+    const amount = e.amount ?? 0
+    if (amount <= 0) continue
+
+    let player = byPlayer.get(e.src)
+    if (!player) {
+      player = { total: 0, spells: new Map(), targets: new Map() }
+      byPlayer.set(e.src, player)
+    }
+    player.total += amount
+
+    // Spell key: prefer spellId; fall back to ability name so melee swings
+    // (no spellId on the wire) still bucket per-ability instead of collapsing.
+    const spellKey = e.spellId || `name:${e.ability}`
+    let spell = player.spells.get(spellKey)
+    if (!spell) {
+      spell = { spellId: e.spellId ?? '', spellName: e.ability, total: 0, hitCount: 0, overheal: 0 }
+      player.spells.set(spellKey, spell)
+    }
+    spell.total += amount
+    spell.hitCount += 1
+    if (kind === 'heal') spell.overheal += e.overheal ?? 0
+
+    let target = player.targets.get(e.dst)
+    if (!target) {
+      target = { targetName: e.dst, total: 0, overheal: 0 }
+      player.targets.set(e.dst, target)
+    }
+    target.total += amount
+    if (kind === 'heal') target.overheal += e.overheal ?? 0
+  }
+
+  const dur = durationSec > 0 ? durationSec : 1
+  const out = new Map<string, PlayerBreakdown>()
+  for (const [name, acc] of byPlayer) {
+    const spells: BreakdownSpellRow[] = []
+    for (const s of acc.spells.values()) {
+      const row: BreakdownSpellRow = {
+        spellId: s.spellId,
+        spellName: s.spellName,
+        total: s.total,
+        hitCount: s.hitCount,
+      }
+      if (kind === 'heal') row.overheal = s.overheal
+      spells.push(row)
+    }
+    spells.sort((a, b) => b.total - a.total)
+
+    const targets: BreakdownTargetRow[] = []
+    for (const t of acc.targets.values()) {
+      const row: BreakdownTargetRow = { targetName: t.targetName, total: t.total }
+      if (kind === 'heal') row.overheal = t.overheal
+      targets.push(row)
+    }
+    targets.sort((a, b) => b.total - a.total)
+
+    out.set(name, { total: acc.total, rate: acc.total / dur, spells, targets })
+  }
+  return out
+}
+
+// Pick the cheaper, richer path when no filter is active; fall through to
+// event aggregation otherwise. Returning EMPTY_BREAKDOWN for unknown players
+// keeps the renderer trivially safe — empty rows + zero total render "no data."
+export function selectPlayerBreakdown(
+  events: ClientEvent[],
+  playerName: string,
+  kind: 'damage' | 'heal',
+  filters: FilterState,
+  durationSec: number,
+  snapshot: PlayerSnapshot | undefined,
+): PlayerBreakdown {
+  if (snapshot && !hasAnyFilter(filters)) {
+    return projectSnapshot(snapshot, kind, durationSec)
+  }
+  const cacheKey = `${kind}:${durationSec}:${filterCacheKey(filters)}`
+  let perEvents = breakdownCache.get(events)
+  if (!perEvents) {
+    perEvents = new Map()
+    breakdownCache.set(events, perEvents)
+  }
+  let perKey = perEvents.get(cacheKey)
+  if (!perKey) {
+    perKey = computeAllPlayerBreakdowns(events, kind, filters, durationSec)
+    perEvents.set(cacheKey, perKey)
+  }
+  return perKey.get(playerName) ?? EMPTY_BREAKDOWN
+}
+
 // Heuristic for the empty-state "most-restrictive filter" hint. Rebuilds the
 // check once per axis with that axis removed; first axis whose removal yields
 // data is the one we name. Returns null if removing any single axis isn't
