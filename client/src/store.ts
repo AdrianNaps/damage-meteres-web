@@ -661,6 +661,29 @@ export const useStore = create<AppState>((set) => ({
       patch.selectedDeath = null
       patch.selectedBuff = null
       patch.drillMetric = null
+      // Ability filter values are metric-specific names (damage/heal spell
+      // names vs buff names) with non-overlapping namespaces. Carrying a
+      // stale value across the boundary would present as an invisible
+      // always-empty filter, just with a renamed chip.
+      if (slice.filters.Ability) {
+        const next = { ...slice.filters }
+        delete next.Ability
+        patch.filters = Object.keys(next).length === 0 ? EMPTY_FILTERS : next
+      }
+      // Strip any buffs-specific graph-focus keys (see GraphContainer.tsx —
+      // BUFFS_DAMAGE_KEY / BUFFS_HEALING_KEY) so a later buffs session
+      // starts with both lines visible again.
+      let anyBuffsFocus = false
+      for (const k of slice.graphFocused) {
+        if (k.startsWith('__buffs_')) { anyBuffsFocus = true; break }
+      }
+      if (anyBuffsFocus) {
+        const stripped = new Set<string>()
+        for (const k of slice.graphFocused) {
+          if (!k.startsWith('__buffs_')) stripped.add(k)
+        }
+        patch.graphFocused = stripped
+      }
     }
     return applySliceUpdate(state, sid, patch)
   }),

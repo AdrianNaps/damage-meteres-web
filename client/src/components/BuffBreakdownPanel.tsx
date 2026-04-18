@@ -32,6 +32,10 @@ export function BuffBreakdownPanel() {
   const playerSpecs = useStore(s => s.playerSpecs)
   const setFilter = useStore(s => s.setFilter)
   const filters = useStore(s => s.filters)
+  // Subscribed (not `useStore.getState()`) so the header icon fills in when
+  // the async icon resolver lands a name for this spellId after the panel
+  // has already mounted.
+  const iconName = useStore(s => selectedBuff ? s.spellIcons[selectedBuff] : undefined)
 
   // Escape closes the drill. Mirrors BreakdownPanel's key handler.
   useEffect(() => {
@@ -89,25 +93,28 @@ export function BuffBreakdownPanel() {
     }
 
     const scopeMs = scope.tEnd - scope.t0
-    const rows = [...byTarget.values()].map(a => ({
-      ...a,
-      uptimeMs: unionMs(a.windows, scope.t0, scope.tEnd),
-      uptimePct: 0,
-    })).map(r => ({
-      ...r,
-      uptimePct: scopeMs > 0 ? (r.uptimeMs / scopeMs) * 100 : 0,
-    }))
+    // Fold class color into the memo so it doesn't recompute per-render in
+    // the row component. playerSpecs updates are already baked into the
+    // memo deps via the outer closure.
+    const rows = [...byTarget.values()].map(a => {
+      const uptimeMs = unionMs(a.windows, scope.t0, scope.tEnd)
+      return {
+        ...a,
+        uptimeMs,
+        uptimePct: scopeMs > 0 ? (uptimeMs / scopeMs) * 100 : 0,
+        classColor: getClassColor(resolveSpecId(playerSpecs, a.target)),
+      }
+    })
     rows.sort((a, b) => b.uptimePct - a.uptimePct)
 
     return {
       targetRows: rows,
       spell: { id: selectedBuff, name: spellName, section },
     }
-  }, [currentView, selectedBuff, scope, filters.Source])
+  }, [currentView, selectedBuff, scope, filters.Source, playerSpecs])
 
   if (!selectedBuff || !currentView || !spell || !scope) return null
 
-  const iconName = useStore.getState().spellIcons[selectedBuff]
   const iconUrl = spellIconUrl(iconName)
   const accentColor = SECTION_BAR_COLORS[spell.section]
 
@@ -194,7 +201,7 @@ export function BuffBreakdownPanel() {
             windows={row.windows}
             t0Ms={scope.t0}
             tEndMs={scope.tEnd}
-            color={getClassColor(resolveSpecId(playerSpecs, row.target))}
+            color={row.classColor}
             barColor={accentColor}
             onClick={() => setFilter('Target', [row.target])}
           />

@@ -652,13 +652,7 @@ function FullLoadingSkeleton() {
 
 // ─── Buffs ────────────────────────────────────────────────────────────────
 // Per-buff rows grouped by Personal / Raid / External classification.
-// PR 2 ships this as a read-only table: no filter integration (PR 3), no
-// timeline bar per row (PR 4), no drill panel (PR 5).
-
-// Grid: icon+name (flex) | section badge | uptime% | count.
-// The timeline bar column is a placeholder (min-width flex spacer) that PR 4
-// will fill with a shared canvas overlay; we reserve the space now so the
-// PR-4 change doesn't reshuffle existing columns.
+// Grid: rank | icon+name (flex) | section badge | timeline bar | uptime% | count.
 const BUFFS_GRID_COLUMNS = '32px minmax(240px, 1.2fr) 80px minmax(160px, 2fr) 80px 80px'
 
 const SECTION_LABELS: Record<BuffSection, string> = {
@@ -695,22 +689,34 @@ function FilteredBuffsTable({
   )
 
   // Split rows into section groups while preserving the already-sorted order.
+  // computeBuffRows emits rows in section order, so a single linear pass
+  // accumulates contiguous runs — cheaper than the three `rows.filter` scans
+  // the earlier shape did.
   const grouped = useMemo(() => {
-    const sections: BuffSection[] = ['personal', 'raid', 'external']
-    return sections
-      .map(key => ({ key, rows: rows.filter(r => r.section === key) }))
-      .filter(g => g.rows.length > 0)
+    const out: { key: BuffSection; rows: BuffRow[] }[] = []
+    let cur: { key: BuffSection; rows: BuffRow[] } | null = null
+    for (const r of rows) {
+      if (!cur || cur.key !== r.section) {
+        cur = { key: r.section, rows: [] }
+        out.push(cur)
+      }
+      cur.rows.push(r)
+    }
+    return out
   }, [rows])
 
-  // Empty-state fork: no windows in scope at all → neutral message; filters
-  // eliminated everything → show the filter-specific prompt.
+  // Empty-state fork — three distinct "rows is empty" states:
+  //   1. auras.length === 0          → snapshot had no aura activity
+  //                                    (pre-aura legacy or truly quiet pull).
+  //   2. rows empty + filter active  → the user's chips narrowed everything
+  //                                    away; show the filter-guidance state.
+  //   3. rows empty + no filter      → scope intersection yielded nothing
+  //                                    (e.g. zero-width TimeWindow). Rare;
+  //                                    falls through to the neutral message.
   if (auras.length === 0) {
     return <EmptyState text="No buff data in this scope" />
   }
   if (rows.length === 0) {
-    // rows.length can be 0 either because filters hide everything or because
-    // the scope truly has no aura intersection (e.g. a TimeWindow with zero
-    // width). Prefer the filter-guidance state when any filter is active.
     const anyFilter = !!(filters.Source || filters.Target || filters.Ability || filters.TimeWindow)
     if (anyFilter && !hasMatchingBuffData(auras, filters, startTime, tEnd)) {
       return <FilterEmptyState />

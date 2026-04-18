@@ -218,8 +218,8 @@ export function auraWindowsToWire(windows: AuraWindow[]): AuraWindowWire[] {
 // Classify each observed spellId into a display bucket for the buffs table.
 //   personal — every window has caster === target (Soul Leech, Flurry Charge,
 //              Metamorphosis). Player self-casts only, no external beneficiary.
-//   raid     — at least one cast fan-out produced 5+ distinct ally targets
-//              within a 100ms window. Captures Heroism/Hero, Battle Shout,
+//   raid     — at least one cast fan-out produced `minFanout` distinct ally
+//              targets within a 100ms window. Captures Heroism, Battle Shout,
 //              Devotion Aura, Stampeding Roar, Mark of the Wild, etc.
 //   external — remainder: cross-target single-target casts (Power Infusion,
 //              Ironbark, Innervate, Pain Suppression) and debuff-adjacent
@@ -227,7 +227,15 @@ export function auraWindowsToWire(windows: AuraWindow[]): AuraWindowWire[] {
 // Retroactively-seeded windows (preExisting) are excluded from the fan-out
 // check — their start timestamps are synthesized to segStart and would
 // collapse into a fake fan-out cluster.
+//
+// The fan-out threshold scales with party size. A fixed 5-target rule would
+// require ALL five M+ party members to be hit by a single cast in the same
+// 100ms bucket — achievable in theory but fragile (missed applications,
+// pet-flag weirdness, clustered fan-out across two buckets). The formula
+// gives 5 for raid (20+ allies), 4 for a full 5-player M+ party, and a
+// floor of 3 so the heuristic stays meaningful in smaller groups.
 export function classifyAuras(windows: AuraWindow[], allyNames: Set<string>): Record<string, BuffSection> {
+  const minFanout = Math.min(5, Math.max(3, allyNames.size - 1))
   const bySpell = new Map<string, AuraWindow[]>()
   for (const w of windows) {
     let arr = bySpell.get(w.spellId)
@@ -242,10 +250,10 @@ export function classifyAuras(windows: AuraWindow[], allyNames: Set<string>): Re
       continue
     }
 
-    // Fan-out: group by (caster, 100ms bucket of start). If any bucket has 5+
-    // distinct ally targets, this is a raid-wide cast. Personal components of
-    // a shared cast (e.g. the shaman included in their own Heroism) count too
-    // because the caster is in the ally set.
+    // Fan-out: group by (caster, 100ms bucket of start). If any bucket has
+    // minFanout+ distinct ally targets, this is a raid-wide cast. Personal
+    // components of a shared cast (e.g. the shaman included in their own
+    // Heroism) count too because the caster is in the ally set.
     const buckets = new Map<string, Set<string>>()
     for (const w of ws) {
       if (w.preExisting) continue
@@ -256,7 +264,7 @@ export function classifyAuras(windows: AuraWindow[], allyNames: Set<string>): Re
     }
     let isRaid = false
     for (const set of buckets.values()) {
-      if (set.size >= 5) { isRaid = true; break }
+      if (set.size >= minFanout) { isRaid = true; break }
     }
     result[spellId] = isRaid ? 'raid' : 'external'
   }
