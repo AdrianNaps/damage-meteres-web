@@ -1,5 +1,5 @@
 import { memo, useCallback, useDeferredValue, useMemo } from 'react'
-import { useStore, selectCurrentView, selectIsLoading, resolveSpecId } from '../store'
+import { useStore, selectCurrentView, selectIsLoading, resolveSpecId, type Metric } from '../store'
 import type { PlayerSnapshot } from '../types'
 import {
   computeUnitRows,
@@ -144,7 +144,7 @@ function FilteredPlayerTable({
   allies: Record<string, PlayerSnapshot>
   duration: number
   selectedPlayer: string | null
-  setSelectedPlayer: (name: string | null, drillMetric?: 'damage' | 'healing' | 'interrupts') => void
+  setSelectedPlayer: (name: string | null, drillMetric?: Metric) => void
 }) {
   const playerSpecs = useStore(s => s.playerSpecs)
 

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useStore, selectCurrentView, resolveSpecId } from '../store'
+import { useStore, selectCurrentView, selectCurrentScopeKey, resolveSpecId } from '../store'
 import { getClassColor } from './PlayerRow'
 import {
   DamageSpellTable,
@@ -7,9 +7,10 @@ import {
   InterruptSpellTable,
   FullDamageSpellTable,
   FullHealSpellTable,
+  TargetScopedSpellTable,
+  FullTargetScopedSpellTable,
 } from './SpellTable'
 import { TargetTable, type TargetRowStyle } from './TargetTable'
-import { TargetScopedSpellTable, FullTargetScopedSpellTable } from './SpellTable'
 import { specIconUrl } from '../utils/icons'
 import { formatNum, shortName } from '../utils/format'
 import type { ClientEvent } from '../types'
@@ -24,6 +25,7 @@ const METRIC_LABELS: Record<string, string> = {
 export function BreakdownPanel() {
   const selectedPlayer = useStore(s => s.selectedPlayer)
   const currentView = useStore(selectCurrentView)
+  const scopeKey = useStore(selectCurrentScopeKey)
   const metric = useStore(s => s.drillMetric ?? s.metric)
   const mode = useStore(s => s.mode)
   const setSelectedPlayer = useStore(s => s.setSelectedPlayer)
@@ -31,12 +33,13 @@ export function BreakdownPanel() {
   const [drillTarget, setDrillTarget] = useState<string | null>(null)
   const playerSpecs = useStore(s => s.playerSpecs)
 
-  // Reset drill state when the player OR the metric changes — switching
-  // damage→healing on the same player would otherwise leave a stale damage-
-  // world target visible under a "Healing" heading.
+  // Reset drill state when the player, metric, or view scope changes — a
+  // scope swap (e.g. segment → key-run aggregate) can leave a stale target
+  // that no longer exists in the new view's events, and metric flips would
+  // otherwise show damage-world targets under a "Healing" heading.
   useEffect(() => {
     setDrillTarget(null)
-  }, [selectedPlayer, metric])
+  }, [selectedPlayer, metric, scopeKey])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -74,9 +77,9 @@ export function BreakdownPanel() {
     : 'activeDurationSec' in currentView ? currentView.activeDurationSec
     : 0
 
-  function handleModeChange(mode: 'spells' | 'targets') {
-    setViewMode(mode)
-    if (mode !== 'targets') {
+  function handleModeChange(nextViewMode: 'spells' | 'targets') {
+    setViewMode(nextViewMode)
+    if (nextViewMode !== 'targets') {
       setDrillTarget(null)
     }
   }

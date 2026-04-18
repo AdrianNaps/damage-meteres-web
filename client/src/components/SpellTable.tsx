@@ -1,3 +1,4 @@
+import { useMemo } from 'react'
 import type { ClientEvent, SpellDamageStats, SpellHealStats, InterruptSpellStats } from '../types'
 import { useStore } from '../store'
 import { spellIconUrl } from '../utils/icons'
@@ -330,7 +331,7 @@ export function FullDamageSpellTable({ spells, classColor, duration, playerTotal
             <span style={fullMonoSecondary}>{s.hitCount || '—'}</span>
             <span style={fullMonoMuted}>{s.hitCount > 0 ? formatNum(avgHit) : '—'}</span>
             <span style={fullMonoCrit}>{s.hitCount > 0 ? `${critPct}%` : '—'}</span>
-            <span style={{ ...fullMonoPrimary, color: 'var(--text-primary)' }}>{formatNum(dps)}</span>
+            <span style={fullMonoPrimary}>{formatNum(dps)}</span>
           </div>
         )
       })}
@@ -384,7 +385,7 @@ export function FullHealSpellTable({ spells, classColor, duration, playerTotal }
             <span style={fullMonoSecondary}>{s.hitCount || '—'}</span>
             <span style={fullMonoMuted}>{s.hitCount > 0 ? formatNum(avgHit) : '—'}</span>
             <span style={fullMonoCrit}>{s.hitCount > 0 ? `${critPct}%` : '—'}</span>
-            <span style={{ ...fullMonoPrimary, color: 'var(--text-primary)' }}>{formatNum(hps)}</span>
+            <span style={fullMonoPrimary}>{formatNum(hps)}</span>
           </div>
         )
       })}
@@ -442,7 +443,10 @@ interface ScopedSummaryProps {
 }
 
 export function TargetScopedSpellTable({ events, playerName, targetName, kind, classColor }: ScopedSummaryProps) {
-  const rows = aggregateSpellsAgainstTarget(events, playerName, targetName, kind)
+  const rows = useMemo(
+    () => aggregateSpellsAgainstTarget(events, playerName, targetName, kind),
+    [events, playerName, targetName, kind],
+  )
   const topTotal = rows[0]?.total ?? 1
 
   if (rows.length === 0) {
@@ -494,7 +498,10 @@ interface ScopedFullProps {
 const SCOPED_FULL_COLUMNS = '1fr 64px 44px 44px 56px 60px'
 
 export function FullTargetScopedSpellTable({ events, playerName, targetName, kind, classColor, duration }: ScopedFullProps) {
-  const rows = aggregateSpellsAgainstTarget(events, playerName, targetName, kind)
+  const rows = useMemo(
+    () => aggregateSpellsAgainstTarget(events, playerName, targetName, kind),
+    [events, playerName, targetName, kind],
+  )
   const scopedTotal = rows.reduce((s, r) => s + r.total, 0)
   const topShare = rows[0] && scopedTotal > 0 ? rows[0].total / scopedTotal : 0
   const rateLabel = kind === 'heal' ? 'HPS' : 'DPS'
@@ -538,7 +545,7 @@ export function FullTargetScopedSpellTable({ events, playerName, targetName, kin
             <span style={fullMonoSecondary}>{(share * 100).toFixed(0)}%</span>
             <span style={fullMonoSecondary}>{s.hitCount}</span>
             <span style={fullMonoMuted}>{formatNum(avgHit)}</span>
-            <span style={{ ...fullMonoPrimary, color: 'var(--text-primary)' }}>{formatNum(rate)}</span>
+            <span style={fullMonoPrimary}>{formatNum(rate)}</span>
           </div>
         )
       })}
