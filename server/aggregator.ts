@@ -1,4 +1,4 @@
-import type { ParsedEvent, DamagePayload, HealPayload, CombatantInfoPayload, DeathPayload, DeathRecapEvent } from './types.js'
+import type { ParsedEvent, DamagePayload, HealPayload, CombatantInfoPayload, DeathPayload, DeathRecapEvent, AuraPayload } from './types.js'
 import { PET_FLAG, GUARDIAN_FLAG, REDISTRIBUTION_DAMAGE_SPELLS } from './types.js'
 
 import type { Segment, PlayerData, SpellDamageStats, SpellHealStats, TargetDamageStats, PlayerDeathRecord } from './store.js'
@@ -445,6 +445,105 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
 
     // Clear the buffer so a rez + second death starts fresh
     recentEvents.delete(guid)
+    return
+  } else if (payload.type === 'aura') {
+    const aura = payload as AuraPayload
+
+    // Resolve caster (player / pet→owner). Enemy-cast buffs on players and
+    // buffs from unresolvable pets are dropped — v1 buffs metric is ally-focused.
+    const hasPetFlag = !!(event.source.flags & (PET_FLAG | GUARDIAN_FLAG))
+    const isPlayerSrc = isPlayerGuid(event.source.guid)
+    const knownOwnedCreature = !isPlayerSrc && !hasPetFlag
+      && !!segment.petToOwner[event.source.guid]
+    if (!isPlayerSrc && !hasPetFlag && !knownOwnedCreature) return
+
+    let casterName = event.source.name
+    let casterGuid = event.source.guid
+    if (hasPetFlag || knownOwnedCreature) {
+      const ownerGuid = segment.petToOwner[event.source.guid]
+      const ownerName = ownerGuid ? segment.guidToName[ownerGuid] : undefined
+      if (!ownerName) return
+      casterName = ownerName
+      casterGuid = ownerGuid
+    }
+    casterName = casterName.normalize('NFC')
+    const targetName = event.dest.name.normalize('NFC')
+
+    // Key by GUIDs not names to keep per-instance windows distinct even when
+    // two characters share a display name across servers.
+    const key = `${casterGuid}|${event.dest.guid}|${aura.spellId}`
+
+    if (aura.direction === 'applied') {
+      // APPLIED on an already-open window is an implicit refresh — treat it
+      // the same way as an explicit SPELL_AURA_REFRESH. Happens in rare
+      // cases where the client fires APPLIED instead of REFRESH (e.g. certain
+      // stack-based mechanics). The open window's start time is preserved so
+      // uptime stays contiguous.
+      const existingOpen = segment.openAuras.get(key)
+      if (existingOpen) {
+        existingOpen.refreshCount += 1
+        return
+      }
+      segment.openAuras.set(key, {
+        spellId: aura.spellId,
+        spellName: aura.spellName,
+        caster: casterName,
+        target: targetName,
+        start: event.timestamp,
+        refreshCount: 0,
+      })
+      return
+    }
+
+    if (aura.direction === 'refreshed') {
+      // Reapplication while the buff is still up. Doesn't split the window —
+      // the aura stayed continuously active — but counts as an application
+      // event for WCL-style Count columns. A REFRESH with no matching open
+      // entry is ignored: we have nothing to attribute it to (likely means
+      // the APPLIED happened outside the segment; retroactive seeding only
+      // fires on REMOVED paths).
+      const refreshedOpen = segment.openAuras.get(key)
+      if (refreshedOpen) refreshedOpen.refreshCount += 1
+      return
+    }
+
+    // direction === 'removed'
+    const open = segment.openAuras.get(key)
+    if (open) {
+      segment.openAuras.delete(key)
+      segment.auraWindows.push({
+        spellId: open.spellId,
+        spellName: open.spellName,
+        caster: open.caster,
+        target: open.target,
+        start: open.start,
+        end: event.timestamp,
+        preExisting: false,
+        stillOpen: false,
+        refreshCount: open.refreshCount,
+      })
+      return
+    }
+
+    // Retroactive seed: REMOVED without a prior APPLIED inside the segment.
+    // Most common cause is a pre-pull buff (Devotion Aura, Mark of the Wild,
+    // Power Word: Fortitude, …) that was already active when the segment
+    // opened. Seed the window at segment start. refreshCount is 0: any
+    // refreshes before this REMOVED would've happened pre-pull too.
+    const segStart = segment.firstEventTime ?? segment.startTime
+    if (event.timestamp > segStart) {
+      segment.auraWindows.push({
+        spellId: aura.spellId,
+        spellName: aura.spellName,
+        caster: casterName,
+        target: targetName,
+        start: segStart,
+        end: event.timestamp,
+        preExisting: true,
+        stillOpen: false,
+        refreshCount: 0,
+      })
+    }
     return
   } else if (payload.type === 'interrupt') {
     // Resolve pet/guardian source back to owning player, same as damage/heal paths.

@@ -515,53 +515,111 @@ export function parseLine(raw: string): ParsedEvent | ParsedEvent[] | null {
       }
     }
 
-    // Absorb shields expiring unused → overheal. WCL's "overheal" column for classes
-    // that cast absorb shields (DK Anti-Magic Shell, Priest Power Word: Shield, etc.)
-    // is dominated by the leftover portion of shields that timed out before being fully
-    // consumed. The leftover amount is carried in the trailing field of SPELL_AURA_REMOVED
-    // for absorb buffs; non-absorb auras omit that field entirely.
+    // BUFF application or refresh on a friendly target. Both emit 'aura'
+    // payloads; the direction distinguishes a fresh window open from a
+    // reapplication of an already-open one. DEBUFFs and non-player targets
+    // are dropped at the parser in v1 (the future debuffs metric will flip
+    // these filters).
     //
-    // The shield caster's consumed absorption is already credited via SPELL_ABSORBED
-    // (handled above), so here we only emit the unused remainder as pure overheal
-    // (baseAmount = overheal, effective = 0) under the shield spell.
+    // Field layout: [9]=spellId [10]=spellName [11]=school [12]=BUFF|DEBUFF [13?]=amount
+    // We ignore the trailing amount on APPLIED/REFRESH entirely — only REMOVED
+    // uses it (for absorb leftovers). Source resolution (pet→owner) and
+    // retroactive seeding for REMOVED-without-prior-APPLIED happen in the
+    // aggregator.
+    case 'SPELL_AURA_APPLIED':
+    case 'SPELL_AURA_REFRESH': {
+      if (fields.length < 13) return null
+      if (fields[12] !== 'BUFF') return null
+      if (!dest.guid.startsWith('Player-')) return null
+      return {
+        timestamp, type: eventType, source, dest,
+        payload: {
+          type: 'aura',
+          direction: eventType === 'SPELL_AURA_APPLIED' ? 'applied' : 'refreshed',
+          spellId: fields[9],
+          spellName: stripQuotes(fields[10]),
+          auraKind: 'BUFF',
+        },
+      }
+    }
+
+    // Dual-purpose: (a) absorb shields expiring unused → overheal credited to
+    // the shield caster, and (b) aura-window close for the buffs metric.
     //
-    // The aura source may be a pet/creature if the shield was placed on a minion via a
-    // hero-talent proc (e.g. Deathbringer's Anti-Magic Shell on the Four Horsemen). The
-    // aggregator's knownOwnedCreature / petToOwner path resolves those back to the summoner
-    // — but only when the aura destination is a player. The aggregator now drops any heal
-    // (including these synthetic aura-expiry overheal events) whose dest is a creature,
-    // matching WCL's behavior of excluding heals that land on pets/guardians/friendly NPCs.
-    // So a shield that expires on a minion dest is filtered by the aggregator, not credited.
+    // (a) ABSORB OVERHEAL. WCL's "overheal" column for classes that cast absorb
+    // shields (DK Anti-Magic Shell, Priest Power Word: Shield, etc.) is dominated
+    // by the leftover portion of shields that timed out before being fully
+    // consumed. The leftover amount is carried in the trailing field of
+    // SPELL_AURA_REMOVED for absorb buffs; non-absorb auras omit that field
+    // entirely. The shield caster's consumed absorption is already credited via
+    // SPELL_ABSORBED (handled above), so here we only emit the unused remainder
+    // as pure overheal (baseAmount = overheal, effective = 0) under the shield
+    // spell.
+    //
+    // The aura source may be a pet/creature if the shield was placed on a minion
+    // via a hero-talent proc (e.g. Deathbringer's Anti-Magic Shell on the Four
+    // Horsemen). The aggregator's knownOwnedCreature / petToOwner path resolves
+    // those back to the summoner — but only when the aura destination is a
+    // player. The aggregator drops any heal (including these synthetic
+    // aura-expiry overheal events) whose dest is a creature, matching WCL.
+    //
+    // (b) AURA-WINDOW CLOSE. For any BUFF removal with a player dest, emit an
+    // 'aura' payload so the aggregator can close the matching open window (or
+    // retroactively seed a pre-existing one when no APPLIED was seen). Fires
+    // independently of the absorb-overheal path, so a single row can return
+    // both events as an array.
     //
     // Field layout:
     //   Non-absorb buff (13 fields): [9]=spellId [10]=spellName [11]=school [12]=BUFF|DEBUFF
     //   Absorb buff    (14 fields): same + [13]=absorbAmount (leftover when aura expires)
-    //
-    // We require exactly 14 fields — non-absorb buffs never emit the trailing amount, and
-    // any future layout change would push the field we read out of position, so better to
-    // bail than to misinterpret. The BUFF check filters debuff removals (target-side), and
-    // the positive-leftover check filters absorb shields that were fully consumed.
     case 'SPELL_AURA_REMOVED': {
-      if (fields.length !== 14) return null
+      if (fields.length < 13) return null
       if (fields[12] !== 'BUFF') return null
-      const leftover = parseInt(fields[13])
-      if (!leftover || isNaN(leftover) || leftover <= 0) return null
-      // Same WCL drop as the SPELL_ABSORBED branch: replay shields are not attributed
-      // as healing (and therefore not as overheal either).
-      if (REPLAY_HEAL_SPELLS.has(fields[9])) return null
-      return {
-        timestamp, type: eventType, source, dest,
-        payload: {
-          type: 'heal',
-          spellId: fields[9],
-          spellName: stripQuotes(fields[10]),
-          amount: 0,
-          baseAmount: leftover,
-          overheal: leftover,
-          absorbed: 0,
-          critical: false,
+
+      const spellId = fields[9]
+      const spellName = stripQuotes(fields[10])
+      const emitted: ParsedEvent[] = []
+
+      // (a) Absorb-overheal re-emit. Requires the 14-field layout (trailing
+      // leftover amount) and a positive leftover. Replay shields are WCL-dropped
+      // from healing attribution — see REPLAY_HEAL_SPELLS note at the top of file.
+      if (fields.length === 14 && !REPLAY_HEAL_SPELLS.has(spellId)) {
+        const leftover = parseInt(fields[13])
+        if (leftover && !isNaN(leftover) && leftover > 0) {
+          emitted.push({
+            timestamp, type: eventType, source, dest,
+            payload: {
+              type: 'heal',
+              spellId,
+              spellName,
+              amount: 0,
+              baseAmount: leftover,
+              overheal: leftover,
+              absorbed: 0,
+              critical: false,
+            },
+          })
         }
       }
+
+      // (b) Aura-window close. Only fires for player-dest BUFFs; enemies and
+      // non-player friendlies (pets, npcs) are out of scope for v1.
+      if (dest.guid.startsWith('Player-')) {
+        emitted.push({
+          timestamp, type: eventType, source, dest,
+          payload: {
+            type: 'aura',
+            direction: 'removed',
+            spellId,
+            spellName,
+            auraKind: 'BUFF',
+          },
+        })
+      }
+
+      if (emitted.length === 0) return null
+      if (emitted.length === 1) return emitted[0]
+      return emitted
     }
 
     case 'SPELL_INTERRUPT': {

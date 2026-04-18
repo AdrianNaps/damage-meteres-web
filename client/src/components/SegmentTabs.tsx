@@ -190,19 +190,30 @@ export function SegmentTabs() {
           >
             Overall
           </TabButton>
-          {activeSegments.map((seg, i) => ({ seg, pullNum: i + 1 })).reverse().map(({ seg, pullNum }) => (
-            <TabButton
-              key={seg.id}
-              active={selectedId === seg.id}
-              accentColor="var(--text-secondary)"
-              small
-              onClick={() => selectSegment(activeSourceId, seg.id)}
-            >
-              {activeBossSection ? `Pull ${pullNum}` : shortSegmentName(seg.encounterName)}
-              {seg.success === true && <span style={{ color: 'var(--status-kill)', marginLeft: 4 }}>&#10003;</span>}
-              {seg.success === false && <span style={{ color: 'var(--status-wipe)', marginLeft: 4 }}>&#10007;</span>}
-            </TabButton>
-          ))}
+          {activeSegments.map((seg, i) => ({ seg, pullNum: i + 1 })).reverse().map(({ seg, pullNum }) => {
+            // Show "Pull N - X%" on raid wipes with known boss HP. Pull-N
+            // labels only render inside a boss section (the `activeBossSection`
+            // branch), and boss sections are raid-only on the server — so no
+            // extra difficulty gate is needed here. M+ pulls fall through the
+            // `shortSegmentName` branch and never see this suffix.
+            const baseLabel = activeBossSection ? `Pull ${pullNum}` : shortSegmentName(seg.encounterName)
+            const wipePct = seg.success === false && seg.bossHpPctAtWipe !== undefined
+              ? ` - ${seg.bossHpPctAtWipe}%`
+              : ''
+            return (
+              <TabButton
+                key={seg.id}
+                active={selectedId === seg.id}
+                accentColor="var(--text-secondary)"
+                small
+                onClick={() => selectSegment(activeSourceId, seg.id)}
+              >
+                {baseLabel + wipePct}
+                {seg.success === true && <span style={{ color: 'var(--status-kill)', marginLeft: 4 }}>&#10003;</span>}
+                {seg.success === false && <span style={{ color: 'var(--status-wipe)', marginLeft: 4 }}>&#10007;</span>}
+              </TabButton>
+            )
+          })}
           </div>
         </div>
       )}

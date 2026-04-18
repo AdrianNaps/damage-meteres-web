@@ -1,15 +1,18 @@
-import { memo, useCallback, useDeferredValue, useMemo } from 'react'
-import { useStore, selectCurrentView, selectIsLoading, resolveSpecId, type Metric } from '../store'
-import type { PlayerSnapshot } from '../types'
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef } from 'react'
+import { useStore, selectCurrentView, selectIsLoading, resolveSpecId, type Metric, type FilterState } from '../store'
+import type { PlayerSnapshot, AuraWindowWire, BuffSection } from '../types'
 import {
   computeUnitRows,
   computeDeathRows,
+  computeBuffRows,
   hasMatchingData,
+  hasMatchingBuffData,
   type UnitRow,
   type DeathRow,
+  type BuffRow,
 } from '../utils/filters'
 import { formatNum, shortName } from '../utils/format'
-import { specIconUrl } from '../utils/icons'
+import { specIconUrl, spellIconUrl } from '../utils/icons'
 import { getClassColor } from './PlayerRow'
 import { FilterEmptyState } from './FilterEmptyState'
 
@@ -106,6 +109,22 @@ export function FullMeterView() {
     : 'activeDurationSec' in currentView ? currentView.activeDurationSec
     : 0
 
+  // Buffs metric takes a separate path — its row shape is per-buff, not
+  // per-player, and the aura windows live in a different field on the
+  // snapshot than the event stream.
+  if (deferredMetric === 'buffs') {
+    return (
+      <FilteredBuffsTable
+        auras={currentView.auras ?? EMPTY_AURAS}
+        classification={currentView.buffClassification ?? EMPTY_CLASSIFICATION}
+        filters={deferredFilters}
+        startTime={currentView.startTime}
+        endTime={currentView.endTime}
+        durationSec={duration}
+      />
+    )
+  }
+
   const matches = hasMatchingData(events, deferredPerspective, deferredFilters, deferredMetric, allies)
   if (!matches) return <FilterEmptyState />
 
@@ -126,6 +145,12 @@ export function FullMeterView() {
     />
   )
 }
+
+// Stable empty-array fallbacks so consumers reading `currentView.auras` /
+// `currentView.buffClassification` when those fields are absent (legacy
+// snapshots) don't thrash useMemo deps with fresh arrays every render.
+const EMPTY_AURAS: AuraWindowWire[] = []
+const EMPTY_CLASSIFICATION: Record<string, BuffSection> = {}
 
 function FilteredPlayerTable({
   events,
@@ -622,5 +647,359 @@ function FullLoadingSkeleton() {
         </div>
       ))}
     </div>
+  )
+}
+
+// ─── Buffs ────────────────────────────────────────────────────────────────
+// Per-buff rows grouped by Personal / Raid / External classification.
+// PR 2 ships this as a read-only table: no filter integration (PR 3), no
+// timeline bar per row (PR 4), no drill panel (PR 5).
+
+// Grid: icon+name (flex) | section badge | uptime% | count.
+// The timeline bar column is a placeholder (min-width flex spacer) that PR 4
+// will fill with a shared canvas overlay; we reserve the space now so the
+// PR-4 change doesn't reshuffle existing columns.
+const BUFFS_GRID_COLUMNS = '32px minmax(240px, 1.2fr) 80px minmax(160px, 2fr) 80px 80px'
+
+const SECTION_LABELS: Record<BuffSection, string> = {
+  personal: 'Personal',
+  raid: 'Raid',
+  external: 'External',
+}
+
+function FilteredBuffsTable({
+  auras,
+  classification,
+  filters,
+  startTime,
+  endTime,
+  durationSec,
+}: {
+  auras: AuraWindowWire[]
+  classification: Record<string, BuffSection>
+  filters: FilterState
+  startTime: number
+  endTime: number | null
+  durationSec: number
+}) {
+  const selectedBuff = useStore(s => s.selectedBuff)
+  const setSelectedBuff = useStore(s => s.setSelectedBuff)
+  // For in-progress scopes (endTime === null) we can't reach this path in
+  // practice — Full mode is gated on completed snapshots — but defend anyway
+  // by deriving tEnd from durationSec.
+  const tEnd = endTime ?? (startTime + durationSec * 1000)
+
+  const rows = useMemo(
+    () => computeBuffRows(auras, classification, filters, startTime, tEnd),
+    [auras, classification, filters, startTime, tEnd],
+  )
+
+  // Split rows into section groups while preserving the already-sorted order.
+  const grouped = useMemo(() => {
+    const sections: BuffSection[] = ['personal', 'raid', 'external']
+    return sections
+      .map(key => ({ key, rows: rows.filter(r => r.section === key) }))
+      .filter(g => g.rows.length > 0)
+  }, [rows])
+
+  // Empty-state fork: no windows in scope at all → neutral message; filters
+  // eliminated everything → show the filter-specific prompt.
+  if (auras.length === 0) {
+    return <EmptyState text="No buff data in this scope" />
+  }
+  if (rows.length === 0) {
+    // rows.length can be 0 either because filters hide everything or because
+    // the scope truly has no aura intersection (e.g. a TimeWindow with zero
+    // width). Prefer the filter-guidance state when any filter is active.
+    const anyFilter = !!(filters.Source || filters.Target || filters.Ability || filters.TimeWindow)
+    if (anyFilter && !hasMatchingBuffData(auras, filters, startTime, tEnd)) {
+      return <FilterEmptyState />
+    }
+    return <EmptyState text="No buff data in this scope" />
+  }
+
+  return (
+    <div className="flex-1 flex flex-col min-h-0">
+      <BuffsColumnHeader />
+      <div className="flex-1 overflow-y-auto">
+        {grouped.map(group => (
+          <div key={group.key}>
+            <BuffSectionHeader label={SECTION_LABELS[group.key]} count={group.rows.length} />
+            {group.rows.map((row, i) => (
+              <FullBuffRow
+                key={row.spellId}
+                row={row}
+                rank={i + 1}
+                t0Ms={startTime}
+                tEndMs={tEnd}
+                isSelected={selectedBuff === row.spellId}
+                onClick={() => setSelectedBuff(selectedBuff === row.spellId ? null : row.spellId)}
+              />
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function BuffsColumnHeader() {
+  return (
+    <div
+      style={{
+        display: 'grid',
+        gridTemplateColumns: BUFFS_GRID_COLUMNS,
+        alignItems: 'center',
+        gap: 12,
+        padding: '6px 14px',
+        borderBottom: '1px solid var(--border-subtle)',
+      }}
+    >
+      <HeaderCell align="center">#</HeaderCell>
+      <HeaderCell>Buff</HeaderCell>
+      <HeaderCell align="right">Section</HeaderCell>
+      <HeaderCell>Uptime</HeaderCell>
+      <HeaderCell align="right">Uptime %</HeaderCell>
+      <HeaderCell align="right">Count</HeaderCell>
+    </div>
+  )
+}
+
+function BuffSectionHeader({ label, count }: { label: string; count: number }) {
+  return (
+    <div
+      style={{
+        padding: '6px 14px',
+        fontSize: 10,
+        fontWeight: 600,
+        textTransform: 'uppercase',
+        letterSpacing: '0.08em',
+        color: 'var(--text-muted)',
+        background: 'var(--bg-root)',
+        borderBottom: '1px solid var(--border-subtle)',
+      }}
+    >
+      {label}
+      <span style={{ color: 'var(--text-muted)', marginLeft: 6, fontWeight: 400 }}>
+        ({count})
+      </span>
+    </div>
+  )
+}
+
+const FullBuffRow = memo(FullBuffRowImpl)
+
+function FullBuffRowImpl({
+  row,
+  rank,
+  t0Ms,
+  tEndMs,
+  isSelected,
+  onClick,
+}: {
+  row: BuffRow
+  rank: number
+  t0Ms: number
+  tEndMs: number
+  isSelected: boolean
+  onClick: () => void
+}) {
+  return (
+    <div
+      onClick={onClick}
+      style={{
+        display: 'grid',
+        gridTemplateColumns: BUFFS_GRID_COLUMNS,
+        alignItems: 'center',
+        gap: 12,
+        minHeight: 32,
+        padding: '0 14px',
+        borderBottom: '1px solid var(--border-subtle)',
+        cursor: 'pointer',
+        background: isSelected ? 'var(--bg-active)' : 'transparent',
+        transition: 'background 0.1s',
+      }}
+      onMouseEnter={!isSelected ? e => { e.currentTarget.style.background = 'var(--bg-hover)' } : undefined}
+      onMouseLeave={!isSelected ? e => { e.currentTarget.style.background = 'transparent' } : undefined}
+    >
+      <RankCell rank={rank} />
+      <BuffNameCell spellId={row.spellId} spellName={row.spellName} />
+      <SectionBadge section={row.section} />
+      <BuffTimelineBar windows={row.windows} t0Ms={t0Ms} tEndMs={tEndMs} section={row.section} />
+      <span style={{
+        fontSize: 12, fontFamily: 'var(--font-mono)', fontWeight: 600,
+        color: 'var(--text-primary)', textAlign: 'right',
+      }}>
+        {row.uptimePct.toFixed(2)}%
+      </span>
+      <span style={{
+        fontSize: 12, fontFamily: 'var(--font-mono)',
+        color: 'var(--text-secondary)', textAlign: 'right',
+      }}>
+        {row.count}
+      </span>
+    </div>
+  )
+}
+
+// Per-row canvas strip showing union-of-windows for a single buff. Union
+// (not per-window-stacked) because the uptime metric shows "was anyone
+// buffed" — matching what the % reads. Resize-aware via ResizeObserver so
+// the strip adapts to grid column changes.
+const TIMELINE_BAR_HEIGHT = 8
+const SECTION_BAR_COLORS: Record<BuffSection, string> = {
+  personal: '#64748b',   // muted slate — low signal weight
+  raid:     '#22c55e',   // green, matches the section badge
+  external: '#f59e0b',   // amber, matches the section badge
+}
+
+function BuffTimelineBar({
+  windows,
+  t0Ms,
+  tEndMs,
+  section,
+}: {
+  windows: AuraWindowWire[]
+  t0Ms: number
+  tEndMs: number
+  section: BuffSection
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const color = SECTION_BAR_COLORS[section]
+
+  const draw = useCallback(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const container = containerRef.current
+    if (!container) return
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+
+    const dpr = window.devicePixelRatio || 1
+    const cssW = container.clientWidth
+    const cssH = TIMELINE_BAR_HEIGHT
+    if (cssW <= 0) return
+    canvas.width = cssW * dpr
+    canvas.height = cssH * dpr
+    canvas.style.width = `${cssW}px`
+    canvas.style.height = `${cssH}px`
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    ctx.clearRect(0, 0, cssW, cssH)
+
+    const scopeMs = tEndMs - t0Ms
+    if (scopeMs <= 0 || windows.length === 0) {
+      drawTimelineTrack(ctx, cssW, cssH)
+      return
+    }
+
+    drawTimelineTrack(ctx, cssW, cssH)
+
+    // Union-in-one-sweep: sort by start, merge overlaps, fill each merged run.
+    const sorted = windows
+      .map<[number, number]>(w => [Math.max(w.s, t0Ms), Math.min(w.e, tEndMs)])
+      .filter(([s, e]) => e > s)
+      .sort((a, b) => a[0] - b[0])
+    if (sorted.length === 0) return
+
+    ctx.fillStyle = color
+    ctx.globalAlpha = 0.85
+    let curStart = sorted[0][0]
+    let curEnd = sorted[0][1]
+    const flush = () => {
+      const x0 = ((curStart - t0Ms) / scopeMs) * cssW
+      const x1 = ((curEnd - t0Ms) / scopeMs) * cssW
+      const w = Math.max(1, x1 - x0)   // ensure a sub-pixel window still draws
+      ctx.fillRect(Math.floor(x0), 0, Math.ceil(w), cssH)
+    }
+    for (let i = 1; i < sorted.length; i++) {
+      const [s, e] = sorted[i]
+      if (s <= curEnd) {
+        if (e > curEnd) curEnd = e
+      } else {
+        flush()
+        curStart = s
+        curEnd = e
+      }
+    }
+    flush()
+    ctx.globalAlpha = 1
+  }, [windows, t0Ms, tEndMs, color])
+
+  useEffect(() => {
+    draw()
+    const container = containerRef.current
+    if (!container) return
+    const ro = new ResizeObserver(() => draw())
+    ro.observe(container)
+    return () => ro.disconnect()
+  }, [draw])
+
+  return (
+    <div
+      ref={containerRef}
+      style={{
+        height: TIMELINE_BAR_HEIGHT,
+        display: 'flex',
+        alignItems: 'center',
+        minWidth: 0,
+      }}
+    >
+      <canvas ref={canvasRef} style={{ display: 'block' }} />
+    </div>
+  )
+}
+
+function drawTimelineTrack(ctx: CanvasRenderingContext2D, w: number, h: number) {
+  ctx.fillStyle = 'rgba(255,255,255,0.04)'
+  ctx.fillRect(0, 0, w, h)
+}
+
+function BuffNameCell({ spellId, spellName }: { spellId: string; spellName: string }) {
+  const iconName = useStore(s => s.spellIcons[spellId])
+  const url = spellIconUrl(iconName)
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+      <div style={{
+        width: 18, height: 18, flexShrink: 0,
+        border: '1px solid rgba(0, 0, 0, 0.7)',
+        borderRadius: 2,
+        background: 'rgba(255, 255, 255, 0.04)',
+        overflow: 'hidden',
+      }}>
+        {url && (
+          <img
+            src={url}
+            alt=""
+            width={18}
+            height={18}
+            style={{ display: 'block' }}
+            onError={e => { e.currentTarget.style.display = 'none' }}
+          />
+        )}
+      </div>
+      <span className="truncate" style={{ fontSize: 13, color: 'var(--text-primary)', minWidth: 0 }}>
+        {spellName}
+      </span>
+    </div>
+  )
+}
+
+function SectionBadge({ section }: { section: BuffSection }) {
+  const color =
+    section === 'raid'     ? 'var(--status-success, #22c55e)'
+    : section === 'external' ? 'var(--data-group-avg, #f59e0b)'
+    : 'var(--text-muted)'
+  return (
+    <span style={{
+      fontSize: 10,
+      textTransform: 'uppercase',
+      letterSpacing: '0.06em',
+      color,
+      textAlign: 'right',
+      fontFamily: 'var(--font-mono)',
+    }}>
+      {SECTION_LABELS[section]}
+    </span>
   )
 }

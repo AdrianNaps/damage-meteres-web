@@ -211,6 +211,16 @@ export class EncounterStateMachine extends EventEmitter {
         if (this.currentSegment) {
           this.currentSegment.endTime = event.timestamp
           this.currentSegment.success = p.success ?? false
+          // Snapshot boss HP at wipe. Only emitted on wipes; kills are at 0%
+          // by definition and in-progress segments don't get a summary here.
+          // Missing tracker (no advanced log) leaves the field undefined and
+          // the tab falls back to the plain "Pull N" label.
+          if (this.currentSegment.success === false && this.currentSegment.bossHpTracker) {
+            const t = this.currentSegment.bossHpTracker
+            if (t.maxHP > 0) {
+              this.currentSegment.bossHpPctAtWipe = Math.max(0, Math.min(100, Math.round((t.lastHP / t.maxHP) * 100)))
+            }
+          }
           console.log(`[boss] END — ${this.currentSegment.encounterName} (${p.success ? 'kill' : 'wipe'})`)
           this.emit('encounter_end', this.currentSegment)
         }
@@ -237,6 +247,9 @@ export class EncounterStateMachine extends EventEmitter {
         }
         if (this.currentSegment) {
           applyEvent(this.currentSegment, event)
+          if (this.mode === 'in_boss') {
+            this._trackBossHp(this.currentSegment, event)
+          }
         }
         break
       }
@@ -426,6 +439,35 @@ export class EncounterStateMachine extends EventEmitter {
     }
   }
 
+  // Lock onto the biggest hostile unit damaged in the segment and keep its HP
+  // fresh on every hit. "Biggest by maxHP" is a cheap proxy for "the boss" —
+  // phase-2 units that spawn later with a larger maxHP steal the lock, which
+  // is the right behaviour for bosses that transform or ascend. Players and
+  // dest-less events are skipped. Only reads from advanced-log-enriched damage
+  // events; without advanced logging the tracker stays empty and the wipe-%
+  // label just doesn't render.
+  private _trackBossHp(segment: Segment, event: ParsedEvent): void {
+    if (event.payload.type !== 'damage') return
+    const p = event.payload as DamagePayload
+    if (p.destCurrentHP === undefined || p.destMaxHP === undefined || p.destMaxHP <= 0) return
+    const destGuid = event.dest.guid
+    if (!destGuid || destGuid.startsWith('Player-')) return
+
+    const tracker = segment.bossHpTracker
+    if (!tracker) {
+      segment.bossHpTracker = { guid: destGuid, maxHP: p.destMaxHP, lastHP: p.destCurrentHP }
+      return
+    }
+    if (destGuid === tracker.guid) {
+      tracker.lastHP = p.destCurrentHP
+      if (p.destMaxHP > tracker.maxHP) tracker.maxHP = p.destMaxHP
+    } else if (p.destMaxHP > tracker.maxHP) {
+      // A bigger unit just took damage — likely the phase-2 boss or the real
+      // boss appearing after adds. Switch the lock.
+      segment.bossHpTracker = { guid: destGuid, maxHP: p.destMaxHP, lastHP: p.destCurrentHP }
+    }
+  }
+
   private _openTrashPack(startTime: number): void {
     this.packCount++
     const segment = this._makeSegment(this._packPlaceholderName(this.packCount), startTime)
@@ -484,6 +526,8 @@ export class EncounterStateMachine extends EventEmitter {
       targetDamageTaken: {},
       healingReceived: {},
       events: [],
+      auraWindows: [],
+      openAuras: new Map(),
     }
   }
 }

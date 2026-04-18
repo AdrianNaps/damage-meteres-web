@@ -1,4 +1,4 @@
-import type { ClientEvent, PlayerSnapshot } from '../types'
+import type { ClientEvent, PlayerSnapshot, AuraWindowWire, BuffSection } from '../types'
 import type { FilterState, Metric, Perspective } from '../store'
 
 // Shape returned for damage/healing/interrupts row lists. `value` is the sorted
@@ -38,14 +38,33 @@ export interface AbilityEntry {
   sourceCount: number
 }
 
+// One row in the Full-mode buffs table. `uptimeMs` is the UNION of windows
+// across all targets (any target has the buff at time t → group is counted
+// as up), matching WCL's "Uptime" column. `count` follows WCL's convention:
+// per-recipient application count (one Heroism fan-out of 20 = 20).
+export interface BuffRow {
+  spellId: string
+  spellName: string
+  section: BuffSection
+  uptimeMs: number
+  uptimePct: number       // uptimeMs / scopeDurationMs * 100
+  count: number
+  windows: AuraWindowWire[]                      // post-filter, all targets
+  windowsByTarget: Record<string, AuraWindowWire[]>
+}
+
 // Maps a metric category to the event.kind that feeds it. Damage/healing are
-// 1:1; interrupts and deaths use their own event kinds.
+// 1:1; interrupts and deaths use their own event kinds. Buffs doesn't use
+// the events stream — it has its own aura-window feed — so callers walking
+// events must not reach this function with 'buffs'. FullMeterView branches
+// on metric before calling event-based aggregators.
 function kindFor(category: Metric): ClientEvent['kind'] {
   switch (category) {
     case 'damage':     return 'damage'
     case 'healing':    return 'heal'
     case 'interrupts': return 'interrupt'
     case 'deaths':     return 'death'
+    case 'buffs':      throw new Error('kindFor(buffs) — buffs metric has no ClientEvent kind')
   }
 }
 
@@ -371,6 +390,257 @@ function computeUnitUniverseImpl(
   }
 
   return { sources: [...sources].sort(), targets: [...targets].sort() }
+}
+
+// Buffs-metric row builder. Groups auras by spellId, unions their windows per
+// spell to compute group uptime ("any target has it at t"), and tags each row
+// with its classification section.
+//
+// Filter semantics (same store state as damage/healing, different meaning):
+//   Source (Caster)    → filter windows by `c`
+//   Target (Recipient) → filter windows by `d`
+//   Ability (Buff)     → filter rows by spell name (one spell can match)
+//   TimeWindow         → clip windows to the selected [start,end] sub-range
+//                        before union; a window that doesn't intersect the
+//                        sub-range drops out entirely.
+//
+// Scope window: [t0Ms, tEndMs] is the segment/keyrun/bosssection time span.
+// Windows that extend beyond are clamped to the scope before union; the
+// union is what drives uptime%. When TimeWindow is active, the effective
+// scope shrinks to the intersection, so uptime% is computed relative to the
+// window width — matching the way damage/healing re-aggregate under filters.
+const buffRowsCache = new WeakMap<AuraWindowWire[], Map<string, BuffRow[]>>()
+
+export function computeBuffRows(
+  auras: AuraWindowWire[],
+  classification: Record<string, BuffSection>,
+  filters: FilterState,
+  t0Ms: number,
+  tEndMs: number,
+): BuffRow[] {
+  if (!hasAnyFilter(filters)) {
+    const sub = getOrInit(buffRowsCache, auras)
+    const cacheKey = `${t0Ms}:${tEndMs}`
+    const cached = sub.get(cacheKey)
+    if (cached) return cached
+    const rows = computeBuffRowsImpl(auras, classification, filters, t0Ms, tEndMs)
+    sub.set(cacheKey, rows)
+    return rows
+  }
+  return computeBuffRowsImpl(auras, classification, filters, t0Ms, tEndMs)
+}
+
+function computeBuffRowsImpl(
+  auras: AuraWindowWire[],
+  classification: Record<string, BuffSection>,
+  filters: FilterState,
+  t0Ms: number,
+  tEndMs: number,
+): BuffRow[] {
+  if (auras.length === 0 || tEndMs <= t0Ms) return []
+
+  const { effStart, effEnd } = resolveBuffScope(t0Ms, tEndMs, filters.TimeWindow)
+  const scopeMs = effEnd - effStart
+  if (scopeMs <= 0) return []
+
+  const casterFilter = filters.Source
+  const recipientFilter = filters.Target
+  const buffFilter = filters.Ability
+
+  // Group by spellId. Keep per-target window lists for the eventual drill panel
+  // (PR 5) so a row already has them memoized — avoids a second pass.
+  type Agg = {
+    spellName: string
+    windows: AuraWindowWire[]
+    byTarget: Record<string, AuraWindowWire[]>
+    count: number
+  }
+  const bySpell = new Map<string, Agg>()
+
+  for (const w of auras) {
+    if (casterFilter && !casterFilter.includes(w.c)) continue
+    if (recipientFilter && !recipientFilter.includes(w.d)) continue
+    if (buffFilter && !buffFilter.includes(w.n)) continue
+    // Must have a non-zero intersection with the effective scope window.
+    if (w.e <= effStart || w.s >= effEnd) continue
+
+    let agg = bySpell.get(w.id)
+    if (!agg) {
+      agg = { spellName: w.n, windows: [], byTarget: {}, count: 0 }
+      bySpell.set(w.id, agg)
+    }
+    agg.windows.push(w)
+    if (!agg.byTarget[w.d]) agg.byTarget[w.d] = []
+    agg.byTarget[w.d].push(w)
+    // Per-recipient applications = 1 fresh APPLIED + folded-in refreshes.
+    // Matches WCL's Count column: refreshing Ironfur 15 times inside a
+    // continuous uptime block reads as 16 (initial + 15 refreshes), not 1.
+    agg.count += 1 + (w.r ?? 0)
+  }
+
+  const rows: BuffRow[] = []
+  for (const [spellId, agg] of bySpell) {
+    const uptimeMs = unionUptimeMs(agg.windows, effStart, effEnd)
+    rows.push({
+      spellId,
+      spellName: agg.spellName,
+      section: classification[spellId] ?? 'external',
+      uptimeMs,
+      uptimePct: (uptimeMs / scopeMs) * 100,
+      count: agg.count,
+      windows: agg.windows,
+      windowsByTarget: agg.byTarget,
+    })
+  }
+
+  // Sort: section order (personal → raid → external) then uptime% desc
+  // within the section. Matches the plan's default display order.
+  const sectionRank: Record<BuffSection, number> = { personal: 0, raid: 1, external: 2 }
+  rows.sort((a, b) => {
+    const sr = sectionRank[a.section] - sectionRank[b.section]
+    if (sr !== 0) return sr
+    return b.uptimePct - a.uptimePct
+  })
+  return rows
+}
+
+// Resolve the effective scope to union over, intersecting the scope's
+// [t0Ms, tEndMs] with any active TimeWindow filter (which is expressed in
+// seconds-from-scope-start).
+function resolveBuffScope(
+  t0Ms: number,
+  tEndMs: number,
+  tw: FilterState['TimeWindow'],
+): { effStart: number; effEnd: number } {
+  if (!tw) return { effStart: t0Ms, effEnd: tEndMs }
+  const effStart = Math.max(t0Ms, t0Ms + tw.startSec * 1000)
+  const effEnd = Math.min(tEndMs, t0Ms + tw.endSec * 1000)
+  return { effStart, effEnd }
+}
+
+// Unit universe for the buffs metric — casters + recipients that appear in
+// the aura windows. Allies-only in v1 (enemy-cast buffs dropped at parser),
+// so the set is naturally ally-scoped.
+const buffUnitUniverseCache = new WeakMap<AuraWindowWire[], { sources: string[]; targets: string[] }>()
+
+export function computeBuffUnitUniverse(
+  auras: AuraWindowWire[],
+  allies: Record<string, PlayerSnapshot>,
+): { sources: string[]; targets: string[] } {
+  const cached = buffUnitUniverseCache.get(auras)
+  if (cached) return cached
+  const sources = new Set<string>()
+  const targets = new Set<string>()
+  for (const w of auras) {
+    sources.add(w.c)
+    targets.add(w.d)
+  }
+  // Include allies as fallback recipients even if they never gained/lost a
+  // buff in this scope — the picker should still list them so a user can
+  // filter to "buffs on <X>" and get an empty state, not a missing option.
+  // (Mirrors how the damage/healing picker lists allies with zero activity.)
+  for (const name of Object.keys(allies)) targets.add(name)
+  const result = { sources: [...sources].sort(), targets: [...targets].sort() }
+  buffUnitUniverseCache.set(auras, result)
+  return result
+}
+
+// Ability (buff) universe for the buffs picker. Filters by Caster/Recipient
+// before tallying so the picker list reflects what's currently in view.
+export function computeBuffAbilityUniverse(
+  auras: AuraWindowWire[],
+  filters: Pick<FilterState, 'Source' | 'Target'>,
+): AbilityEntry[] {
+  type Agg = { count: number; sources: Map<string, number> }
+  const byBuff = new Map<string, Agg>()
+
+  const srcFilter = filters.Source
+  const tgtFilter = filters.Target
+
+  for (const w of auras) {
+    if (srcFilter && !srcFilter.includes(w.c)) continue
+    if (tgtFilter && !tgtFilter.includes(w.d)) continue
+    let agg = byBuff.get(w.n)
+    if (!agg) {
+      agg = { count: 0, sources: new Map() }
+      byBuff.set(w.n, agg)
+    }
+    // Same refresh-aware count as computeBuffRows.
+    const applications = 1 + (w.r ?? 0)
+    agg.count += applications
+    agg.sources.set(w.c, (agg.sources.get(w.c) ?? 0) + applications)
+  }
+
+  let grand = 0
+  for (const a of byBuff.values()) grand += a.count
+
+  const entries: AbilityEntry[] = []
+  for (const [name, agg] of byBuff) {
+    const pct = grand > 0 ? (agg.count / grand) * 100 : 0
+    const sortedSources = [...agg.sources.entries()].sort((a, c) => c[1] - a[1])
+    entries.push({
+      name,
+      pct,
+      sources: sortedSources.slice(0, 3).map(([n]) => n),
+      sourceCount: agg.sources.size,
+    })
+  }
+  entries.sort((a, b) => b.pct - a.pct)
+  return entries
+}
+
+// True when at least one aura window passes the current filter set — drives
+// the FilterEmptyState fallback for buffs the same way hasMatchingData does
+// for damage/healing.
+export function hasMatchingBuffData(
+  auras: AuraWindowWire[],
+  filters: FilterState,
+  t0Ms: number,
+  tEndMs: number,
+): boolean {
+  const { effStart, effEnd } = resolveBuffScope(t0Ms, tEndMs, filters.TimeWindow)
+  if (effEnd <= effStart) return false
+  const casterFilter = filters.Source
+  const recipientFilter = filters.Target
+  const buffFilter = filters.Ability
+  for (const w of auras) {
+    if (casterFilter && !casterFilter.includes(w.c)) continue
+    if (recipientFilter && !recipientFilter.includes(w.d)) continue
+    if (buffFilter && !buffFilter.includes(w.n)) continue
+    if (w.e <= effStart || w.s >= effEnd) continue
+    return true
+  }
+  return false
+}
+
+// Clip to [t0, tEnd] and union overlapping intervals. O(n log n) sort + sweep.
+// Touching intervals (end === nextStart) are merged — a contiguous buff that
+// refreshed exactly at falloff counts as one uptime block, not zero-gap two.
+function unionUptimeMs(windows: AuraWindowWire[], t0Ms: number, tEndMs: number): number {
+  if (windows.length === 0) return 0
+  const intervals: [number, number][] = []
+  for (const w of windows) {
+    const s = Math.max(w.s, t0Ms)
+    const e = Math.min(w.e, tEndMs)
+    if (e > s) intervals.push([s, e])
+  }
+  if (intervals.length === 0) return 0
+  intervals.sort((a, b) => a[0] - b[0])
+  let total = 0
+  let curStart = intervals[0][0]
+  let curEnd = intervals[0][1]
+  for (let i = 1; i < intervals.length; i++) {
+    const [s, e] = intervals[i]
+    if (s <= curEnd) {
+      if (e > curEnd) curEnd = e
+    } else {
+      total += curEnd - curStart
+      curStart = s
+      curEnd = e
+    }
+  }
+  total += curEnd - curStart
+  return total
 }
 
 // Build pseudo-PlayerSnapshots for enemy units from raw events. Used by the

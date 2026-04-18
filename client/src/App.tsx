@@ -7,6 +7,7 @@ import { SummaryView } from './components/SummaryView'
 import { FullMeterView } from './components/FullMeterView'
 import { GraphContainer } from './components/GraphContainer'
 import { BreakdownPanel } from './components/BreakdownPanel'
+import { BuffBreakdownPanel } from './components/BuffBreakdownPanel'
 import { DeathRecapPanel } from './components/DeathRecapPanel'
 import { SettingsModal } from './components/SettingsModal'
 import { LogsBanner } from './components/LogsBanner'
@@ -59,13 +60,16 @@ function ContentPanel() {
   const perspective = useStore(s => s.perspective)
   const selectedPlayer = useStore(s => s.selectedPlayer)
   const selectedDeath = useStore(s => s.selectedDeath)
+  const selectedBuff = useStore(s => s.selectedBuff)
 
   // Death recap stays Summary-only — Full mode surfaces deaths as a top-level
   // table. Spell/target breakdown is shared across both modes with a wider
-  // layout in Full.
+  // layout in Full. Buff drill is Full-only by construction (buffs metric is
+  // Full-only), and mutually exclusive with the other two.
   const hasBreakdown = !!selectedPlayer
   const hasDeath = mode === 'summary' && !!selectedDeath
-  const hasDrill = hasBreakdown || hasDeath
+  const hasBuffDrill = mode === 'full' && metric === 'buffs' && !!selectedBuff
+  const hasDrill = hasBreakdown || hasDeath || hasBuffDrill
   const drillWidth = hasDrill ? (mode === 'full' ? 720 : 420) : 0
 
   const players = currentView?.players ?? {}
@@ -97,7 +101,9 @@ function ContentPanel() {
       overflow: 'hidden',
       minHeight: 0,
     }}>
-      {/* Toggle bar: CategoryTabs + ModeToggle */}
+      {/* Toggle bar: CategoryTabs + ModeToggle. Category list depends on mode
+          — Buffs is Full-only (requires the server's aura windows and a
+          filter bar to be useful). */}
       <ToggleBar
         metric={metric}
         setMetric={setMetric}
@@ -137,19 +143,26 @@ function ContentPanel() {
         }}>
           {hasBreakdown && <BreakdownPanel />}
           {hasDeath && <DeathRecapPanel />}
+          {hasBuffDrill && <BuffBreakdownPanel />}
         </div>
       </div>
     </div>
   )
 }
 
-// Shared category list for Summary. Full mode will later extend this with
-// additional groups (Damage Taken, Dispels, Buffs, Casts, Timeline, …).
+// Shared category list for Summary. Full mode extends this with categories
+// that only make sense with frozen data and a filter bar (Buffs today; Damage
+// Taken / Dispels / Casts / Timeline later).
 const SUMMARY_CATEGORIES: { key: Metric; label: string }[] = [
   { key: 'damage', label: 'Damage Done' },
   { key: 'healing', label: 'Healing' },
   { key: 'interrupts', label: 'Interrupts' },
   { key: 'deaths', label: 'Deaths' },
+]
+
+const FULL_CATEGORIES: { key: Metric; label: string }[] = [
+  ...SUMMARY_CATEGORIES,
+  { key: 'buffs', label: 'Buffs' },
 ]
 
 function ToggleBar({
@@ -175,18 +188,20 @@ function ToggleBar({
       minHeight: 46,
       flexShrink: 0,
     }}>
-      <CategoryBar metric={metric} setMetric={setMetric} />
+      <CategoryBar metric={metric} setMetric={setMetric} mode={mode} />
       <ModeToggle mode={mode} setMode={setMode} fullDisabled={fullDisabled} />
     </div>
   )
 }
 
-function CategoryBar({ metric, setMetric }: { metric: Metric; setMetric: (m: Metric) => void }) {
-  // Both Summary and Full use the same underline-tab visual language. Full will
-  // add more groups (separated by a small gap) as additional categories land.
+function CategoryBar({ metric, setMetric, mode }: { metric: Metric; setMetric: (m: Metric) => void; mode: Mode }) {
+  // Both Summary and Full use the same underline-tab visual language. The tab
+  // list itself diverges: Full-only categories (Buffs) appear after the
+  // shared set.
+  const categories = mode === 'full' ? FULL_CATEGORIES : SUMMARY_CATEGORIES
   return (
     <div style={{ display: 'flex', alignItems: 'center', minWidth: 0, overflowX: 'auto' }}>
-      {SUMMARY_CATEGORIES.map(opt => (
+      {categories.map(opt => (
         <CategoryTab
           key={opt.key}
           label={opt.label}

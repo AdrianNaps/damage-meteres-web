@@ -1,11 +1,11 @@
 import { useRef, useEffect, useCallback, useMemo, useState } from 'react'
-import type { PlayerSnapshot } from '../types'
+import type { PlayerSnapshot, AuraWindowWire } from '../types'
 import { getClassColor } from './PlayerRow'
-import { useStore, resolveSpecId, GRAPH_GROUP_AVG_KEY, selectGraphTimeOffset } from '../store'
+import { useStore, resolveSpecId, GRAPH_GROUP_AVG_KEY, selectGraphTimeOffset, selectCurrentView } from '../store'
 import { formatNum, shortName, formatTime } from '../utils/format'
 
 interface Props {
-  metric: 'damage' | 'healing' | 'deaths' | 'interrupts'
+  metric: 'damage' | 'healing' | 'deaths' | 'interrupts' | 'buffs'
   players: Record<string, PlayerSnapshot>
   duration: number
   inactive?: boolean
@@ -15,6 +15,14 @@ const PAD = { top: 4, right: 8, bottom: 16, left: 40 }
 
 const UNFOCUSED_ALPHA = 0.18
 const GROUP_AVG_COLOR = '#f59e0b'
+
+// Buffs-mode two-line graph: group-DPS and group-HPS share the plot area as
+// shape comparisons (no y-axis labels — different magnitudes would make
+// absolute values misleading at a glance, WCL makes the same choice).
+const BUFFS_DAMAGE_COLOR = '#ef4444'
+const BUFFS_HEALING_COLOR = '#10b981'
+const BUFFS_DAMAGE_KEY = '__buffs_damage__'
+const BUFFS_HEALING_KEY = '__buffs_healing__'
 
 // Below this pixel threshold, a mousedown→mouseup counts as a click (passes
 // through to existing hover/focus behaviors). Past the threshold, we treat it
@@ -110,7 +118,7 @@ export function GraphContainer({ metric, players, duration, inactive }: Props) {
 
   // Focus state lives in the store so it survives GraphContainer unmounts that
   // happen between a segment click and the server's snapshot response.
-  const focused = useStore(s => s.graphFocused)
+  const storedFocused = useStore(s => s.graphFocused)
   const toggleFocus = useStore(s => s.toggleGraphFocus)
   const timeOffset = useStore(selectGraphTimeOffset)
 
@@ -123,6 +131,30 @@ export function GraphContainer({ metric, players, duration, inactive }: Props) {
   const timeWindowFilter = useStore(s => s.filters.TimeWindow)
   const setTimeWindowFilter = useStore(s => s.setTimeWindowFilter)
   const mode = useStore(s => s.mode)
+  const selectedBuff = useStore(s => s.selectedBuff)
+  const currentView = useStore(selectCurrentView)
+
+  // Uptime band overlay: when the user drilled into a specific buff, pull its
+  // windows off the current snapshot and light up the plot at each window.
+  // Only meaningful in buffs metric — we still compute for damage/healing but
+  // the gate below skips the draw.
+  const selectedBuffWindows = useMemo<AuraWindowWire[] | null>(() => {
+    if (metric !== 'buffs' || !selectedBuff || !currentView) return null
+    const auras = currentView.auras
+    if (!auras || auras.length === 0) return null
+    return auras.filter(w => w.id === selectedBuff)
+  }, [metric, selectedBuff, currentView])
+
+  const selectedBuffScope = useMemo(() => {
+    if (!currentView) return null
+    const t0 = currentView.startTime
+    const durationSec =
+      'duration' in currentView ? currentView.duration
+      : 'activeDurationSec' in currentView ? currentView.activeDurationSec
+      : 0
+    const tEnd = currentView.endTime ?? (t0 + durationSec * 1000)
+    return { t0, tEnd }
+  }, [currentView])
 
   const [hover, setHover] = useState<HoverState | null>(null)
   const [barHover, setBarHover] = useState<BarHoverState | null>(null)
@@ -133,7 +165,21 @@ export function GraphContainer({ metric, players, duration, inactive }: Props) {
   const [drag, setDrag] = useState<{ startX: number; currentX: number } | null>(null)
 
   const isBar = metric === 'deaths' || metric === 'interrupts'
+  const isBuffs = metric === 'buffs'
   const dragEnabled = !inactive && !isBar && mode === 'full'
+
+  // Buffs-legend toggle semantics are inverted vs damage/healing: both lines
+  // are ON by default, and clicking a legend entry HIDES that line. Keeping
+  // the existing store-backed focus Set for persistence — "presence in set"
+  // means "hidden" for buffs, "focused" for damage/healing. This preserves
+  // the shared toggleFocus setter without a parallel store field.
+  const focused = useMemo<Set<string>>(() => {
+    if (!isBuffs) return storedFocused
+    const visible = new Set<string>()
+    if (!storedFocused.has(BUFFS_DAMAGE_KEY)) visible.add(BUFFS_DAMAGE_KEY)
+    if (!storedFocused.has(BUFFS_HEALING_KEY)) visible.add(BUFFS_HEALING_KEY)
+    return visible
+  }, [storedFocused, isBuffs])
 
   // Bar data — bucketed counts plus per-bucket tooltip records. Computed once
   // per metric/players/duration change so the renderer and the hover tooltip
@@ -206,15 +252,36 @@ export function GraphContainer({ metric, players, duration, inactive }: Props) {
 
   // Line data — generated once per metric/players/duration change and shared
   // between the canvas renderer and the hover tooltip so both read identical
-  // slice values.
+  // slice values. Buffs mode produces two aggregate series (group DPS + HPS)
+  // instead of the per-player top-5; damage/healing stays on the per-player
+  // path.
   const lineData = useMemo<LineData | null>(() => {
     if (isBar) return null
-    const rateFn = metric === 'damage' ? (p: PlayerSnapshot) => p.dps : (p: PlayerSnapshot) => p.hps
-    const sorted = [...playerList].sort((a, b) => rateFn(b) - rateFn(a)).slice(0, 5)
-    if (sorted.length === 0 || rateFn(sorted[0]) === 0) return null
 
     const bucketSec = getLineBucketSec(duration)
     const points = Math.max(4, Math.ceil(duration / bucketSec))
+
+    if (isBuffs) {
+      const groupDps = playerList.reduce((s, p) => s + p.dps, 0)
+      const groupHps = playerList.reduce((s, p) => s + p.hps, 0)
+      if (groupDps === 0 && groupHps === 0) return null
+      // Deterministic-per-series synthetic data, same generator as damage/healing.
+      // Real server-bucketed data will replace both once the pipeline lands.
+      const series: SeriesEntry[] = [
+        { name: BUFFS_DAMAGE_KEY,  displayName: 'Damage',  data: generateSeries(groupDps, BUFFS_DAMAGE_KEY,  points), color: BUFFS_DAMAGE_COLOR  },
+        { name: BUFFS_HEALING_KEY, displayName: 'Healing', data: generateSeries(groupHps, BUFFS_HEALING_KEY, points), color: BUFFS_HEALING_COLOR },
+      ]
+      let maxVal = 0
+      series.forEach(s => s.data.forEach(v => { if (v > maxVal) maxVal = v }))
+      maxVal = (maxVal || 1) * 1.1
+      // No group-avg line in buffs mode — the two series already represent
+      // the group. Empty avgData is respected by drawLineGraph below.
+      return { series, avgData: [], points, bucketSec, maxVal }
+    }
+
+    const rateFn = metric === 'damage' ? (p: PlayerSnapshot) => p.dps : (p: PlayerSnapshot) => p.hps
+    const sorted = [...playerList].sort((a, b) => rateFn(b) - rateFn(a)).slice(0, 5)
+    if (sorted.length === 0 || rateFn(sorted[0]) === 0) return null
 
     const series: SeriesEntry[] = sorted.map(p => {
       const specId = resolveSpecId(playerSpecs, p.name, p.specId)
@@ -238,7 +305,7 @@ export function GraphContainer({ metric, players, duration, inactive }: Props) {
     maxVal *= 1.1
 
     return { series, avgData, points, bucketSec, maxVal }
-  }, [isBar, metric, playerList, playerSpecs, duration])
+  }, [isBar, isBuffs, metric, playerList, playerSpecs, duration])
 
   // Clear hover state when the underlying data goes away (e.g. switching to a
   // bar metric). The slice/bucket index would otherwise point into a stale series.
@@ -325,7 +392,13 @@ export function GraphContainer({ metric, players, duration, inactive }: Props) {
       // Suppress the hover crosshair during an active drag — the drag rect
       // becomes the primary visual, and the crosshair would clutter it.
       const hoverSlice = drag ? null : (hover?.slice ?? null)
-      drawLineGraph(ctx, h, plotW, plotH, lineData, focused, duration, timeOffset, hoverSlice)
+      drawLineGraph(ctx, h, plotW, plotH, lineData, focused, duration, timeOffset, hoverSlice, isBuffs)
+
+      // Selected-buff uptime band: render beneath the drag/time-window
+      // overlays so those still win visually when both are active.
+      if (isBuffs && selectedBuffWindows && selectedBuffScope) {
+        drawBuffUptimeBand(ctx, plotW, plotH, selectedBuffWindows, selectedBuffScope.t0, selectedBuffScope.tEnd)
+      }
 
       // Overlay stack on top of the line graph:
       //   1. An active drag always wins — shows the live selection rect only.
@@ -339,7 +412,7 @@ export function GraphContainer({ metric, players, duration, inactive }: Props) {
     } else {
       drawEmptyState(ctx, w, h)
     }
-  }, [isBar, barData, lineData, focused, duration, timeOffset, hover, barHover, inactive, drag, timeWindowFilter])
+  }, [isBar, isBuffs, barData, lineData, focused, duration, timeOffset, hover, barHover, inactive, drag, timeWindowFilter, selectedBuffWindows, selectedBuffScope])
 
   useEffect(() => {
     draw()
@@ -356,6 +429,7 @@ export function GraphContainer({ metric, players, duration, inactive }: Props) {
   const title = metric === 'damage' ? 'DPS Over Time'
     : metric === 'healing' ? 'HPS Over Time'
     : metric === 'deaths' ? 'Deaths Over Time'
+    : metric === 'buffs' ? 'Throughput Over Time'
     : 'Interrupts Over Time'
 
   // Canvas CSS-pixel x (relative to canvas left edge) of a mouse event.
@@ -640,10 +714,18 @@ interface LegendEntry { key: string; label: string; color: string }
 function buildLegend(
   playerList: PlayerSnapshot[],
   playerSpecs: Record<string, number>,
-  metric: 'damage' | 'healing' | 'deaths' | 'interrupts',
+  metric: 'damage' | 'healing' | 'deaths' | 'interrupts' | 'buffs',
   isBar: boolean,
 ): LegendEntry[] {
   const entries: LegendEntry[] = []
+
+  if (metric === 'buffs') {
+    // Group-aggregate lines: no per-player entries, no group-avg. Keys match
+    // the series names in lineData so the focus Set governs visibility.
+    entries.push({ key: BUFFS_DAMAGE_KEY,  label: 'Damage',  color: BUFFS_DAMAGE_COLOR })
+    entries.push({ key: BUFFS_HEALING_KEY, label: 'Healing', color: BUFFS_HEALING_COLOR })
+    return entries
+  }
 
   if (isBar) {
     const valFn = metric === 'deaths'
@@ -676,19 +758,25 @@ function drawLineGraph(
   duration: number,
   timeOffset: number,
   hoverSlice: number | null,
+  // Buffs mode: hide the y-axis labels and skip the group-avg render. Absolute
+  // DPS/HPS values on a shared axis are misleading (different magnitudes), so
+  // we show the curves as shape comparisons only.
+  suppressYAxis: boolean = false,
 ) {
   const { series, avgData, points, maxVal } = lineData
 
   // Grid lines
   drawGrid(ctx, plotW, plotH, 4)
 
-  // Y-axis labels
-  ctx.fillStyle = '#a8aab4'
-  ctx.font = MONO_FONT
-  ctx.textAlign = 'right'
-  for (let i = 0; i <= 4; i++) {
-    const y = PAD.top + plotH * (1 - i / 4)
-    ctx.fillText(formatNum(Math.round(maxVal * i / 4)), PAD.left - 4, y + 3)
+  // Y-axis labels — suppressed for buffs mode.
+  if (!suppressYAxis) {
+    ctx.fillStyle = '#a8aab4'
+    ctx.font = MONO_FONT
+    ctx.textAlign = 'right'
+    for (let i = 0; i <= 4; i++) {
+      const y = PAD.top + plotH * (1 - i / 4)
+      ctx.fillText(formatNum(Math.round(maxVal * i / 4)), PAD.left - 4, y + 3)
+    }
   }
 
   // X-axis labels
@@ -697,36 +785,41 @@ function drawLineGraph(
   const xOf = (i: number) => PAD.left + (i / points) * plotW
   const yOf = (v: number) => PAD.top + plotH * (1 - v / maxVal)
 
-  // Group average (solid amber with gradient fill) — drawn first so player lines sit on top.
-  const avgFocused = focused.has(GRAPH_GROUP_AVG_KEY)
-  const avgAlpha = avgFocused ? 0.9 : UNFOCUSED_ALPHA
-  const tracePath = () => {
-    ctx.beginPath()
-    ctx.moveTo(xOf(0), yOf(avgData[0]))
-    for (let i = 1; i <= points; i++) {
-      const x0 = xOf(i - 1), y0 = yOf(avgData[i - 1])
-      const x1 = xOf(i), y1 = yOf(avgData[i])
-      const cpx = (x0 + x1) / 2
-      ctx.bezierCurveTo(cpx, y0, cpx, y1, x1, y1)
+  // Group average (solid amber with gradient fill) — drawn first so player
+  // lines sit on top. Absent in buffs mode: avgData is empty so the whole
+  // block no-ops.
+  const hasAvg = avgData.length > 0
+  const avgFocused = hasAvg && focused.has(GRAPH_GROUP_AVG_KEY)
+  if (hasAvg) {
+    const avgAlpha = avgFocused ? 0.9 : UNFOCUSED_ALPHA
+    const tracePath = () => {
+      ctx.beginPath()
+      ctx.moveTo(xOf(0), yOf(avgData[0]))
+      for (let i = 1; i <= points; i++) {
+        const x0 = xOf(i - 1), y0 = yOf(avgData[i - 1])
+        const x1 = xOf(i), y1 = yOf(avgData[i])
+        const cpx = (x0 + x1) / 2
+        ctx.bezierCurveTo(cpx, y0, cpx, y1, x1, y1)
+      }
     }
+
+    const gradient = ctx.createLinearGradient(0, PAD.top, 0, PAD.top + plotH)
+    gradient.addColorStop(0, `rgba(245, 158, 11, ${0.22 * avgAlpha})`)
+    gradient.addColorStop(1, 'rgba(245, 158, 11, 0)')
+    ctx.fillStyle = gradient
+    tracePath()
+    ctx.lineTo(xOf(points), PAD.top + plotH)
+    ctx.lineTo(xOf(0), PAD.top + plotH)
+    ctx.closePath()
+    ctx.fill()
+
+    ctx.strokeStyle = GROUP_AVG_COLOR
+    ctx.lineWidth = 2
+    ctx.globalAlpha = avgAlpha
+    tracePath()
+    ctx.stroke()
+    ctx.globalAlpha = 1
   }
-
-  const gradient = ctx.createLinearGradient(0, PAD.top, 0, PAD.top + plotH)
-  gradient.addColorStop(0, `rgba(245, 158, 11, ${0.22 * avgAlpha})`)
-  gradient.addColorStop(1, 'rgba(245, 158, 11, 0)')
-  ctx.fillStyle = gradient
-  tracePath()
-  ctx.lineTo(xOf(points), PAD.top + plotH)
-  ctx.lineTo(xOf(0), PAD.top + plotH)
-  ctx.closePath()
-  ctx.fill()
-
-  ctx.strokeStyle = GROUP_AVG_COLOR
-  ctx.lineWidth = 2
-  ctx.globalAlpha = avgAlpha
-  tracePath()
-  ctx.stroke()
-  ctx.globalAlpha = 1
 
   // Player lines (smooth cubic bezier). Draw unfocused first so focused lines sit on top.
   const ordered = series
@@ -807,6 +900,62 @@ function drawDragRect(
   ctx.moveTo(x1 - 0.5, PAD.top)
   ctx.lineTo(x1 - 0.5, PAD.top + plotH)
   ctx.stroke()
+}
+
+// Selected-buff uptime highlight. Unions the windows and paints a translucent
+// band across the plot for each continuous uptime interval, letting the user
+// visually correlate "when was X up" with the DPS/HPS curves beneath.
+// Uses the shared amber accent so it reads as "focus this," consistent with
+// the group-avg line's color language.
+function drawBuffUptimeBand(
+  ctx: CanvasRenderingContext2D,
+  plotW: number,
+  plotH: number,
+  windows: AuraWindowWire[],
+  t0Ms: number,
+  tEndMs: number,
+) {
+  const scopeMs = tEndMs - t0Ms
+  if (scopeMs <= 0 || windows.length === 0) return
+
+  const sorted = windows
+    .map<[number, number]>(w => [Math.max(w.s, t0Ms), Math.min(w.e, tEndMs)])
+    .filter(([s, e]) => e > s)
+    .sort((a, b) => a[0] - b[0])
+  if (sorted.length === 0) return
+
+  ctx.save()
+  ctx.fillStyle = 'rgba(245, 158, 11, 0.14)'
+  ctx.strokeStyle = 'rgba(245, 158, 11, 0.50)'
+  ctx.lineWidth = 1
+
+  let curStart = sorted[0][0]
+  let curEnd = sorted[0][1]
+  const flush = () => {
+    const x0 = PAD.left + ((curStart - t0Ms) / scopeMs) * plotW
+    const x1 = PAD.left + ((curEnd - t0Ms) / scopeMs) * plotW
+    const w = Math.max(1, x1 - x0)
+    ctx.fillRect(x0, PAD.top, w, plotH)
+    // Edge ticks on both sides of each run so overlapping bands stay legible.
+    ctx.beginPath()
+    ctx.moveTo(x0 + 0.5, PAD.top)
+    ctx.lineTo(x0 + 0.5, PAD.top + plotH)
+    ctx.moveTo(x1 - 0.5, PAD.top)
+    ctx.lineTo(x1 - 0.5, PAD.top + plotH)
+    ctx.stroke()
+  }
+  for (let i = 1; i < sorted.length; i++) {
+    const [s, e] = sorted[i]
+    if (s <= curEnd) {
+      if (e > curEnd) curEnd = e
+    } else {
+      flush()
+      curStart = s
+      curEnd = e
+    }
+  }
+  flush()
+  ctx.restore()
 }
 
 // Committed TimeWindow indicator: dim the regions OUTSIDE [startSec, endSec]

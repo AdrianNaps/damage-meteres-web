@@ -1,7 +1,12 @@
 import { forwardRef, useDeferredValue, useMemo, useRef, useState } from 'react'
-import { useStore, selectCurrentView, type FilterAxis, type FilterState, type Perspective, type TimeWindow, resolveSpecId } from '../store'
-import { computeAbilityUniverse, computeUnitUniverse } from '../utils/filters'
-import type { ClientEvent, PlayerSnapshot } from '../types'
+import { useStore, selectCurrentView, type FilterAxis, type FilterState, type Metric, type Perspective, type TimeWindow, resolveSpecId } from '../store'
+import {
+  computeAbilityUniverse,
+  computeUnitUniverse,
+  computeBuffAbilityUniverse,
+  computeBuffUnitUniverse,
+} from '../utils/filters'
+import type { ClientEvent, PlayerSnapshot, AuraWindowWire } from '../types'
 import { FilterPicker, type PickerOption } from './FilterPicker'
 import { getClassColor } from './PlayerRow'
 import { formatTime } from '../utils/format'
@@ -15,6 +20,26 @@ type OpenPicker = FilterAxis | null
 // useMemo deps from flipping every render as `?? []` / `?? {}` would.
 const EMPTY_EVENTS: ClientEvent[] = []
 const EMPTY_PLAYERS: Record<string, PlayerSnapshot> = {}
+const EMPTY_AURAS: AuraWindowWire[] = []
+
+// Picker label overrides for the buffs metric — the underlying filter state
+// shape doesn't change (Source/Target/Ability) but the semantics do, so the
+// chip labels need to read as what they *do*.
+interface AxisLabels { label: string; defaultLabel: string }
+function axisLabels(metric: Metric, axis: FilterAxis): AxisLabels {
+  if (metric === 'buffs') {
+    switch (axis) {
+      case 'Source':  return { label: 'Caster',    defaultLabel: 'Any caster' }
+      case 'Target':  return { label: 'Recipient', defaultLabel: 'Any recipient' }
+      case 'Ability': return { label: 'Buff',      defaultLabel: 'All buffs' }
+    }
+  }
+  switch (axis) {
+    case 'Source':  return { label: 'Source',   defaultLabel: 'Any source' }
+    case 'Target':  return { label: 'Target',   defaultLabel: 'Any target' }
+    case 'Ability': return { label: 'Ability',  defaultLabel: 'All Abilities' }
+  }
+}
 
 export function FilterBar() {
   const perspective = useStore(s => s.perspective)
@@ -36,6 +61,7 @@ export function FilterBar() {
 
   const events: ClientEvent[] = currentView?.events ?? EMPTY_EVENTS
   const allies: Record<string, PlayerSnapshot> = currentView?.players ?? EMPTY_PLAYERS
+  const auras: AuraWindowWire[] = currentView?.auras ?? EMPTY_AURAS
 
   // Defer the inputs to the event-scanning universes so a filter/perspective/
   // metric change re-renders the chips and picker count immediately while the
@@ -45,17 +71,23 @@ export function FilterBar() {
   const deferredMetric = useDeferredValue(metric)
   const deferredFilterSource = useDeferredValue(filters.Source)
   const deferredFilterTarget = useDeferredValue(filters.Target)
+  const isBuffsMetric = deferredMetric === 'buffs'
 
   // Picker options are derived on render. Cheap for a few hundred units / a
   // few hundred abilities; if this ever becomes a bottleneck, memoize on
-  // (events, perspective, filters, metric).
+  // (events, perspective, filters, metric). Buffs takes a separate path
+  // that walks aura windows instead of the event stream.
   const { sources, targets } = useMemo(
-    () => computeUnitUniverse(events, deferredPerspective, deferredMetric, allies),
-    [events, deferredPerspective, deferredMetric, allies]
+    () => isBuffsMetric
+      ? computeBuffUnitUniverse(auras, allies)
+      : computeUnitUniverse(events, deferredPerspective, deferredMetric, allies),
+    [isBuffsMetric, auras, allies, events, deferredPerspective, deferredMetric]
   )
   const abilityUniverse = useMemo(
-    () => computeAbilityUniverse(events, deferredPerspective, { Source: deferredFilterSource, Target: deferredFilterTarget }, deferredMetric, allies),
-    [events, deferredPerspective, deferredFilterSource, deferredFilterTarget, deferredMetric, allies]
+    () => isBuffsMetric
+      ? computeBuffAbilityUniverse(auras, { Source: deferredFilterSource, Target: deferredFilterTarget })
+      : computeAbilityUniverse(events, deferredPerspective, { Source: deferredFilterSource, Target: deferredFilterTarget }, deferredMetric, allies),
+    [isBuffsMetric, auras, events, deferredPerspective, deferredFilterSource, deferredFilterTarget, deferredMetric, allies]
   )
 
   const sourceOptions = useMemo(
@@ -96,34 +128,38 @@ export function FilterBar() {
         flexWrap: 'wrap',
         background: 'var(--bg-root)',
       }}>
-        <PerspectiveToggle perspective={perspective} onChange={setPerspective} />
-        <Divider />
+        {/* Perspective is ally-only in buffs v1 (enemy-cast buffs are dropped
+            at the parser), so the allies/enemies toggle is hidden there. */}
+        {!isBuffsMetric && (
+          <>
+            <PerspectiveToggle perspective={perspective} onChange={setPerspective} />
+            <Divider />
+          </>
+        )}
         <PickerButton
           ref={sourceRef}
-          label="Source"
-          defaultLabel="Any source"
+          {...axisLabels(metric, 'Source')}
           values={filters.Source}
           open={open === 'Source'}
           onClick={() => togglePicker('Source')}
         />
         <PickerButton
           ref={targetRef}
-          label="Target"
-          defaultLabel="Any target"
+          {...axisLabels(metric, 'Target')}
           values={filters.Target}
           open={open === 'Target'}
           onClick={() => togglePicker('Target')}
         />
         <PickerButton
           ref={abilityRef}
-          label="Ability"
-          defaultLabel="All Abilities"
+          {...axisLabels(metric, 'Ability')}
           values={filters.Ability}
           open={open === 'Ability'}
           onClick={() => togglePicker('Ability')}
         />
         <div style={{ flex: 1 }} />
         <ActiveFilterChips
+          metric={metric}
           filters={filters}
           onRemove={(axis, value) => toggleFilterValue(axis, value)}
           onClearAxis={axis => setFilter(axis, undefined)}
@@ -156,7 +192,7 @@ export function FilterBar() {
           selected={filters[open] ?? []}
           onToggle={name => toggleFilterValue(open, name)}
           onClose={() => setOpen(null)}
-          placeholder={open === 'Ability' ? 'Search abilities…' : `Search ${open.toLowerCase()}s…`}
+          placeholder={buildPickerPlaceholder(metric, open)}
         />
       )}
     </>
@@ -310,11 +346,13 @@ const PickerButton = forwardRef<HTMLButtonElement, {
 })
 
 function ActiveFilterChips({
+  metric,
   filters,
   onRemove,
   onClearAxis,
   onClearTimeWindow,
 }: {
+  metric: Metric
   filters: FilterState
   onRemove: (axis: FilterAxis, value: string) => void
   onClearAxis: (axis: FilterAxis) => void
@@ -331,17 +369,18 @@ function ActiveFilterChips({
   return (
     <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}>
       {chips.map(({ axis, values }) => {
+        const chipLabel = axisLabels(metric, axis).label
         // Single value: show the value with a × to remove just it.
         // Multi-value: show "axis: first +N" with × to clear the whole axis.
         if (values.length === 1) {
           return (
-            <Chip key={axis} label={axis} value={values[0]} onRemove={() => onRemove(axis, values[0])} />
+            <Chip key={axis} label={chipLabel} value={values[0]} onRemove={() => onRemove(axis, values[0])} />
           )
         }
         return (
           <Chip
             key={axis}
-            label={axis}
+            label={chipLabel}
             value={`${values[0]} +${values.length - 1}`}
             onRemove={() => onClearAxis(axis)}
           />
@@ -350,6 +389,18 @@ function ActiveFilterChips({
       {tw && <Chip label="Time" value={formatTimeWindow(tw)} onRemove={onClearTimeWindow} />}
     </div>
   )
+}
+
+function buildPickerPlaceholder(metric: Metric, axis: FilterAxis): string {
+  if (metric === 'buffs') {
+    switch (axis) {
+      case 'Source':  return 'Search casters…'
+      case 'Target':  return 'Search recipients…'
+      case 'Ability': return 'Search buffs…'
+    }
+  }
+  if (axis === 'Ability') return 'Search abilities…'
+  return `Search ${axis.toLowerCase()}s…`
 }
 
 // "0:12–0:45" with an en-dash so the range reads cleanly in the filter bar.

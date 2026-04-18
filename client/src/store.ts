@@ -10,7 +10,7 @@ export interface BootInfoState {
 // reset helpers and the graph component share a single source of truth.
 export const GRAPH_GROUP_AVG_KEY = '__group_avg__'
 
-export type Metric = 'damage' | 'healing' | 'deaths' | 'interrupts'
+export type Metric = 'damage' | 'healing' | 'deaths' | 'interrupts' | 'buffs'
 export type Mode = 'summary' | 'full'
 export type Perspective = 'allies' | 'enemies'
 export type FilterAxis = 'Source' | 'Target' | 'Ability'
@@ -91,6 +91,10 @@ export interface SourceState {
   selectedBossSection: BossSectionSnapshot | null
   selectedPlayer: string | null
   selectedDeath: PlayerDeathRecord | null
+  // Spell-id of the buff currently drilled into. Mutually exclusive with
+  // selectedPlayer / selectedDeath — setting one clears the others. Drives
+  // the BuffBreakdownPanel in Full mode when metric === 'buffs'.
+  selectedBuff: string | null
   metric: Metric
   drillMetric: Metric | null
   mode: Mode
@@ -133,6 +137,7 @@ function makeEmptySourceState(): SourceState {
     selectedBossSection: null,
     selectedPlayer: null,
     selectedDeath: null,
+    selectedBuff: null,
     metric: 'damage',
     drillMetric: null,
     mode: 'summary',
@@ -164,6 +169,7 @@ interface AppState {
   selectedBossSection: BossSectionSnapshot | null
   selectedPlayer: string | null
   selectedDeath: PlayerDeathRecord | null
+  selectedBuff: string | null
   metric: Metric
   drillMetric: Metric | null
   mode: Mode
@@ -197,6 +203,7 @@ interface AppState {
   setSelectedBossSection: (s: BossSectionSnapshot | null, sourceId?: string) => void
   setSelectedPlayer: (name: string | null, drillMetric?: Metric) => void
   setSelectedDeath: (record: PlayerDeathRecord | null) => void
+  setSelectedBuff: (spellId: string | null) => void
   setMetric: (m: Metric) => void
   setMode: (m: Mode) => void
   setTargetDetail: (d: TargetDetail | null) => void
@@ -237,6 +244,7 @@ function flatFromSlice(slice: SourceState): Partial<AppState> {
     selectedBossSection: slice.selectedBossSection,
     selectedPlayer: slice.selectedPlayer,
     selectedDeath: slice.selectedDeath,
+    selectedBuff: slice.selectedBuff,
     metric: slice.metric,
     drillMetric: slice.drillMetric,
     mode: slice.mode,
@@ -402,6 +410,7 @@ export const useStore = create<AppState>((set) => ({
   selectedBossSection: null,
   selectedPlayer: null,
   selectedDeath: null,
+  selectedBuff: null,
   metric: 'damage',
   drillMetric: null,
   mode: 'summary',
@@ -436,6 +445,7 @@ export const useStore = create<AppState>((set) => ({
       sliceUpdate.mode = 'summary'
       sliceUpdate.selectedPlayer = null
       sliceUpdate.selectedDeath = null
+      sliceUpdate.selectedBuff = null
       sliceUpdate.drillMetric = null
     }
     const out = applySliceUpdate(state, sid, sliceUpdate)
@@ -476,6 +486,7 @@ export const useStore = create<AppState>((set) => ({
       selectedSegment: nextSegment,
       selectedPlayer: null,
       selectedDeath: null,
+      selectedBuff: null,
       drillMetric: null,
       selectedKeyRunId: null,
       selectedKeyRun: null,
@@ -513,6 +524,7 @@ export const useStore = create<AppState>((set) => ({
       selectedBossSection: null,
       selectedPlayer: null,
       selectedDeath: null,
+      selectedBuff: null,
       drillMetric: null,
     }
     if (oldKey !== newKey) {
@@ -540,6 +552,7 @@ export const useStore = create<AppState>((set) => ({
       sliceUpdate.mode = 'summary'
       sliceUpdate.selectedPlayer = null
       sliceUpdate.selectedDeath = null
+      sliceUpdate.selectedBuff = null
       sliceUpdate.drillMetric = null
     }
     const out = applySliceUpdate(state, sid, sliceUpdate)
@@ -567,6 +580,7 @@ export const useStore = create<AppState>((set) => ({
       selectedKeyRun: null,
       selectedPlayer: null,
       selectedDeath: null,
+      selectedBuff: null,
       drillMetric: null,
     }
     if (oldKey !== newKey) {
@@ -594,6 +608,7 @@ export const useStore = create<AppState>((set) => ({
       sliceUpdate.mode = 'summary'
       sliceUpdate.selectedPlayer = null
       sliceUpdate.selectedDeath = null
+      sliceUpdate.selectedBuff = null
       sliceUpdate.drillMetric = null
     }
     const out = applySliceUpdate(state, sid, sliceUpdate)
@@ -610,6 +625,7 @@ export const useStore = create<AppState>((set) => ({
     return applySliceUpdate(state, sid, {
       selectedPlayer: name,
       selectedDeath: null,
+      selectedBuff: null,
       drillMetric: name ? (drillMetric ?? slice.metric) : null,
     })
   }),
@@ -617,12 +633,37 @@ export const useStore = create<AppState>((set) => ({
   setSelectedDeath: (record) => set(state => applySliceUpdate(state, state.activeSourceId, {
     selectedDeath: record,
     selectedPlayer: null,
+    selectedBuff: null,
     drillMetric: record ? 'deaths' : null,
   })),
 
-  // Changing the focused metric keeps the existing drill panel open — the panel
-  // shows whatever was clicked (tracked via drillMetric), not whatever is focused.
-  setMetric: (m) => set(state => applySliceUpdate(state, state.activeSourceId, { metric: m })),
+  // Drill into a specific buff row. Mirrors setSelectedDeath's mutual-
+  // exclusion pattern. Passing null clears the drill.
+  setSelectedBuff: (spellId) => set(state => applySliceUpdate(state, state.activeSourceId, {
+    selectedBuff: spellId,
+    selectedPlayer: null,
+    selectedDeath: null,
+    drillMetric: spellId ? 'buffs' : null,
+  })),
+
+  // Changing the focused metric keeps the existing drill panel open as long
+  // as the drill's metric is still relevant. Switching to or away from 'buffs'
+  // crosses a drill-shape boundary — BuffBreakdownPanel isn't reachable from
+  // player-drill state and vice versa — so clear any drill state that's no
+  // longer valid for the destination metric.
+  setMetric: (m) => set(state => {
+    const sid = state.activeSourceId
+    const slice = state.sources.get(sid) ?? makeEmptySourceState()
+    const patch: Partial<SourceState> = { metric: m }
+    const crossesBuffsBoundary = (slice.metric === 'buffs') !== (m === 'buffs')
+    if (crossesBuffsBoundary) {
+      patch.selectedPlayer = null
+      patch.selectedDeath = null
+      patch.selectedBuff = null
+      patch.drillMetric = null
+    }
+    return applySliceUpdate(state, sid, patch)
+  }),
 
   setMode: (m) => set(state => {
     const sid = state.activeSourceId
@@ -631,10 +672,18 @@ export const useStore = create<AppState>((set) => ({
     // when the loaded snapshot is in progress; allow it pre-load — the
     // snapshot setters will downgrade once data arrives if needed.
     if (m === 'full' && isActiveScopeInProgress(slice)) return {}
+    // Buffs is a Full-only metric. Flipping back to Summary while on buffs
+    // would leave the Summary with a category it can't render — snap to
+    // damage.
+    const nextMetric: Metric = m === 'summary' && slice.metric === 'buffs'
+      ? 'damage'
+      : slice.metric
     return applySliceUpdate(state, sid, {
       mode: m,
+      metric: nextMetric,
       selectedPlayer: null,
       selectedDeath: null,
+      selectedBuff: null,
       drillMetric: null,
     })
   }),
