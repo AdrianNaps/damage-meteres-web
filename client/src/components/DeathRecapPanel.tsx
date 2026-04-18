@@ -51,9 +51,9 @@ function computeHpFractions(recap: DeathRecapEvent[]): number[] {
 }
 
 function hpColor(fraction: number): string {
-  if (fraction > 0.5) return '#22c55e'
-  if (fraction > 0.25) return '#eab308'
-  return '#ef4444'
+  if (fraction > 0.5) return 'var(--health-high)'
+  if (fraction > 0.25) return 'var(--health-medium)'
+  return 'var(--health-low)'
 }
 
 export function DeathRecapPanel() {
@@ -231,7 +231,7 @@ function RecapRow({
         style={{
           position: 'relative',
           flex: 1,
-          color: isKillingBlow ? '#fca5a5' : 'var(--text-primary)',
+          color: isKillingBlow ? 'var(--data-killing-blow)' : 'var(--text-primary)',
           fontWeight: isKillingBlow ? 500 : 400,
         }}
       >
@@ -272,7 +272,7 @@ function RecapRow({
         flexShrink: 0,
         fontWeight: 600,
         fontFamily: 'var(--font-mono)',
-        color: isDamage ? '#f87171' : '#4ade80',
+        color: isDamage ? 'var(--data-damage)' : 'var(--data-healing)',
       }}>
         {isDamage ? '' : '+'}{formatNum(event.amount)}
       </span>

@@ -2,7 +2,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EncounterStateMachine } from './stateMachine.js'
 import { SegmentStore } from './store.js'
-import type { ParsedEvent, ChallengeModePayload, EncounterPayload, CombatantInfoPayload, DamagePayload, DeathPayload, UnitRef } from './types.js'
+import { parseLine } from './parser.js'
+import type { ParsedEvent, ChallengeModePayload, EncounterPayload, CombatantInfoPayload, DamagePayload, DeathPayload, UnitRef, AuraPayload } from './types.js'
 
 const NULL_UNIT: UnitRef = { guid: '', name: '', flags: 0 }
 const BASE_TS = 1_000_000
@@ -464,4 +465,211 @@ test('spec/name carryover: guidToSpec propagates trash → boss → new trash', 
 
   // Pack 2 should have inherited it from Boss 1 via the first hostile event opening it
   assert.equal(pack2.guidToSpec['Player-1'], 250)
+})
+
+// --- Aura window tracking tests (buffs metric) ---
+
+function auraApplied(source: UnitRef, target: UnitRef, spellId: string, spellName: string, offset = 0): ParsedEvent {
+  return {
+    timestamp: t(offset), type: 'SPELL_AURA_APPLIED', source, dest: target,
+    payload: { type: 'aura', direction: 'applied', spellId, spellName, auraKind: 'BUFF' } satisfies AuraPayload,
+  }
+}
+
+function auraRemoved(source: UnitRef, target: UnitRef, spellId: string, spellName: string, offset = 0): ParsedEvent {
+  return {
+    timestamp: t(offset), type: 'SPELL_AURA_REMOVED', source, dest: target,
+    payload: { type: 'aura', direction: 'removed', spellId, spellName, auraKind: 'BUFF' } satisfies AuraPayload,
+  }
+}
+
+function auraRefreshed(source: UnitRef, target: UnitRef, spellId: string, spellName: string, offset = 0): ParsedEvent {
+  return {
+    timestamp: t(offset), type: 'SPELL_AURA_REFRESH', source, dest: target,
+    payload: { type: 'aura', direction: 'refreshed', spellId, spellName, auraKind: 'BUFF' } satisfies AuraPayload,
+  }
+}
+
+test('aura: APPLIED→REMOVED builds a window', () => {
+  const { sm, store } = makeSm()
+  const shaman = makePlayer('Player-1', 'Braghorn')
+
+  sm.handle(challengeStart('Ara-Kara', 0))
+  sm.handle(encounterStart('Test Boss', 100))
+  // First combat event so firstEventTime is set to 150
+  sm.handle(mobDamage(makeMob('Creature-X', 'X'), 900_000, 1_000_000, 150, shaman))
+  sm.handle(auraApplied(shaman, shaman, '32182', 'Heroism', 200))
+  sm.handle(auraRemoved(shaman, shaman, '32182', 'Heroism', 40200))
+  sm.handle(encounterEnd('Test Boss', true, 40300))
+  sm.handle(challengeEnd(true, 40400))
+
+  const boss = store.getAll().find(s => s.encounterName === 'Test Boss')!
+  assert.equal(boss.auraWindows.length, 1)
+  const w = boss.auraWindows[0]
+  assert.equal(w.spellId, '32182')
+  assert.equal(w.caster, 'Braghorn')
+  assert.equal(w.target, 'Braghorn')
+  assert.equal(w.end - w.start, 40_000)
+  assert.equal(w.preExisting, false)
+  assert.equal(w.stillOpen, false)
+})
+
+test('aura: REMOVED without prior APPLIED retroactively seeds at segment start', () => {
+  const { sm, store } = makeSm()
+  const paladin = makePlayer('Player-2', 'Adrianw')
+
+  sm.handle(challengeStart('Ara-Kara', 0))
+  sm.handle(encounterStart('Test Boss', 1000))
+  sm.handle(mobDamage(makeMob('Creature-X', 'X'), 900_000, 1_000_000, 1100, paladin))
+  // Devotion Aura applied pre-pull, never saw the APPLIED — drops at 15s in
+  sm.handle(auraRemoved(paladin, paladin, '465', 'Devotion Aura', 16100))
+  sm.handle(encounterEnd('Test Boss', true, 20000))
+  sm.handle(challengeEnd(true, 20100))
+
+  const boss = store.getAll().find(s => s.encounterName === 'Test Boss')!
+  assert.equal(boss.auraWindows.length, 1)
+  const w = boss.auraWindows[0]
+  assert.equal(w.preExisting, true)
+  // Segment's firstEventTime is the mobDamage at 1100 (absolute t(1100) = BASE_TS + 1100)
+  assert.equal(w.start, t(1100))
+  assert.equal(w.end, t(16100))
+})
+
+test('aura: still-open at snapshot time materializes to segment end', () => {
+  const { sm, store } = makeSm()
+  const priest = makePlayer('Player-3', 'Xakwynne')
+
+  sm.handle(challengeStart('Ara-Kara', 0))
+  sm.handle(encounterStart('Test Boss', 100))
+  sm.handle(mobDamage(makeMob('Creature-X', 'X'), 900_000, 1_000_000, 150, priest))
+  // Applied but never removed — e.g. PW:F that stays up past combat
+  sm.handle(auraApplied(priest, priest, '21562', 'Power Word: Fortitude', 300))
+  sm.handle(encounterEnd('Test Boss', true, 10000))
+  sm.handle(challengeEnd(true, 10100))
+
+  const boss = store.getAll().find(s => s.encounterName === 'Test Boss')!
+  // Open at segment-end; auraWindows hasn't captured it yet but snapshot will.
+  const snap = store.toSnapshot(boss)
+  assert.ok(snap.auras, 'snapshot should include auras')
+  assert.equal(snap.auras!.length, 1)
+  const w = snap.auras![0]
+  assert.equal(w.id, '21562')
+  assert.equal(w.s, t(300))
+  // end is the segment endTime (encounterEnd offset = 10000)
+  assert.equal(w.e, t(10000))
+})
+
+test('aura: classification across personal / raid / external', () => {
+  const { sm, store } = makeSm()
+  const shaman = makePlayer('Player-S', 'Braghorn')
+  const priest = makePlayer('Player-P', 'Xakwynne')
+  const ally1 = makePlayer('Player-1', 'A1')
+  const ally2 = makePlayer('Player-2', 'A2')
+  const ally3 = makePlayer('Player-3', 'A3')
+  const ally4 = makePlayer('Player-4', 'A4')
+  const mob = makeMob('Creature-X', 'X')
+
+  sm.handle(challengeStart('Ara-Kara', 0))
+  sm.handle(encounterStart('Test Boss', 100))
+  // Each raider deals damage so they're registered in segment.players
+  const raiders = [shaman, priest, ally1, ally2, ally3, ally4]
+  raiders.forEach((p, i) => sm.handle(mobDamage(mob, 900_000, 1_000_000, 150 + i, p)))
+
+  // Heroism — fans out to all 6 raiders within 100ms → raid
+  raiders.forEach(r => sm.handle(auraApplied(shaman, r, '32182', 'Heroism', 200)))
+  raiders.forEach(r => sm.handle(auraRemoved(shaman, r, '32182', 'Heroism', 40200)))
+
+  // Power Infusion — priest→ally1 only, single target → external
+  sm.handle(auraApplied(priest, ally1, '10060', 'Power Infusion', 1000))
+  sm.handle(auraRemoved(priest, ally1, '10060', 'Power Infusion', 21000))
+
+  // Soul Leech — shaman self-cast only → personal
+  sm.handle(auraApplied(shaman, shaman, '108366', 'Soul Leech', 500))
+  sm.handle(auraRemoved(shaman, shaman, '108366', 'Soul Leech', 8500))
+
+  sm.handle(encounterEnd('Test Boss', true, 60000))
+  sm.handle(challengeEnd(true, 60100))
+
+  const boss = store.getAll().find(s => s.encounterName === 'Test Boss')!
+  const snap = store.toSnapshot(boss)
+  assert.ok(snap.buffClassification, 'classification should be present')
+  assert.equal(snap.buffClassification!['32182'], 'raid')
+  assert.equal(snap.buffClassification!['10060'], 'external')
+  assert.equal(snap.buffClassification!['108366'], 'personal')
+})
+
+test('aura: SPELL_AURA_REMOVED emits both overheal re-emit and aura-remove when absorb leftover present', () => {
+  // Parser-level check that the dual-emit returns an array in the right order.
+  const raw = '4/17/2026 19:54:50.384-7  SPELL_AURA_REMOVED,Player-1,"Adrianw",0x511,0x80000000,Player-1,"Adrianw",0x511,0x80000000,17,"Power Word: Shield",0x2,BUFF,1000'
+  const parsed = parseLine(raw)
+  assert.ok(Array.isArray(parsed), 'expected an array of events')
+  const arr = parsed as ParsedEvent[]
+  assert.equal(arr.length, 2)
+  assert.equal(arr[0].payload.type, 'heal')
+  assert.equal(arr[1].payload.type, 'aura')
+})
+
+test('aura: parser drops DEBUFFs in v1', () => {
+  const raw = '4/17/2026 19:54:50.384-7  SPELL_AURA_APPLIED,Creature-1,"Boss",0xa48,0x0,Player-1,"Adrianw",0x511,0x0,12345,"Test Debuff",0x20,DEBUFF'
+  assert.equal(parseLine(raw), null)
+})
+
+test('aura: SPELL_AURA_REFRESH folds into the open window and increments refreshCount', () => {
+  const { sm, store } = makeSm()
+  const tank = makePlayer('Player-T', 'Tankguy')
+
+  sm.handle(challengeStart('Ara-Kara', 0))
+  sm.handle(encounterStart('Test Boss', 100))
+  sm.handle(mobDamage(makeMob('Creature-X', 'X'), 900_000, 1_000_000, 150, tank))
+  // Tank casts Ironfur at 200ms, refreshes at 3s, 5s, 7s, then lets it drop.
+  sm.handle(auraApplied(tank, tank, '192081', 'Ironfur', 200))
+  sm.handle(auraRefreshed(tank, tank, '192081', 'Ironfur', 3200))
+  sm.handle(auraRefreshed(tank, tank, '192081', 'Ironfur', 5200))
+  sm.handle(auraRefreshed(tank, tank, '192081', 'Ironfur', 7200))
+  sm.handle(auraRemoved(tank, tank, '192081', 'Ironfur', 13200))
+  sm.handle(encounterEnd('Test Boss', true, 20000))
+  sm.handle(challengeEnd(true, 20100))
+
+  const boss = store.getAll().find(s => s.encounterName === 'Test Boss')!
+  assert.equal(boss.auraWindows.length, 1)
+  const w = boss.auraWindows[0]
+  // Uptime is one contiguous block — refreshes don't split it.
+  assert.equal(w.end - w.start, 13000)
+  assert.equal(w.refreshCount, 3)
+
+  // Wire shape drops r when zero but carries the refresh count here.
+  const snap = store.toSnapshot(boss)
+  assert.ok(snap.auras && snap.auras.length === 1)
+  assert.equal(snap.auras![0].r, 3)
+})
+
+test('aura: REFRESH without a prior APPLIED in the segment is ignored', () => {
+  const { sm, store } = makeSm()
+  const priest = makePlayer('Player-P', 'Priesty')
+
+  sm.handle(challengeStart('Ara-Kara', 0))
+  sm.handle(encounterStart('Test Boss', 100))
+  sm.handle(mobDamage(makeMob('Creature-X', 'X'), 900_000, 1_000_000, 150, priest))
+  // PW:F was applied pre-pull; the mage refreshes it mid-combat but we never
+  // saw the APPLIED. No window should open and no count should accrue — the
+  // refresh has nothing to attribute to.
+  sm.handle(auraRefreshed(priest, priest, '21562', 'Power Word: Fortitude', 5000))
+  sm.handle(encounterEnd('Test Boss', true, 10000))
+  sm.handle(challengeEnd(true, 10100))
+
+  const boss = store.getAll().find(s => s.encounterName === 'Test Boss')!
+  assert.equal(boss.auraWindows.length, 0)
+  assert.equal(boss.openAuras.size, 0)
+})
+
+test('aura: parser accepts SPELL_AURA_APPLIED and builds aura payload', () => {
+  const raw = '4/17/2026 20:05:41.249-7  SPELL_AURA_APPLIED,Player-1,"Braghorn",0x514,0x80000000,Player-1,"Braghorn",0x514,0x80000000,32182,"Heroism",0x8,BUFF'
+  const parsed = parseLine(raw) as ParsedEvent
+  assert.equal(parsed.type, 'SPELL_AURA_APPLIED')
+  assert.equal(parsed.payload.type, 'aura')
+  if (parsed.payload.type === 'aura') {
+    assert.equal(parsed.payload.direction, 'applied')
+    assert.equal(parsed.payload.spellId, '32182')
+    assert.equal(parsed.payload.spellName, 'Heroism')
+  }
 })

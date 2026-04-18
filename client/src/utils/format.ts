@@ -26,3 +26,12 @@ export function shortName(fullName: string): string {
   const dash = fullName.indexOf('-')
   return dash === -1 ? fullName : fullName.slice(0, dash)
 }
+
+// Seconds → "M:SS". Matches the x-axis labels the line graph paints so chip
+// labels and tooltips speak the same language as the tick marks.
+export function formatTime(sec: number): string {
+  const rounded = Math.max(0, Math.round(sec))
+  const m = Math.floor(rounded / 60)
+  const s = rounded % 60
+  return `${m}:${String(s).padStart(2, '0')}`
+}

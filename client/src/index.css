@@ -33,8 +33,37 @@
   --status-kill: #22c55e;
   --status-wipe: #ef4444;
 
+  /* Accents (segment / tab colors) */
+  --accent-keyrun: #d97706;
+  --accent-boss:   #8b5cf6;
+
   /* Data */
-  --data-group-avg: #f59e0b;
+  --data-group-avg:    #f59e0b;
+  --data-damage:       #f87171;
+  --data-healing:      #4ade80;
+  --data-killing-blow: #fca5a5;
+  --data-crit:         #eab308;
+
+  /* Health thresholds (death recap HP bar) */
+  --health-high:   #22c55e;
+  --health-medium: #eab308;
+  --health-low:    #ef4444;
+
+  /* WoW class colors — Blizzard-canonical, never invent new ones */
+  --class-warrior:       #C79C6E;
+  --class-paladin:       #F48CBA;
+  --class-hunter:        #AAD372;
+  --class-rogue:         #FFF468;
+  --class-priest:        #FFFFFF;
+  --class-death-knight:  #C41E3A;
+  --class-shaman:        #0070DD;
+  --class-mage:          #3FC7EB;
+  --class-warlock:       #8788EE;
+  --class-monk:          #00FF96;
+  --class-druid:         #FF7C0A;
+  --class-demon-hunter:  #A330C9;
+  --class-evoker:        #33937F;
+  --class-unknown:       #64748B;
 
   /* Headers — unified accent for module/section titles */
   --header-accent: #c9a96a;
@@ -76,6 +105,7 @@ body::before {
 /* Scrollbar styling */
 ::-webkit-scrollbar {
   width: 6px;
+  height: 6px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
@@ -86,6 +116,29 @@ body::before {
 }
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.16);
+}
+::-webkit-scrollbar-button,
+::-webkit-scrollbar-button:single-button,
+::-webkit-scrollbar-button:start,
+::-webkit-scrollbar-button:end,
+::-webkit-scrollbar-button:horizontal:start,
+::-webkit-scrollbar-button:horizontal:end,
+::-webkit-scrollbar-button:horizontal:decrement,
+::-webkit-scrollbar-button:horizontal:increment,
+::-webkit-scrollbar-button:vertical:start,
+::-webkit-scrollbar-button:vertical:end,
+::-webkit-scrollbar-button:vertical:decrement,
+::-webkit-scrollbar-button:vertical:increment {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  background: transparent !important;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+::-webkit-scrollbar-track-piece {
+  background: transparent;
 }
 
 /* Pulse animation for live indicator */

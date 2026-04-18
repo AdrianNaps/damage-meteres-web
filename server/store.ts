@@ -1,6 +1,6 @@
-import type { PlayerDeathRecord, PlayerInterruptRecord } from './types.js'
+import type { PlayerDeathRecord, PlayerInterruptRecord, ClientEvent, AuraWindow, AuraOpen, AuraWindowWire, BuffSection } from './types.js'
 import type { IconResolver } from './iconResolver.js'
-export type { PlayerDeathRecord, PlayerInterruptRecord }
+export type { PlayerDeathRecord, PlayerInterruptRecord, ClientEvent, AuraWindow, AuraOpen, AuraWindowWire, BuffSection }
 
 export interface SpellDamageStats {
   spellId: string
@@ -134,6 +134,30 @@ export interface Segment {
   supportOwnedSpellIds: Set<string>    // spellIds that have fired as *_DAMAGE_SUPPORT; their plain variants are not real source damage
   targetDamageTaken: Record<string, TargetDamageTaken>
   healingReceived: Record<string, TargetHealingReceived>  // dest → effective heal + source breakdown
+  // Pared-down event log for client-side filtering. Populated by aggregator on
+  // every damage/heal/interrupt/death that makes it to a player. Shipped wholesale
+  // in the snapshot so the Full-mode filter bar can re-aggregate under arbitrary
+  // Source/Target/Ability combos without server round-trips.
+  events: ClientEvent[]
+  // Boss HP tracker, populated incrementally as damage events on non-player
+  // units arrive with advanced-log HP fields. We lock onto the unit with the
+  // highest maxHP seen in the segment (switches if a bigger unit appears —
+  // e.g. a phase-2 boss spawns) and keep lastHP fresh on every hit. Stripped
+  // at the snapshot boundary; only bossHpPctAtWipe crosses the wire.
+  bossHpTracker?: { guid: string; maxHP: number; lastHP: number }
+  // Rounded boss HP percentage at the moment of a wipe. Only populated on
+  // ENCOUNTER_END where success === false AND the tracker has data (advanced
+  // logging was on). Absent on kills, in-progress segments, and wipes logged
+  // without advanced-log HP fields.
+  bossHpPctAtWipe?: number
+  // Closed aura windows — pairs APPLIED/REMOVED for BUFFs on player targets.
+  // Serialized onto snapshots as `auras` for the client's buffs metric.
+  auraWindows: AuraWindow[]
+  // In-flight aura bookkeeping keyed by `${casterGuid}|${targetGuid}|${spellId}`.
+  // A matching REMOVED moves the entry into auraWindows; still-open entries at
+  // snapshot time are materialized with `end = segEnd`. Implicit REFRESHes
+  // (APPLIED when already open) are dropped in v1.
+  openAuras: Map<string, AuraOpen>
 }
 
 // Derived values computed at read time, not stored.
@@ -146,13 +170,135 @@ export interface Segment {
 export interface PlayerSnapshot extends Omit<PlayerData, 'firstDamageTime' | 'lastDamageTime' | 'firstHealTime' | 'lastHealTime'> {
   dps: number
   hps: number
+  // Seconds the player was alive-and-contributing, summed per segment so each
+  // pull "reactivates" them. Within a segment: if they acted (damage/heal) after
+  // their last death they must have rezzed, so we credit the full segment; if
+  // not, we credit up to their last death. Drives the Active % column.
+  activeSec: number
 }
 
-export interface SegmentSnapshot extends Omit<Segment, 'players' | 'supportOwnedSpellIds'> {
+// Materialize an AuraWindow list for a segment at a given cutoff time —
+// all closed windows plus the still-open entries in openAuras rendered with
+// `end = cutoffMs` and `stillOpen = true`. Does NOT mutate segment state, so
+// a running segment can be re-snapshotted with later cutoffs correctly.
+export function materializeAuras(segment: Segment, cutoffMs: number): AuraWindow[] {
+  const out: AuraWindow[] = []
+  for (const w of segment.auraWindows) out.push(w)
+  for (const open of segment.openAuras.values()) {
+    if (open.start >= cutoffMs) continue  // pathological; should not happen
+    out.push({
+      spellId: open.spellId,
+      spellName: open.spellName,
+      caster: open.caster,
+      target: open.target,
+      start: open.start,
+      end: cutoffMs,
+      preExisting: false,
+      stillOpen: true,
+      refreshCount: open.refreshCount,
+    })
+  }
+  return out
+}
+
+// Short-key wire shape — see AuraWindowWire comment in types.ts for the
+// size rationale. `r` is omitted when zero to shave bytes off the common case
+// (personal procs, fire-and-forget raid buffs) where refresh never happens.
+export function auraWindowsToWire(windows: AuraWindow[]): AuraWindowWire[] {
+  const out: AuraWindowWire[] = new Array(windows.length)
+  for (let i = 0; i < windows.length; i++) {
+    const w = windows[i]
+    const wire: AuraWindowWire = { id: w.spellId, n: w.spellName, c: w.caster, d: w.target, s: w.start, e: w.end }
+    if (w.refreshCount > 0) wire.r = w.refreshCount
+    out[i] = wire
+  }
+  return out
+}
+
+// Classify each observed spellId into a display bucket for the buffs table.
+//   personal — every window has caster === target (Soul Leech, Flurry Charge,
+//              Metamorphosis). Player self-casts only, no external beneficiary.
+//   raid     — at least one cast fan-out produced `minFanout` distinct ally
+//              targets within a 100ms window. Captures Heroism, Battle Shout,
+//              Devotion Aura, Stampeding Roar, Mark of the Wild, etc.
+//   external — remainder: cross-target single-target casts (Power Infusion,
+//              Ironbark, Innervate, Pain Suppression) and debuff-adjacent
+//              buffs that don't fan out.
+// Retroactively-seeded windows (preExisting) are excluded from the fan-out
+// check — their start timestamps are synthesized to segStart and would
+// collapse into a fake fan-out cluster.
+//
+// The fan-out threshold scales with party size. A fixed 5-target rule would
+// require ALL five M+ party members to be hit by a single cast in the same
+// 100ms bucket — achievable in theory but fragile (missed applications,
+// pet-flag weirdness, clustered fan-out across two buckets). The formula
+// gives 5 for raid (20+ allies), 4 for a full 5-player M+ party, and a
+// floor of 3 so the heuristic stays meaningful in smaller groups.
+export function classifyAuras(windows: AuraWindow[], allyNames: Set<string>): Record<string, BuffSection> {
+  const minFanout = Math.min(5, Math.max(3, allyNames.size - 1))
+  const bySpell = new Map<string, AuraWindow[]>()
+  for (const w of windows) {
+    let arr = bySpell.get(w.spellId)
+    if (!arr) { arr = []; bySpell.set(w.spellId, arr) }
+    arr.push(w)
+  }
+
+  const result: Record<string, BuffSection> = {}
+  for (const [spellId, ws] of bySpell) {
+    if (ws.every(w => w.caster === w.target)) {
+      result[spellId] = 'personal'
+      continue
+    }
+
+    // Fan-out: group by (caster, 100ms bucket of start). If any bucket has
+    // minFanout+ distinct ally targets, this is a raid-wide cast. Personal
+    // components of a shared cast (e.g. the shaman included in their own
+    // Heroism) count too because the caster is in the ally set.
+    const buckets = new Map<string, Set<string>>()
+    for (const w of ws) {
+      if (w.preExisting) continue
+      const key = `${w.caster}|${Math.floor(w.start / 100)}`
+      let set = buckets.get(key)
+      if (!set) { set = new Set(); buckets.set(key, set) }
+      if (allyNames.has(w.target)) set.add(w.target)
+    }
+    let isRaid = false
+    for (const set of buckets.values()) {
+      if (set.size >= minFanout) { isRaid = true; break }
+    }
+    result[spellId] = isRaid ? 'raid' : 'external'
+  }
+  return result
+}
+
+// Per-segment contribution to a player's activeSec. See PlayerSnapshot.activeSec
+// for the model. `segStartMs` is seg.firstEventTime ?? seg.startTime; `segDurSec`
+// is (segEnd - segStart)/1000. PlayerData `lastDamageTime`/`lastHealTime` give us
+// "did they act after their last death?" without needing to walk events.
+export function segmentActiveSec(sp: PlayerData, segStartMs: number, segDurSec: number): number {
+  if (sp.deaths.length === 0) return segDurSec
+  const lastDeathMs = sp.deaths.reduce((m, d) => Math.max(m, d.timeOfDeath), 0)
+  const lastActionMs = Math.max(sp.lastDamageTime ?? 0, sp.lastHealTime ?? 0)
+  if (lastActionMs > lastDeathMs) return segDurSec  // rezzed and kept going
+  const lastDeathElapsed = (lastDeathMs - segStartMs) / 1000
+  return Math.max(0, Math.min(segDurSec, lastDeathElapsed))
+}
+
+export interface SegmentSnapshot extends Omit<Segment, 'players' | 'supportOwnedSpellIds' | 'bossHpTracker' | 'auraWindows' | 'openAuras'> {
   type: 'segment'
   duration: number
   players: Record<string, PlayerSnapshot>
   spellIcons: Record<string, string>   // spellId → Wowhead icon filename
+  // events is inherited from Segment via the intersection with Omit; declared
+  // explicitly here so the type is self-documenting at the snapshot boundary.
+  events: ClientEvent[]
+  // Aura windows flattened to wire shape. Materialized from segment.auraWindows
+  // plus any still-open entries closed at segment end. Undefined when the
+  // segment has no aura activity (e.g. pre-aura-tracking legacy segments).
+  auras?: AuraWindowWire[]
+  // Per-spellId classification bucket for the table's Personal/Raid/External
+  // grouping. Present iff auras is present.
+  buffClassification?: Record<string, BuffSection>
 }
 
 export interface SegmentSummary {
@@ -163,6 +309,10 @@ export interface SegmentSummary {
   endTime: number | null
   success: boolean | null
   duration: number
+  // Rounded boss HP % at the moment of a wipe. Carried onto the summary so the
+  // segment-tab renderer can show "Pull N - 47%" without fetching the full
+  // snapshot. Only set on wipes where advanced-log HP was available.
+  bossHpPctAtWipe?: number
 }
 
 // Internal — not exported over the wire
@@ -198,6 +348,9 @@ export interface BossSectionSnapshot {
   kills: number
   players: Record<string, PlayerSnapshot>
   spellIcons: Record<string, string>
+  events: ClientEvent[]
+  auras?: AuraWindowWire[]
+  buffClassification?: Record<string, BuffSection>
 }
 
 // Internal — not exported over the wire
@@ -235,6 +388,9 @@ export interface KeyRunSnapshot {
   activeDurationSec: number          // sum of individual segment combat durations
   players: Record<string, PlayerSnapshot>
   spellIcons: Record<string, string> // spellId → Wowhead icon filename
+  events: ClientEvent[]
+  auras?: AuraWindowWire[]
+  buffClassification?: Record<string, BuffSection>
 }
 
 export type HistoryItem = KeyRunSummary | BossSectionSummary | SegmentSummary
@@ -402,6 +558,16 @@ export class SegmentStore {
       : undefined   // still in progress — fall back to activeDurationSec
     const { players, activeDurationSec } = this._mergeSegments(segs, bossSectionSpanSec)
 
+    // Concat aura windows across segments and classify over the whole set so
+    // fan-out detection works even if Heroism was cast in only one pull of
+    // the section. Per-segment materialization uses each segment's own end
+    // cutoff to correctly close still-open windows at segment boundaries.
+    const allAuras = segs.flatMap(s => materializeAuras(s, s.endTime ?? s.lastEventTime ?? s.startTime))
+    const auras = allAuras.length > 0 ? auraWindowsToWire(allAuras) : undefined
+    const buffClassification = allAuras.length > 0
+      ? classifyAuras(allAuras, new Set(Object.keys(players)))
+      : undefined
+
     const spellIds = new Set<string>()
     for (const p of Object.values(players)) {
       for (const sid of Object.keys(p.damage.spells)) spellIds.add(sid)
@@ -409,6 +575,7 @@ export class SegmentStore {
       for (const sid of Object.keys(p.interrupts.byKicker)) spellIds.add(sid)
       for (const sid of Object.keys(p.interrupts.byKicked)) spellIds.add(sid)
     }
+    for (const w of allAuras) spellIds.add(w.spellId)
     this.iconResolver.requestMany(spellIds)
     return {
       type: 'boss_section',
@@ -423,17 +590,28 @@ export class SegmentStore {
       kills: segs.filter(s => s.success === true).length,
       players,
       spellIcons: this.iconResolver.getAll(),
+      events: segs.flatMap(s => s.events),
+      auras,
+      buffClassification,
     }
   }
 
   private _mergeSegments(segs: Segment[], overrideDurationSec?: number): { players: Record<string, PlayerSnapshot>; activeDurationSec: number } {
     const merged: Record<string, PlayerData> = {}
+    // Per-player active seconds accumulator — reset-per-segment so a player who
+    // dies in pull 1 still earns full credit for pull 2 where they rezzed.
+    const activeSecByName: Record<string, number> = {}
     let activeDurationSec = 0
 
     for (const seg of segs) {
       const start = seg.firstEventTime ?? seg.startTime
       const end   = seg.endTime ?? seg.lastEventTime ?? start
-      activeDurationSec += (end - start) / 1000
+      const segDurSec = (end - start) / 1000
+      activeDurationSec += segDurSec
+
+      for (const [name, sp] of Object.entries(seg.players)) {
+        activeSecByName[name] = (activeSecByName[name] ?? 0) + segmentActiveSec(sp, start, segDurSec)
+      }
 
       for (const [name, player] of Object.entries(seg.players)) {
         if (!merged[name]) {
@@ -629,6 +807,7 @@ export class SegmentStore {
         ...rest,
         dps: durationSec > 0 ? player.damage.total / durationSec : 0,
         hps: durationSec > 0 ? player.healing.total / durationSec : 0,
+        activeSec: activeSecByName[name] ?? 0,
       }
     }
     return { players, activeDurationSec }
@@ -648,6 +827,12 @@ export class SegmentStore {
       : undefined   // key still in progress — fall back to activeDurationSec
     const { players, activeDurationSec } = this._mergeSegments(segs, keyRunSpanSec)
 
+    const allAuras = segs.flatMap(s => materializeAuras(s, s.endTime ?? s.lastEventTime ?? s.startTime))
+    const auras = allAuras.length > 0 ? auraWindowsToWire(allAuras) : undefined
+    const buffClassification = allAuras.length > 0
+      ? classifyAuras(allAuras, new Set(Object.keys(players)))
+      : undefined
+
     const spellIds = new Set<string>()
     for (const p of Object.values(players)) {
       for (const sid of Object.keys(p.damage.spells)) spellIds.add(sid)
@@ -655,9 +840,19 @@ export class SegmentStore {
       for (const sid of Object.keys(p.interrupts.byKicker)) spellIds.add(sid)
       for (const sid of Object.keys(p.interrupts.byKicked)) spellIds.add(sid)
     }
+    for (const w of allAuras) spellIds.add(w.spellId)
     this.iconResolver.requestMany(spellIds)
 
-    return { type: 'key_run', ...meta, activeDurationSec, players, spellIcons: this.iconResolver.getAll() }
+    return {
+      type: 'key_run',
+      ...meta,
+      activeDurationSec,
+      players,
+      spellIcons: this.iconResolver.getAll(),
+      events: segs.flatMap(s => s.events),
+      auras,
+      buffClassification,
+    }
   }
 
   toSnapshot(segment: Segment): SegmentSnapshot {
@@ -683,8 +878,16 @@ export class SegmentStore {
         ...rest,
         dps: duration > 0 ? player.damage.total / duration : 0,
         hps: duration > 0 ? player.healing.total / duration : 0,
+        activeSec: segmentActiveSec(player, start, duration),
       }
     }
+
+    const segEnd = segment.endTime ?? segment.lastEventTime ?? start
+    const materialAuras = materializeAuras(segment, segEnd)
+    const auras = materialAuras.length > 0 ? auraWindowsToWire(materialAuras) : undefined
+    const buffClassification = materialAuras.length > 0
+      ? classifyAuras(materialAuras, new Set(Object.keys(players)))
+      : undefined
 
     const spellIds = new Set<string>()
     for (const p of Object.values(players)) {
@@ -693,16 +896,31 @@ export class SegmentStore {
       for (const sid of Object.keys(p.interrupts.byKicker)) spellIds.add(sid)
       for (const sid of Object.keys(p.interrupts.byKicked)) spellIds.add(sid)
     }
+    for (const w of materialAuras) spellIds.add(w.spellId)
     this.iconResolver.requestMany(spellIds)
 
-    const { supportOwnedSpellIds: _, ...segmentRest } = segment
-    return { type: 'segment' as const, ...segmentRest, duration, players, spellIcons: this.iconResolver.getAll() }
+    const {
+      supportOwnedSpellIds: _supportOwned,
+      bossHpTracker: _bossHp,
+      auraWindows: _auraWindows,
+      openAuras: _openAuras,
+      ...segmentRest
+    } = segment
+    return {
+      type: 'segment' as const,
+      ...segmentRest,
+      duration,
+      players,
+      spellIcons: this.iconResolver.getAll(),
+      auras,
+      buffClassification,
+    }
   }
 
   toSummary(segment: Segment): SegmentSummary {
     const start = segment.firstEventTime ?? segment.startTime
     const end   = segment.endTime ?? segment.lastEventTime ?? start
-    return {
+    const summary: SegmentSummary = {
       type: 'segment',
       id: segment.id,
       encounterName: segment.encounterName,
@@ -711,5 +929,7 @@ export class SegmentStore {
       success: segment.success,
       duration: (end - start) / 1000,
     }
+    if (segment.bossHpPctAtWipe !== undefined) summary.bossHpPctAtWipe = segment.bossHpPctAtWipe
+    return summary
   }
 }

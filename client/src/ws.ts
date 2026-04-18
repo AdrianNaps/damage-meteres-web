@@ -1,4 +1,5 @@
-import { useStore } from './store'
+import { useStore, LIVE_SOURCE_ID, type SourceMeta } from './store'
+import type { HistoryItem, SegmentSummary } from './types'
 
 let ws: WebSocket | null = null
 
@@ -20,6 +21,9 @@ export function connectWs() {
     setSelectedKeyRun,
     setSelectedBossSection,
     setTargetDetail,
+    addSource,
+    removeSource,
+    updateSourceMeta,
   } = useStore.getState()
 
   async function connect() {
@@ -52,35 +56,178 @@ export function connectWs() {
       let msg: any
       try { msg = JSON.parse(e.data) } catch { return }
 
+      // PR 4: messages may carry a sourceId. Default to LIVE for the few
+      // server frames that don't (e.g. old in-flight broadcasts during a
+      // server upgrade).
+      const sourceId: string = typeof msg.sourceId === 'string' ? msg.sourceId : LIVE_SOURCE_ID
+      const state = useStore.getState()
+
       switch (msg.type) {
-        case 'segment_list':
-          setSegmentHistory(msg.segments)
-          break
-        case 'segment_detail':
-          if (msg.segmentId === useStore.getState().selectedSegmentId) {
-            setSelectedSegment(msg.segment)
+        case 'sources': {
+          // Initial source registry sync. Add/refresh metas for everything the
+          // server reports; remove anything the client knew about that the
+          // server no longer has.
+          const incomingIds = new Set<string>()
+          for (const s of msg.sources as SourceMeta[]) {
+            incomingIds.add(s.sourceId)
+            const existing = state.sourceMetas.get(s.sourceId)
+            if (existing) {
+              updateSourceMeta(s.sourceId, s)
+            } else {
+              addSource(s)
+            }
+          }
+          for (const id of state.sourceMetas.keys()) {
+            if (!incomingIds.has(id) && id !== LIVE_SOURCE_ID) removeSource(id)
           }
           break
-        case 'key_run_detail':
-          if (msg.keyRunId === useStore.getState().selectedKeyRunId) {
-            setSelectedKeyRun(msg.snapshot)
+        }
+        case 'source_opened': {
+          const meta = msg.source as SourceMeta
+          if (state.sourceMetas.has(meta.sourceId)) {
+            updateSourceMeta(meta.sourceId, meta)
+          } else {
+            addSource(meta)
+          }
+          // Auto-switch to the newly opened source so the user sees the result
+          // of their picker action immediately. Skip when alreadyOpen — the
+          // server is just confirming a dedupe and we shouldn't yank the user.
+          if (!msg.alreadyOpen) {
+            useStore.getState().setActiveSource(meta.sourceId)
           }
           break
-        case 'boss_section_detail':
-          if (msg.bossSectionId === useStore.getState().selectedBossSectionId) {
-            setSelectedBossSection(msg.snapshot)
+        }
+        case 'source_closed': {
+          removeSource(sourceId)
+          break
+        }
+        case 'source_progress': {
+          updateSourceMeta(sourceId, {
+            loadProgress: {
+              bytesRead: msg.bytesRead,
+              totalBytes: msg.totalBytes,
+              linesProcessed: msg.linesProcessed,
+            },
+            loaded: msg.bytesRead >= msg.totalBytes,
+          })
+          break
+        }
+        case 'source_open_error': {
+          // No global toast surface yet; log to console so it surfaces in
+          // devtools. A future toast or inline LogPicker error region will
+          // surface this to the user.
+          console.warn('[ws] source_open_error:', msg.message, msg.filePath)
+          break
+        }
+        case 'live_status': {
+          updateSourceMeta(LIVE_SOURCE_ID, {
+            liveStatus: { writingNow: msg.writingNow, lastWriteAt: msg.lastWriteAt },
+          })
+          break
+        }
+        case 'logs_listing': {
+          // Picker subscribes via a separate transient channel below; ignore
+          // here. Picker requests fire from LogPicker.tsx (PR 5).
+          break
+        }
+        case 'segment_list': {
+          // Capture the pre-update history so we can diff for newly-appeared
+          // live segments below. Must happen BEFORE setSegmentHistory mutates
+          // the slice — otherwise old and new both point at the same array.
+          const prevSegments = state.sources.get(sourceId)?.segmentHistory ?? []
+
+          setSegmentHistory(msg.segments, sourceId)
+
+          // A new live pull just appeared (combat started) → jump straight to
+          // it. Intentionally overrides whatever the user had selected: if a
+          // boss is being pulled, that's the view they want. Archives never
+          // produce new live segments, so the gate on LIVE keeps this quiet
+          // when the user is viewing a static log.
+          if (sourceId === LIVE_SOURCE_ID) {
+            const newLive = findNewlyAppearedLiveSegment(prevSegments, msg.segments as HistoryItem[])
+            if (newLive) {
+              const store = useStore.getState()
+              store.setSelectedSegmentId(newLive.id, sourceId)
+              send({ type: 'get_segment', sourceId, segmentId: newLive.id })
+              break
+            }
+          }
+
+          // If the user hasn't picked anything in this source yet, auto-select
+          // the most recent top-level instance so an opened log lands on real
+          // data instead of an empty "waiting" state. Once anything is
+          // selected, the guard below stops firing — re-deliveries of the
+          // list during live combat won't yank the user's selection.
+          const slice = useStore.getState().sources.get(sourceId)
+          if (
+            slice &&
+            slice.selectedSegmentId === null &&
+            slice.selectedKeyRunId === null &&
+            slice.selectedBossSectionId === null
+          ) {
+            const items = msg.segments as HistoryItem[]
+            let latest: HistoryItem | null = null
+            for (const it of items) {
+              if (!latest || it.startTime > latest.startTime) latest = it
+            }
+            if (latest) {
+              const store = useStore.getState()
+              if (latest.type === 'key_run') {
+                store.setSelectedKeyRunId(latest.keyRunId, sourceId)
+                send({ type: 'get_key_run', sourceId, keyRunId: latest.keyRunId })
+              } else if (latest.type === 'boss_section') {
+                store.setSelectedBossSectionId(latest.bossSectionId, sourceId)
+                send({ type: 'get_boss_section', sourceId, bossSectionId: latest.bossSectionId })
+              } else {
+                store.setSelectedSegmentId(latest.id, sourceId)
+                send({ type: 'get_segment', sourceId, segmentId: latest.id })
+              }
+            }
           }
           break
+        }
+        case 'segment_detail': {
+          // Only hydrate selectedSegment when the message corresponds to the
+          // current selection in the target source's slice. For the active
+          // source this is the existing comparison; for non-active sources we
+          // still cache the snapshot via setSelectedSegment so re-clicks hit
+          // the cache.
+          const targetSlice = state.sources.get(sourceId)
+          if (targetSlice && msg.segmentId === targetSlice.selectedSegmentId) {
+            setSelectedSegment(msg.segment, sourceId)
+          }
+          break
+        }
+        case 'key_run_detail': {
+          const targetSlice = state.sources.get(sourceId)
+          if (targetSlice && msg.keyRunId === targetSlice.selectedKeyRunId) {
+            setSelectedKeyRun(msg.snapshot, sourceId)
+          }
+          break
+        }
+        case 'boss_section_detail': {
+          const targetSlice = state.sources.get(sourceId)
+          if (targetSlice && msg.bossSectionId === targetSlice.selectedBossSectionId) {
+            setSelectedBossSection(msg.snapshot, sourceId)
+          }
+          break
+        }
         case 'encounter_start':
         case 'encounter_end':
-          // request fresh segment list
-          send({ type: 'get_segment_list' })
+          // Request fresh segment list for the source that emitted the event.
+          send({ type: 'get_segment_list', sourceId })
           break
         case 'target_detail':
-          setTargetDetail({ targetName: msg.targetName, total: msg.total, sources: msg.sources })
+          // target_detail is only meaningful for the active source's drill
+          // panel — drop frames from non-active sources to avoid clobbering.
+          if (sourceId === useStore.getState().activeSourceId) {
+            setTargetDetail({ targetName: msg.targetName, total: msg.total, sources: msg.sources })
+          }
           break
         case 'target_detail_not_found':
-          setTargetDetail(null)
+          if (sourceId === useStore.getState().activeSourceId) {
+            setTargetDetail(null)
+          }
           break
       }
     }
@@ -89,6 +236,8 @@ export function connectWs() {
   connect()
 }
 
+// Outbound send: callers may include `sourceId` directly in `msg`. When
+// omitted, the message is unscoped — the server defaults it to live (PR 2).
 export function send(msg: object) {
   if (ws?.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(msg))
@@ -101,5 +250,75 @@ export function requestTargetDetail(
   targetName: string,
   metric: 'damage' | 'healing',
 ) {
-  send({ type: 'get_target_detail', viewType, viewId, targetName, metric })
+  send({
+    type: 'get_target_detail',
+    sourceId: useStore.getState().activeSourceId,
+    viewType,
+    viewId,
+    targetName,
+    metric,
+  })
+}
+
+// Issue a one-shot logs-directory listing. Used by the LogPicker (PR 5);
+// resolves with the server's response or null if WS isn't connected.
+export function requestLogsListing(): Promise<{ dir: string; files: { name: string; size: number; mtimeMs: number }[] } | null> {
+  return new Promise(resolve => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return resolve(null)
+    let resolved = false
+    const handler = (e: MessageEvent) => {
+      let m: any
+      try { m = JSON.parse(e.data) } catch { return }
+      if (m?.type === 'logs_listing') {
+        resolved = true
+        ws?.removeEventListener('message', handler)
+        resolve({ dir: m.dir, files: m.files })
+      }
+    }
+    ws.addEventListener('message', handler)
+    ws.send(JSON.stringify({ type: 'list_logs' }))
+    setTimeout(() => {
+      if (!resolved) {
+        ws?.removeEventListener('message', handler)
+        resolve(null)
+      }
+    }, 5000)
+  })
+}
+
+// Open an archive source by file path. The server will broadcast
+// `source_opened` (and `source_progress` while loading) which the main message
+// handler picks up.
+export function openArchiveSource(filePath: string): void {
+  send({ type: 'open_source', filePath })
+}
+
+// Walk both top-level standalone segments and segments nested inside key-runs
+// / boss-sections. Flattening keeps the diff logic below source-shape-agnostic.
+function flattenSegments(items: HistoryItem[]): SegmentSummary[] {
+  const out: SegmentSummary[] = []
+  for (const it of items) {
+    if (it.type === 'segment') out.push(it)
+    else out.push(...it.segments)  // key_run | boss_section → inner segments
+  }
+  return out
+}
+
+// Find a live segment (endTime === null) that wasn't in `prev` — i.e. combat
+// just started and the server just broadcast a new in-progress pull. The id
+// check also filters out the steady-state case where the same live segment
+// keeps re-arriving on every list delivery during an ongoing fight. Latest
+// startTime wins when multiple live segments somehow appear at once (rare,
+// but keeps behaviour deterministic).
+function findNewlyAppearedLiveSegment(prev: HistoryItem[], next: HistoryItem[]): SegmentSummary | null {
+  const prevIds = new Set<string>()
+  for (const s of flattenSegments(prev)) prevIds.add(s.id)
+
+  let winner: SegmentSummary | null = null
+  for (const s of flattenSegments(next)) {
+    if (s.endTime !== null) continue
+    if (prevIds.has(s.id)) continue
+    if (!winner || s.startTime > winner.startTime) winner = s
+  }
+  return winner
 }

@@ -34,6 +34,8 @@ export type EventType =
   | 'SPELL_HEAL'
   | 'SPELL_PERIODIC_HEAL'
   | 'SPELL_HEAL_ABSORBED'
+  | 'SPELL_AURA_APPLIED'
+  | 'SPELL_AURA_REFRESH'
   | 'SPELL_AURA_REMOVED'
   | 'SPELL_INTERRUPT'
   | 'UNIT_DIED'
@@ -122,7 +124,20 @@ export interface InterruptPayload {
   extraSpellName: string
 }
 
-export type EventPayload = DamagePayload | HealPayload | EncounterPayload | DeathPayload | CombatantInfoPayload | ChallengeModePayload | SummonPayload | InterruptPayload
+// Aura application, refresh, or removal for the buffs metric. Emitted from
+// SPELL_AURA_APPLIED / SPELL_AURA_REFRESH / SPELL_AURA_REMOVED for BUFFs on
+// player destinations. Aggregator pairs APPLIED/REMOVED into AuraWindows and
+// folds REFRESHes into the current open window's reapplication counter.
+// DEBUFFs are dropped at the parser today — future debuffs metric flips the filter.
+export interface AuraPayload {
+  type: 'aura'
+  direction: 'applied' | 'refreshed' | 'removed'
+  spellId: string
+  spellName: string
+  auraKind: 'BUFF' | 'DEBUFF'
+}
+
+export type EventPayload = DamagePayload | HealPayload | EncounterPayload | DeathPayload | CombatantInfoPayload | ChallengeModePayload | SummonPayload | InterruptPayload | AuraPayload
 
 export interface ParsedEvent {
   timestamp: number
@@ -170,4 +185,69 @@ export interface PlayerInterruptRecord {
   kickedSpellName: string
   targetName: string         // the mob whose cast was interrupted
   targetGuid: string
+}
+
+// Classification bucket for a buff on the client table — computed at snapshot
+// time from the full window set for each spellId.
+export type BuffSection = 'personal' | 'raid' | 'external'
+
+// Aggregated aura window: one continuous uptime interval for a specific
+// (caster, target, spellId) triple. Windows are built from paired APPLIED/REMOVED
+// events during aggregation and closed at segment end for still-open auras.
+// REFRESHes inside a window increment `refreshCount` without splitting the
+// window — the buff is continuously up, but each refresh is an application
+// the user cares about for the Count column.
+export interface AuraWindow {
+  spellId: string
+  spellName: string
+  caster: string         // canonical name — pets resolved to owner
+  target: string         // canonical name (NFC-normalized)
+  start: number          // absolute ms — APPLIED timestamp, or segment start for retro-seeded
+  end: number            // absolute ms — REMOVED timestamp, or segment end for still-open
+  preExisting: boolean   // retroactively seeded from REMOVED-without-APPLIED
+  stillOpen: boolean     // no REMOVED seen; closed at segment end
+  refreshCount: number   // SPELL_AURA_REFRESHes observed inside this window
+}
+
+// In-flight open-aura bookkeeping. Stored on Segment, keyed by
+// `${casterGuid}|${targetGuid}|${spellId}`. Moved into auraWindows when REMOVED
+// fires or materialized lazily with `end = segEnd` at snapshot time. Refreshes
+// observed while open increment refreshCount.
+export interface AuraOpen {
+  spellId: string
+  spellName: string
+  caster: string
+  target: string
+  start: number
+  refreshCount: number
+}
+
+// Wire-shrunk variant of AuraWindow — 1-letter keys because a 6-min raid fight
+// can ship up to 15k windows. preExisting/stillOpen are dropped on the wire:
+// retro/open flags are derivable from s===segStart / e===segEnd when needed.
+// `r` (refreshCount) is optional; absent means zero — keeps legacy snapshots
+// parsing cleanly and shaves bytes off the common "no refresh" case.
+export interface AuraWindowWire {
+  id: string  // spellId
+  n: string   // spellName
+  c: string   // caster
+  d: string   // target (dst)
+  s: number   // start ms
+  e: number   // end ms
+  r?: number  // SPELL_AURA_REFRESH count folded into this window
+}
+
+// Pared-down event used by the client to re-aggregate under arbitrary filters.
+// Keys are short because the array runs to 10k+ per fight; every byte matters
+// on the wire. `t` is absolute ms (same epoch as ParsedEvent.timestamp) so the
+// client doesn't need to know segment start offsets — it filters on its own.
+export interface ClientEvent {
+  t: number
+  kind: 'damage' | 'heal' | 'interrupt' | 'death'
+  src: string              // canonical source name (pets/support already resolved to owner)
+  dst: string              // canonical dest name
+  ability: string          // spell name; 'death' kind stores the killing-blow ability
+  spellId?: string
+  amount?: number          // damage/heal value (excludes overkill, matches meter totals)
+  overheal?: number        // heal only
 }

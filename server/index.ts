@@ -4,11 +4,7 @@ import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { WebSocketServer } from 'ws'
-import { LogWatcher } from './watcher.js'
-import { parseLine } from './parser.js'
-import { SegmentStore } from './store.js'
-import { EncounterStateMachine } from './stateMachine.js'
-import { attachWsHandlers } from './wsServer.js'
+import { createRuntime } from './runtime.js'
 import { createIconResolver } from './iconResolver.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -56,10 +52,20 @@ const httpServer = http.createServer((req, res) => {
 const iconResolver = createIconResolver({
   cacheFile: path.resolve(__dirname, 'data/spell-icons.json'),
 })
-const store   = new SegmentStore(maxSegments, iconResolver)
-const machine = new EncounterStateMachine(store)
-const wss     = new WebSocketServer({ server: httpServer })
-attachWsHandlers(wss, store, machine)
+
+// permessage-deflate: combat-log payloads repeat player names, spell IDs, and
+// ability names heavily, so compression typically cuts wire size 10–20×. Most
+// impactful on the web path (real network); on Electron/localhost the smaller
+// payload also reduces client-side JSON.parse time.
+const wss = new WebSocketServer({
+  server: httpServer,
+  perMessageDeflate: {
+    zlibDeflateOptions: { level: 3 },  // fast compression; higher levels don't pay off for WS frames
+    threshold: 1024,                   // skip compression for small control messages
+  },
+})
+
+createRuntime({ logsDir, maxSegments, iconResolver, wss })
 
 httpServer.listen(port, () => {
   console.log(`[server] Listening on http://localhost:${port}`)
@@ -67,20 +73,4 @@ httpServer.listen(port, () => {
   else console.log(`[server] No client build found — run "npm run build" to serve the UI`)
 })
 
-const watcher = new LogWatcher(logsDir)
-
-
-watcher.on('lines', (lines: string[]) => {
-  for (const line of lines) {
-    const parsed = parseLine(line)
-    if (!parsed) continue
-    if (Array.isArray(parsed)) {
-      for (const event of parsed) machine.handle(event)
-    } else {
-      machine.handle(parsed)
-    }
-  }
-})
-
-watcher.start()
 console.log('[index] Server started.')

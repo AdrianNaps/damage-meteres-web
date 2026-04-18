@@ -135,6 +135,25 @@ ipcMain.handle('app:pickLogsDir', async () => {
   return dir
 })
 
+// Pick a single .txt combat log file. Used by the LogPicker's "Browse files…"
+// escape hatch for files outside the configured logsDir (backups, files from
+// teammates, etc.).
+ipcMain.handle('app:pickLogFile', async () => {
+  if (!mainWindow) return null
+  const settings = getSettings()
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: 'Select a WoW combat log',
+    properties: ['openFile'],
+    defaultPath: settings.logsDir,
+    filters: [
+      { name: 'WoW Combat Log', extensions: ['txt'] },
+      { name: 'All Files', extensions: ['*'] },
+    ],
+  })
+  if (result.canceled || !result.filePaths[0]) return null
+  return result.filePaths[0]
+})
+
 app.whenReady().then(async () => {
   try {
     await backend.start()

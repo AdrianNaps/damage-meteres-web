@@ -1,7 +1,6 @@
 import { formatNum, pct } from '../utils/format'
 import { specIconUrl } from '../utils/icons'
-
-interface TargetRow { targetName: string; total: number }
+import type { BreakdownTargetRow } from '../utils/filters'
 
 // Optional per-row override — used by healing-mode to render each target as a
 // class-colored player entry (short name + spec icon + own class color on the
@@ -14,7 +13,9 @@ export interface TargetRowStyle {
 }
 
 interface Props {
-  targets: Record<string, TargetRow>
+  // Pre-filtered, pre-sorted by the breakdown selector. The component is a
+  // pure renderer — no filter awareness here.
+  targets: BreakdownTargetRow[]
   totalAmount: number
   duration: number
   rateLabel: 'DPS' | 'HPS'
@@ -82,8 +83,7 @@ function BarFill({ pct, color }: { pct: number; color: string }) {
 }
 
 export function TargetTable({ targets, totalAmount, duration, rateLabel, classColor, resolveRow, onSelect }: Props) {
-  const rows = Object.values(targets).sort((a, b) => b.total - a.total)
-  const topTotal = rows[0]?.total ?? 1
+  const topTotal = targets[0]?.total ?? 1
 
   return (
     <div>
@@ -93,7 +93,7 @@ export function TargetTable({ targets, totalAmount, duration, rateLabel, classCo
         <span style={{ width: 48, textAlign: 'right' }}>{rateLabel}</span>
         <span style={{ width: 36, textAlign: 'right' }}>%</span>
       </div>
-      {rows.map(t => {
+      {targets.map(t => {
         const style = resolveRow?.(t.targetName) ?? null
         const displayName = style?.displayName ?? t.targetName
         const barColor = style?.color ?? classColor

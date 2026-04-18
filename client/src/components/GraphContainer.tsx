@@ -1,19 +1,36 @@
 import { useRef, useEffect, useCallback, useMemo, useState } from 'react'
-import type { PlayerSnapshot } from '../types'
+import type { PlayerSnapshot, AuraWindowWire } from '../types'
 import { getClassColor } from './PlayerRow'
-import { useStore, resolveSpecId, GRAPH_GROUP_AVG_KEY, selectGraphTimeOffset } from '../store'
-import { formatNum, shortName } from '../utils/format'
+import { useStore, resolveSpecId, GRAPH_GROUP_AVG_KEY, selectGraphTimeOffset, selectCurrentView } from '../store'
+import { formatNum, shortName, formatTime } from '../utils/format'
 
 interface Props {
-  metric: 'damage' | 'healing' | 'deaths' | 'interrupts'
+  metric: 'damage' | 'healing' | 'deaths' | 'interrupts' | 'buffs'
   players: Record<string, PlayerSnapshot>
   duration: number
+  inactive?: boolean
 }
 
 const PAD = { top: 4, right: 8, bottom: 16, left: 40 }
 
 const UNFOCUSED_ALPHA = 0.18
 const GROUP_AVG_COLOR = '#f59e0b'
+
+// Buffs-mode two-line graph: group-DPS and group-HPS share the plot area as
+// shape comparisons (no y-axis labels — different magnitudes would make
+// absolute values misleading at a glance, WCL makes the same choice).
+const BUFFS_DAMAGE_COLOR = '#ef4444'
+const BUFFS_HEALING_COLOR = '#10b981'
+const BUFFS_DAMAGE_KEY = '__buffs_damage__'
+const BUFFS_HEALING_KEY = '__buffs_healing__'
+
+// Below this pixel threshold, a mousedown→mouseup counts as a click (passes
+// through to existing hover/focus behaviors). Past the threshold, we treat it
+// as an intentional time-window selection.
+const MIN_DRAG_PX = 3
+const TIME_WINDOW_FILL = 'rgba(59, 130, 246, 0.14)'
+const TIME_WINDOW_BORDER = 'rgba(96, 165, 250, 0.55)'
+const TIME_WINDOW_SHADE = 'rgba(8, 10, 14, 0.55)'
 
 // Slice width for the line graph series. Scaled with duration so short fights
 // get fine-grained sampling and long dungeon overalls don't produce thousands
@@ -36,12 +53,6 @@ function hashStr(str: string): number {
   let h = 0
   for (let i = 0; i < str.length; i++) h = ((h << 5) - h + str.charCodeAt(i)) | 0
   return Math.abs(h)
-}
-
-function formatTime(sec: number): string {
-  const m = Math.floor(sec / 60)
-  const s = sec % 60
-  return `${m}:${String(s).padStart(2, '0')}`
 }
 
 // Deterministic pseudo-random series for a player, seeded by name
@@ -96,7 +107,7 @@ interface BarData {
 
 interface BarHoverState { bucket: number; seriesIndex: number; xCss: number }
 
-export function GraphContainer({ metric, players, duration }: Props) {
+export function GraphContainer({ metric, players, duration, inactive }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const playerSpecs = useStore(s => s.playerSpecs)
@@ -107,14 +118,68 @@ export function GraphContainer({ metric, players, duration }: Props) {
 
   // Focus state lives in the store so it survives GraphContainer unmounts that
   // happen between a segment click and the server's snapshot response.
-  const focused = useStore(s => s.graphFocused)
+  const storedFocused = useStore(s => s.graphFocused)
   const toggleFocus = useStore(s => s.toggleGraphFocus)
   const timeOffset = useStore(selectGraphTimeOffset)
 
+  // TimeWindow filter (drag-selected band). Stored in segment-relative seconds
+  // so the overlay lines up with the graph's visible x-axis without needing a
+  // separate time basis from the events array. Drag-to-select is gated to Full
+  // mode because that's the only mode where filters actually narrow data — a
+  // drag in Summary would set a chip the user can't see (FilterBar is hidden)
+  // and have no effect on the pre-aggregated snapshot values.
+  const timeWindowFilter = useStore(s => s.filters.TimeWindow)
+  const setTimeWindowFilter = useStore(s => s.setTimeWindowFilter)
+  const mode = useStore(s => s.mode)
+  const selectedBuff = useStore(s => s.selectedBuff)
+  const currentView = useStore(selectCurrentView)
+
+  // Uptime band overlay: when the user drilled into a specific buff, pull its
+  // windows off the current snapshot and light up the plot at each window.
+  // Only meaningful in buffs metric — we still compute for damage/healing but
+  // the gate below skips the draw.
+  const selectedBuffWindows = useMemo<AuraWindowWire[] | null>(() => {
+    if (metric !== 'buffs' || !selectedBuff || !currentView) return null
+    const auras = currentView.auras
+    if (!auras || auras.length === 0) return null
+    return auras.filter(w => w.id === selectedBuff)
+  }, [metric, selectedBuff, currentView])
+
+  const selectedBuffScope = useMemo(() => {
+    if (!currentView) return null
+    const t0 = currentView.startTime
+    const durationSec =
+      'duration' in currentView ? currentView.duration
+      : 'activeDurationSec' in currentView ? currentView.activeDurationSec
+      : 0
+    const tEnd = currentView.endTime ?? (t0 + durationSec * 1000)
+    return { t0, tEnd }
+  }, [currentView])
+
   const [hover, setHover] = useState<HoverState | null>(null)
   const [barHover, setBarHover] = useState<BarHoverState | null>(null)
+  // Drag-select state. Both fields are canvas-CSS-pixel x coordinates (relative
+  // to the canvas left edge). A drag is "active" whenever this is non-null; on
+  // mouseup we decide whether to commit (movement past MIN_DRAG_PX) or discard
+  // (treat as a click and leave hover/focus behaviors to the existing handlers).
+  const [drag, setDrag] = useState<{ startX: number; currentX: number } | null>(null)
 
   const isBar = metric === 'deaths' || metric === 'interrupts'
+  const isBuffs = metric === 'buffs'
+  const dragEnabled = !inactive && !isBar && mode === 'full'
+
+  // Buffs-legend toggle semantics are inverted vs damage/healing: both lines
+  // are ON by default, and clicking a legend entry HIDES that line. Keeping
+  // the existing store-backed focus Set for persistence — "presence in set"
+  // means "hidden" for buffs, "focused" for damage/healing. This preserves
+  // the shared toggleFocus setter without a parallel store field.
+  const focused = useMemo<Set<string>>(() => {
+    if (!isBuffs) return storedFocused
+    const visible = new Set<string>()
+    if (!storedFocused.has(BUFFS_DAMAGE_KEY)) visible.add(BUFFS_DAMAGE_KEY)
+    if (!storedFocused.has(BUFFS_HEALING_KEY)) visible.add(BUFFS_HEALING_KEY)
+    return visible
+  }, [storedFocused, isBuffs])
 
   // Bar data — bucketed counts plus per-bucket tooltip records. Computed once
   // per metric/players/duration change so the renderer and the hover tooltip
@@ -187,15 +252,36 @@ export function GraphContainer({ metric, players, duration }: Props) {
 
   // Line data — generated once per metric/players/duration change and shared
   // between the canvas renderer and the hover tooltip so both read identical
-  // slice values.
+  // slice values. Buffs mode produces two aggregate series (group DPS + HPS)
+  // instead of the per-player top-5; damage/healing stays on the per-player
+  // path.
   const lineData = useMemo<LineData | null>(() => {
     if (isBar) return null
-    const rateFn = metric === 'damage' ? (p: PlayerSnapshot) => p.dps : (p: PlayerSnapshot) => p.hps
-    const sorted = [...playerList].sort((a, b) => rateFn(b) - rateFn(a)).slice(0, 5)
-    if (sorted.length === 0 || rateFn(sorted[0]) === 0) return null
 
     const bucketSec = getLineBucketSec(duration)
     const points = Math.max(4, Math.ceil(duration / bucketSec))
+
+    if (isBuffs) {
+      const groupDps = playerList.reduce((s, p) => s + p.dps, 0)
+      const groupHps = playerList.reduce((s, p) => s + p.hps, 0)
+      if (groupDps === 0 && groupHps === 0) return null
+      // Deterministic-per-series synthetic data, same generator as damage/healing.
+      // Real server-bucketed data will replace both once the pipeline lands.
+      const series: SeriesEntry[] = [
+        { name: BUFFS_DAMAGE_KEY,  displayName: 'Damage',  data: generateSeries(groupDps, BUFFS_DAMAGE_KEY,  points), color: BUFFS_DAMAGE_COLOR  },
+        { name: BUFFS_HEALING_KEY, displayName: 'Healing', data: generateSeries(groupHps, BUFFS_HEALING_KEY, points), color: BUFFS_HEALING_COLOR },
+      ]
+      let maxVal = 0
+      series.forEach(s => s.data.forEach(v => { if (v > maxVal) maxVal = v }))
+      maxVal = (maxVal || 1) * 1.1
+      // No group-avg line in buffs mode — the two series already represent
+      // the group. Empty avgData is respected by drawLineGraph below.
+      return { series, avgData: [], points, bucketSec, maxVal }
+    }
+
+    const rateFn = metric === 'damage' ? (p: PlayerSnapshot) => p.dps : (p: PlayerSnapshot) => p.hps
+    const sorted = [...playerList].sort((a, b) => rateFn(b) - rateFn(a)).slice(0, 5)
+    if (sorted.length === 0 || rateFn(sorted[0]) === 0) return null
 
     const series: SeriesEntry[] = sorted.map(p => {
       const specId = resolveSpecId(playerSpecs, p.name, p.specId)
@@ -219,7 +305,7 @@ export function GraphContainer({ metric, players, duration }: Props) {
     maxVal *= 1.1
 
     return { series, avgData, points, bucketSec, maxVal }
-  }, [isBar, metric, playerList, playerSpecs, duration])
+  }, [isBar, isBuffs, metric, playerList, playerSpecs, duration])
 
   // Clear hover state when the underlying data goes away (e.g. switching to a
   // bar metric). The slice/bucket index would otherwise point into a stale series.
@@ -229,6 +315,53 @@ export function GraphContainer({ metric, players, duration }: Props) {
   useEffect(() => {
     if (!barData) setBarHover(null)
   }, [barData])
+
+  // Cancel any in-flight drag when the underlying line data vanishes (e.g. the
+  // user navigates to a different scope mid-drag) or the graph flips into its
+  // inactive placeholder state. Without this, a silent mouseup would still
+  // commit a TimeWindow filter against the wrong scope.
+  useEffect(() => {
+    if ((!lineData || inactive) && drag) setDrag(null)
+  }, [lineData, inactive, drag])
+
+  // Window-level mouseup so a drag that escapes the canvas still commits. Only
+  // bound while a drag is active; tears down immediately after. The commit
+  // logic: short drags (<MIN_DRAG_PX) are treated as clicks and discarded so
+  // they don't accidentally clobber an existing TimeWindow filter.
+  useEffect(() => {
+    if (!drag) return
+    const canvas = canvasRef.current
+    if (!canvas) return
+
+    const onUp = () => {
+      const rect = canvas.getBoundingClientRect()
+      const pixelDelta = Math.abs(drag.currentX - drag.startX)
+      if (pixelDelta < MIN_DRAG_PX) {
+        setDrag(null)
+        return
+      }
+      // Inline pixel→seconds conversion so this effect closure doesn't depend
+      // on the un-memoized helper (would re-bind every render). Same math as
+      // secondsFromCanvasX — if you change one, change the other.
+      const plotW = rect.width - PAD.left - PAD.right
+      const toSec = (xCss: number) => {
+        if (plotW <= 0) return 0
+        const xInPlot = Math.max(0, Math.min(plotW, xCss - PAD.left))
+        return (xInPlot / plotW) * duration
+      }
+      const startSec = toSec(Math.min(drag.startX, drag.currentX))
+      const endSec = toSec(Math.max(drag.startX, drag.currentX))
+      // Guard against zero-width after rounding/clamping (happens when the
+      // whole drag lives in the padding region on a tiny canvas).
+      if (endSec > startSec) {
+        setTimeWindowFilter({ startSec, endSec })
+      }
+      setDrag(null)
+    }
+
+    window.addEventListener('mouseup', onUp)
+    return () => window.removeEventListener('mouseup', onUp)
+  }, [drag, duration, setTimeWindowFilter])
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current
@@ -244,6 +377,11 @@ export function GraphContainer({ metric, players, duration }: Props) {
     ctx.scale(dpr, dpr)
     ctx.clearRect(0, 0, w, h)
 
+    if (inactive) {
+      drawInactiveState(ctx, w, h)
+      return
+    }
+
     const plotW = w - PAD.left - PAD.right
     const plotH = h - PAD.top - PAD.bottom
 
@@ -251,11 +389,30 @@ export function GraphContainer({ metric, players, duration }: Props) {
       if (barData) drawBars(ctx, h, plotW, plotH, barData, timeOffset, barHover?.bucket ?? null, barHover?.seriesIndex ?? null)
       else drawEmptyState(ctx, w, h)
     } else if (lineData) {
-      drawLineGraph(ctx, h, plotW, plotH, lineData, focused, duration, timeOffset, hover?.slice ?? null)
+      // Suppress the hover crosshair during an active drag — the drag rect
+      // becomes the primary visual, and the crosshair would clutter it.
+      const hoverSlice = drag ? null : (hover?.slice ?? null)
+      drawLineGraph(ctx, h, plotW, plotH, lineData, focused, duration, timeOffset, hoverSlice, isBuffs)
+
+      // Selected-buff uptime band: render beneath the drag/time-window
+      // overlays so those still win visually when both are active.
+      if (isBuffs && selectedBuffWindows && selectedBuffScope) {
+        drawBuffUptimeBand(ctx, plotW, plotH, selectedBuffWindows, selectedBuffScope.t0, selectedBuffScope.tEnd)
+      }
+
+      // Overlay stack on top of the line graph:
+      //   1. An active drag always wins — shows the live selection rect only.
+      //   2. Otherwise, if a TimeWindow filter is committed, shade outside
+      //      the window so the selected band stays bright.
+      if (drag) {
+        drawDragRect(ctx, plotW, plotH, drag)
+      } else if (timeWindowFilter && duration > 0) {
+        shadeOutsideWindow(ctx, plotW, plotH, duration, timeWindowFilter.startSec, timeWindowFilter.endSec)
+      }
     } else {
       drawEmptyState(ctx, w, h)
     }
-  }, [isBar, barData, lineData, focused, duration, timeOffset, hover, barHover])
+  }, [isBar, isBuffs, barData, lineData, focused, duration, timeOffset, hover, barHover, inactive, drag, timeWindowFilter, selectedBuffWindows, selectedBuffScope])
 
   useEffect(() => {
     draw()
@@ -272,12 +429,45 @@ export function GraphContainer({ metric, players, duration }: Props) {
   const title = metric === 'damage' ? 'DPS Over Time'
     : metric === 'healing' ? 'HPS Over Time'
     : metric === 'deaths' ? 'Deaths Over Time'
+    : metric === 'buffs' ? 'Throughput Over Time'
     : 'Interrupts Over Time'
 
+  // Canvas CSS-pixel x (relative to canvas left edge) of a mouse event.
+  // Clamped so a drag that escapes the plot still produces a usable selection.
+  function canvasXFromEvent(e: MouseEvent | React.MouseEvent, rect: DOMRect): number {
+    return Math.max(PAD.left, Math.min(rect.width - PAD.right, e.clientX - rect.left))
+  }
+
+  function handleMouseDown(e: React.MouseEvent<HTMLCanvasElement>) {
+    // Guard: inactive graph, non-line graphs, Summary mode, and empty data
+    // all skip drag. Only primary button starts a selection; other buttons
+    // pass through so right-click menus still work.
+    if (!dragEnabled || !lineData || e.button !== 0) return
+    const rect = e.currentTarget.getBoundingClientRect()
+    const xInPlot = e.clientX - rect.left - PAD.left
+    const plotW = rect.width - PAD.left - PAD.right
+    if (xInPlot < 0 || xInPlot > plotW) return
+
+    const xCss = canvasXFromEvent(e, rect)
+    setDrag({ startX: xCss, currentX: xCss })
+    // Clear hover so the crosshair doesn't flash during the drag; the draw()
+    // branch suppresses it via `drag` anyway, but clearing keeps state tidy.
+    if (hover) setHover(null)
+  }
+
   function handleMouseMove(e: React.MouseEvent<HTMLCanvasElement>) {
+    if (inactive) return
     const rect = e.currentTarget.getBoundingClientRect()
     const plotW = rect.width - PAD.left - PAD.right
     const xInPlot = e.clientX - rect.left - PAD.left
+
+    // Active drag: extend the selection. The window-level mouseup listener
+    // below handles commit/discard when the button is released.
+    if (drag) {
+      const xCss = canvasXFromEvent(e, rect)
+      if (xCss !== drag.currentX) setDrag({ startX: drag.startX, currentX: xCss })
+      return
+    }
 
     if (lineData) {
       if (xInPlot < 0 || xInPlot > plotW) {
@@ -384,7 +574,7 @@ export function GraphContainer({ metric, players, duration }: Props) {
           {title}
         </div>
         <div style={{ display: 'flex', gap: 12 }}>
-          {legendEntries.map(e => {
+          {!inactive && legendEntries.map(e => {
             const isFocused = isBar || focused.has(e.key)
             return (
               <div
@@ -412,9 +602,21 @@ export function GraphContainer({ metric, players, duration }: Props) {
       <div style={{ position: 'relative' }}>
         <canvas
           ref={canvasRef}
+          onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseLeave={handleMouseLeave}
-          style={{ width: '100%', height: 120, display: 'block' }}
+          style={{
+            width: '100%',
+            height: 120,
+            display: 'block',
+            // Crosshair only when drag-select is actually available — it
+            // signals a distinct affordance, so we don't want to imply it in
+            // Summary mode, on bar metrics, or over inactive/empty graphs.
+            cursor: dragEnabled && lineData ? 'crosshair' : 'default',
+            // Prevent the browser's default text-selection-on-drag from
+            // highlighting legend/title text during a range selection.
+            userSelect: drag ? 'none' : 'auto',
+          }}
         />
         {tooltip && hover && (
           <div
@@ -512,10 +714,18 @@ interface LegendEntry { key: string; label: string; color: string }
 function buildLegend(
   playerList: PlayerSnapshot[],
   playerSpecs: Record<string, number>,
-  metric: 'damage' | 'healing' | 'deaths' | 'interrupts',
+  metric: 'damage' | 'healing' | 'deaths' | 'interrupts' | 'buffs',
   isBar: boolean,
 ): LegendEntry[] {
   const entries: LegendEntry[] = []
+
+  if (metric === 'buffs') {
+    // Group-aggregate lines: no per-player entries, no group-avg. Keys match
+    // the series names in lineData so the focus Set governs visibility.
+    entries.push({ key: BUFFS_DAMAGE_KEY,  label: 'Damage',  color: BUFFS_DAMAGE_COLOR })
+    entries.push({ key: BUFFS_HEALING_KEY, label: 'Healing', color: BUFFS_HEALING_COLOR })
+    return entries
+  }
 
   if (isBar) {
     const valFn = metric === 'deaths'
@@ -548,19 +758,25 @@ function drawLineGraph(
   duration: number,
   timeOffset: number,
   hoverSlice: number | null,
+  // Buffs mode: hide the y-axis labels and skip the group-avg render. Absolute
+  // DPS/HPS values on a shared axis are misleading (different magnitudes), so
+  // we show the curves as shape comparisons only.
+  suppressYAxis: boolean = false,
 ) {
   const { series, avgData, points, maxVal } = lineData
 
   // Grid lines
   drawGrid(ctx, plotW, plotH, 4)
 
-  // Y-axis labels
-  ctx.fillStyle = '#a8aab4'
-  ctx.font = MONO_FONT
-  ctx.textAlign = 'right'
-  for (let i = 0; i <= 4; i++) {
-    const y = PAD.top + plotH * (1 - i / 4)
-    ctx.fillText(formatNum(Math.round(maxVal * i / 4)), PAD.left - 4, y + 3)
+  // Y-axis labels — suppressed for buffs mode.
+  if (!suppressYAxis) {
+    ctx.fillStyle = '#a8aab4'
+    ctx.font = MONO_FONT
+    ctx.textAlign = 'right'
+    for (let i = 0; i <= 4; i++) {
+      const y = PAD.top + plotH * (1 - i / 4)
+      ctx.fillText(formatNum(Math.round(maxVal * i / 4)), PAD.left - 4, y + 3)
+    }
   }
 
   // X-axis labels
@@ -569,36 +785,41 @@ function drawLineGraph(
   const xOf = (i: number) => PAD.left + (i / points) * plotW
   const yOf = (v: number) => PAD.top + plotH * (1 - v / maxVal)
 
-  // Group average (solid amber with gradient fill) — drawn first so player lines sit on top.
-  const avgFocused = focused.has(GRAPH_GROUP_AVG_KEY)
-  const avgAlpha = avgFocused ? 0.9 : UNFOCUSED_ALPHA
-  const tracePath = () => {
-    ctx.beginPath()
-    ctx.moveTo(xOf(0), yOf(avgData[0]))
-    for (let i = 1; i <= points; i++) {
-      const x0 = xOf(i - 1), y0 = yOf(avgData[i - 1])
-      const x1 = xOf(i), y1 = yOf(avgData[i])
-      const cpx = (x0 + x1) / 2
-      ctx.bezierCurveTo(cpx, y0, cpx, y1, x1, y1)
+  // Group average (solid amber with gradient fill) — drawn first so player
+  // lines sit on top. Absent in buffs mode: avgData is empty so the whole
+  // block no-ops.
+  const hasAvg = avgData.length > 0
+  const avgFocused = hasAvg && focused.has(GRAPH_GROUP_AVG_KEY)
+  if (hasAvg) {
+    const avgAlpha = avgFocused ? 0.9 : UNFOCUSED_ALPHA
+    const tracePath = () => {
+      ctx.beginPath()
+      ctx.moveTo(xOf(0), yOf(avgData[0]))
+      for (let i = 1; i <= points; i++) {
+        const x0 = xOf(i - 1), y0 = yOf(avgData[i - 1])
+        const x1 = xOf(i), y1 = yOf(avgData[i])
+        const cpx = (x0 + x1) / 2
+        ctx.bezierCurveTo(cpx, y0, cpx, y1, x1, y1)
+      }
     }
+
+    const gradient = ctx.createLinearGradient(0, PAD.top, 0, PAD.top + plotH)
+    gradient.addColorStop(0, `rgba(245, 158, 11, ${0.22 * avgAlpha})`)
+    gradient.addColorStop(1, 'rgba(245, 158, 11, 0)')
+    ctx.fillStyle = gradient
+    tracePath()
+    ctx.lineTo(xOf(points), PAD.top + plotH)
+    ctx.lineTo(xOf(0), PAD.top + plotH)
+    ctx.closePath()
+    ctx.fill()
+
+    ctx.strokeStyle = GROUP_AVG_COLOR
+    ctx.lineWidth = 2
+    ctx.globalAlpha = avgAlpha
+    tracePath()
+    ctx.stroke()
+    ctx.globalAlpha = 1
   }
-
-  const gradient = ctx.createLinearGradient(0, PAD.top, 0, PAD.top + plotH)
-  gradient.addColorStop(0, `rgba(245, 158, 11, ${0.22 * avgAlpha})`)
-  gradient.addColorStop(1, 'rgba(245, 158, 11, 0)')
-  ctx.fillStyle = gradient
-  tracePath()
-  ctx.lineTo(xOf(points), PAD.top + plotH)
-  ctx.lineTo(xOf(0), PAD.top + plotH)
-  ctx.closePath()
-  ctx.fill()
-
-  ctx.strokeStyle = GROUP_AVG_COLOR
-  ctx.lineWidth = 2
-  ctx.globalAlpha = avgAlpha
-  tracePath()
-  ctx.stroke()
-  ctx.globalAlpha = 1
 
   // Player lines (smooth cubic bezier). Draw unfocused first so focused lines sit on top.
   const ordered = series
@@ -649,6 +870,130 @@ function drawDot(ctx: CanvasRenderingContext2D, x: number, y: number, color: str
   ctx.beginPath()
   ctx.arc(x, y, 3, 0, Math.PI * 2)
   ctx.fill()
+  ctx.stroke()
+}
+
+// Live drag rectangle drawn during a drag-select. Coordinates come from state
+// in canvas-CSS pixels (relative to the canvas left edge, not the plot area),
+// and are clamped to the plot bounds here so the overlay never bleeds into the
+// y-axis label gutter or the x-axis label strip.
+function drawDragRect(
+  ctx: CanvasRenderingContext2D,
+  plotW: number,
+  plotH: number,
+  drag: { startX: number; currentX: number },
+) {
+  const plotLeft = PAD.left
+  const plotRight = PAD.left + plotW
+  const x0 = Math.max(plotLeft, Math.min(plotRight, Math.min(drag.startX, drag.currentX)))
+  const x1 = Math.max(plotLeft, Math.min(plotRight, Math.max(drag.startX, drag.currentX)))
+  const width = x1 - x0
+  if (width <= 0) return
+
+  ctx.fillStyle = TIME_WINDOW_FILL
+  ctx.fillRect(x0, PAD.top, width, plotH)
+  ctx.strokeStyle = TIME_WINDOW_BORDER
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  ctx.moveTo(x0 + 0.5, PAD.top)
+  ctx.lineTo(x0 + 0.5, PAD.top + plotH)
+  ctx.moveTo(x1 - 0.5, PAD.top)
+  ctx.lineTo(x1 - 0.5, PAD.top + plotH)
+  ctx.stroke()
+}
+
+// Selected-buff uptime highlight. Unions the windows and paints a translucent
+// band across the plot for each continuous uptime interval, letting the user
+// visually correlate "when was X up" with the DPS/HPS curves beneath.
+// Uses the shared amber accent so it reads as "focus this," consistent with
+// the group-avg line's color language.
+function drawBuffUptimeBand(
+  ctx: CanvasRenderingContext2D,
+  plotW: number,
+  plotH: number,
+  windows: AuraWindowWire[],
+  t0Ms: number,
+  tEndMs: number,
+) {
+  const scopeMs = tEndMs - t0Ms
+  if (scopeMs <= 0 || windows.length === 0) return
+
+  const sorted = windows
+    .map<[number, number]>(w => [Math.max(w.s, t0Ms), Math.min(w.e, tEndMs)])
+    .filter(([s, e]) => e > s)
+    .sort((a, b) => a[0] - b[0])
+  if (sorted.length === 0) return
+
+  ctx.save()
+  ctx.fillStyle = 'rgba(245, 158, 11, 0.14)'
+  ctx.strokeStyle = 'rgba(245, 158, 11, 0.50)'
+  ctx.lineWidth = 1
+
+  let curStart = sorted[0][0]
+  let curEnd = sorted[0][1]
+  const flush = () => {
+    const x0 = PAD.left + ((curStart - t0Ms) / scopeMs) * plotW
+    const x1 = PAD.left + ((curEnd - t0Ms) / scopeMs) * plotW
+    const w = Math.max(1, x1 - x0)
+    ctx.fillRect(x0, PAD.top, w, plotH)
+    // Edge ticks on both sides of each run so overlapping bands stay legible.
+    ctx.beginPath()
+    ctx.moveTo(x0 + 0.5, PAD.top)
+    ctx.lineTo(x0 + 0.5, PAD.top + plotH)
+    ctx.moveTo(x1 - 0.5, PAD.top)
+    ctx.lineTo(x1 - 0.5, PAD.top + plotH)
+    ctx.stroke()
+  }
+  for (let i = 1; i < sorted.length; i++) {
+    const [s, e] = sorted[i]
+    if (s <= curEnd) {
+      if (e > curEnd) curEnd = e
+    } else {
+      flush()
+      curStart = s
+      curEnd = e
+    }
+  }
+  flush()
+  ctx.restore()
+}
+
+// Committed TimeWindow indicator: dim the regions OUTSIDE [startSec, endSec]
+// so the selected band stays bright and fully visible. Rendered on top of the
+// line graph but under the hover tooltip.
+function shadeOutsideWindow(
+  ctx: CanvasRenderingContext2D,
+  plotW: number,
+  plotH: number,
+  duration: number,
+  startSec: number,
+  endSec: number,
+) {
+  if (duration <= 0) return
+  const startX = PAD.left + (Math.max(0, startSec) / duration) * plotW
+  const endX = PAD.left + (Math.min(duration, endSec) / duration) * plotW
+  if (endX <= startX) return
+
+  ctx.fillStyle = TIME_WINDOW_SHADE
+  // Left of window
+  if (startX > PAD.left) {
+    ctx.fillRect(PAD.left, PAD.top, startX - PAD.left, plotH)
+  }
+  // Right of window
+  const plotRight = PAD.left + plotW
+  if (endX < plotRight) {
+    ctx.fillRect(endX, PAD.top, plotRight - endX, plotH)
+  }
+
+  // Subtle border markers at the window edges so the band is legible even when
+  // the graph underneath is mostly flat.
+  ctx.strokeStyle = TIME_WINDOW_BORDER
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  ctx.moveTo(startX + 0.5, PAD.top)
+  ctx.lineTo(startX + 0.5, PAD.top + plotH)
+  ctx.moveTo(endX - 0.5, PAD.top)
+  ctx.lineTo(endX - 0.5, PAD.top + plotH)
   ctx.stroke()
 }
 
@@ -763,4 +1108,40 @@ function drawEmptyState(ctx: CanvasRenderingContext2D, w: number, h: number) {
   ctx.font = SANS_FONT
   ctx.textAlign = 'center'
   ctx.fillText('None', w / 2, h / 2 + 4)
+}
+
+function drawInactiveState(ctx: CanvasRenderingContext2D, w: number, h: number) {
+  const plotW = w - PAD.left - PAD.right
+  const plotH = h - PAD.top - PAD.bottom
+
+  // Faint grid lines — same structure as active graph but much subtler.
+  ctx.strokeStyle = 'rgba(255,255,255,0.025)'
+  ctx.lineWidth = 1
+  for (let i = 0; i <= 4; i++) {
+    const y = PAD.top + plotH * (1 - i / 4)
+    ctx.beginPath()
+    ctx.moveTo(PAD.left, y)
+    ctx.lineTo(PAD.left + plotW, y)
+    ctx.stroke()
+  }
+
+  // Decorative sine wave — gives visual rhythm without implying real data.
+  ctx.strokeStyle = 'rgba(255,255,255,0.04)'
+  ctx.lineWidth = 1.5
+  ctx.beginPath()
+  const mid = PAD.top + plotH * 0.5
+  const amp = plotH * 0.18
+  for (let x = 0; x <= plotW; x++) {
+    const t = x / plotW
+    const y = mid - Math.sin(t * Math.PI * 2.5) * amp * (0.5 + 0.5 * Math.sin(t * Math.PI))
+    if (x === 0) ctx.moveTo(PAD.left + x, y)
+    else ctx.lineTo(PAD.left + x, y)
+  }
+  ctx.stroke()
+
+  // Label
+  ctx.fillStyle = 'rgba(168,170,180,0.45)'
+  ctx.font = SANS_FONT
+  ctx.textAlign = 'center'
+  ctx.fillText('Select a segment to view graph', w / 2, PAD.top + plotH * 0.72)
 }

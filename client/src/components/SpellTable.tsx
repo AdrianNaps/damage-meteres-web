@@ -1,6 +1,18 @@
-import type { SpellDamageStats, SpellHealStats, InterruptSpellStats } from '../types'
+import { useMemo } from 'react'
+import type { InterruptSpellStats } from '../types'
 import { useStore } from '../store'
+import type { BreakdownSpellRow } from '../utils/filters'
 import { spellIconUrl } from '../utils/icons'
+
+// All damage/heal spell tables consume BreakdownSpellRow[]. Rows are
+// pre-filtered and pre-sorted by selectPlayerBreakdown so the renderers
+// stay dumb. Crit% / max-hit cells render "—" when the source is the
+// events-driven path (ClientEvent doesn't carry a crit flag yet); the
+// no-filter path projects PlayerSnapshot and populates them.
+//
+// Interrupts still consume PlayerSnapshot.interrupts.{byKicker,byKicked}
+// because the kicked-spell info isn't on ClientEvent. Once it lands the
+// interrupt table can move to the same dumb-renderer model.
 
 function SpellIcon({ spellId }: { spellId: string }) {
   const name = useStore(s => s.spellIcons[spellId])
@@ -67,7 +79,6 @@ const rowStyle: React.CSSProperties = {
   gap: 8,
 }
 
-// Primary: the headline number (total damage, count)
 const primaryCol: React.CSSProperties = {
   fontFamily: 'var(--font-mono)',
   textAlign: 'right',
@@ -77,7 +88,6 @@ const primaryCol: React.CSSProperties = {
   color: 'var(--text-primary)',
 }
 
-// Secondary: supporting stats (hits, crit%, max, overheal%)
 const secondaryCol: React.CSSProperties = {
   fontFamily: 'var(--font-mono)',
   textAlign: 'right',
@@ -102,11 +112,10 @@ function BarFill({ pct, color }: { pct: number; color: string }) {
   )
 }
 
-interface DamageProps { spells: Record<string, SpellDamageStats>; classColor: string }
+interface DamageProps { spells: BreakdownSpellRow[]; classColor: string }
 
 export function DamageSpellTable({ spells, classColor }: DamageProps) {
-  const rows = Object.values(spells).sort((a, b) => b.total - a.total)
-  const topTotal = rows[0]?.total ?? 1
+  const topTotal = spells[0]?.total ?? 1
 
   return (
     <div>
@@ -117,9 +126,9 @@ export function DamageSpellTable({ spells, classColor }: DamageProps) {
         <span style={{ width: 44, textAlign: 'right' }}>Crit%</span>
         <span style={{ width: 48, textAlign: 'right' }}>Max</span>
       </div>
-      {rows.map(s => (
+      {spells.map(s => (
         <div
-          key={s.spellId}
+          key={s.spellId || s.spellName}
           style={rowStyle}
           onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-hover)' }}
           onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
@@ -131,13 +140,222 @@ export function DamageSpellTable({ spells, classColor }: DamageProps) {
           </div>
           <span style={{ ...primaryCol, width: 56 }}>{formatNum(s.total)}</span>
           <span style={{ ...secondaryCol, width: 36 }}>{s.hitCount}</span>
-          <span style={{ ...secondaryCol, width: 44 }}>{pct(s.critCount, s.hitCount)}</span>
-          <span style={{ ...secondaryCol, width: 48 }}>{formatNum(s.normalMax)}</span>
+          <span style={{ ...secondaryCol, width: 44 }}>{s.critCount === undefined ? '—' : pct(s.critCount, s.hitCount)}</span>
+          <span style={{ ...secondaryCol, width: 48 }}>{s.normalMax === undefined ? '—' : formatNum(s.normalMax)}</span>
         </div>
       ))}
     </div>
   )
 }
+
+interface HealProps { spells: BreakdownSpellRow[]; classColor: string }
+
+export function HealSpellTable({ spells, classColor }: HealProps) {
+  const topTotal = spells[0]?.total ?? 1
+
+  return (
+    <div>
+      <div style={headerStyle}>
+        <span style={{ flex: 1 }}>Spell</span>
+        <span style={{ width: 56, textAlign: 'right' }}>Total</span>
+        <span style={{ width: 36, textAlign: 'right' }}>Hits</span>
+        <span style={{ width: 44, textAlign: 'right' }}>Crit%</span>
+        <span style={{ width: 56, textAlign: 'right' }}>Ovheal%</span>
+      </div>
+      {spells.map(s => (
+        <div
+          key={s.spellId || s.spellName}
+          style={rowStyle}
+          onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-hover)' }}
+          onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
+        >
+          <BarFill pct={(s.total / topTotal) * 100} color={classColor} />
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 6, position: 'relative', overflow: 'hidden' }}>
+            <SpellIcon spellId={s.spellId} />
+            <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.spellName}</span>
+          </div>
+          <span style={{ ...primaryCol, width: 56 }}>{formatNum(s.total)}</span>
+          <span style={{ ...secondaryCol, width: 36 }}>{s.hitCount}</span>
+          <span style={{ ...secondaryCol, width: 44 }}>{s.critCount === undefined ? '—' : pct(s.critCount, s.hitCount)}</span>
+          <span style={{ ...secondaryCol, width: 56 }}>{s.overheal === undefined ? '—' : pct(s.overheal, s.total + s.overheal)}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// ——— Full-mode spell tables ———
+// Wider layout used when the drill panel is in Full mode. Columns match the
+// staging mock's full-drill-panel minus Casts/Avg-per-cast (no cast count on
+// the wire yet — tracked to add later). Bar is scaled to the max-share row so
+// mid-pack rows read sharper than a raw-total scale would give them.
+
+const fullHeaderStyle: React.CSSProperties = {
+  display: 'grid',
+  alignItems: 'center',
+  padding: '6px 16px',
+  fontSize: 10,
+  fontWeight: 500,
+  textTransform: 'uppercase',
+  letterSpacing: '0.06em',
+  color: 'var(--text-muted)',
+  borderBottom: '1px solid var(--border-default)',
+}
+
+const fullRowStyle: React.CSSProperties = {
+  position: 'relative',
+  display: 'grid',
+  alignItems: 'center',
+  padding: '4px 16px',
+  fontSize: 12,
+  borderBottom: '1px solid var(--border-subtle)',
+  overflow: 'hidden',
+}
+
+const fullMonoPrimary: React.CSSProperties = {
+  fontFamily: 'var(--font-mono)',
+  textAlign: 'right',
+  color: 'var(--text-primary)',
+  fontWeight: 600,
+}
+
+const fullMonoSecondary: React.CSSProperties = {
+  fontFamily: 'var(--font-mono)',
+  textAlign: 'right',
+  color: 'var(--text-secondary)',
+}
+
+const fullMonoMuted: React.CSSProperties = {
+  fontFamily: 'var(--font-mono)',
+  textAlign: 'right',
+  color: 'var(--text-muted)',
+}
+
+const fullMonoCrit: React.CSSProperties = {
+  fontFamily: 'var(--font-mono)',
+  textAlign: 'right',
+  color: 'var(--data-crit)',
+}
+
+const DAMAGE_FULL_COLUMNS = '1fr 64px 44px 44px 56px 44px 60px'
+const HEAL_FULL_COLUMNS = '1fr 64px 44px 44px 56px 44px 60px'
+
+interface FullDamageProps {
+  spells: BreakdownSpellRow[]
+  classColor: string
+  duration: number
+  // Denominator for the % column. Pass breakdown.total so percentages always
+  // sum to 100% across visible rows, whether or not filters are active.
+  playerTotal: number
+}
+
+export function FullDamageSpellTable({ spells, classColor, duration, playerTotal }: FullDamageProps) {
+  const totalForPct = playerTotal > 0 ? playerTotal : spells.reduce((s, r) => s + r.total, 0)
+  const topShare = spells[0] && totalForPct > 0 ? spells[0].total / totalForPct : 0
+
+  return (
+    <div>
+      <div style={{ ...fullHeaderStyle, gridTemplateColumns: DAMAGE_FULL_COLUMNS }}>
+        <span>Ability</span>
+        <span style={{ textAlign: 'right' }}>Amount</span>
+        <span style={{ textAlign: 'right' }}>%</span>
+        <span style={{ textAlign: 'right' }}>Hits</span>
+        <span style={{ textAlign: 'right' }}>Avg Hit</span>
+        <span style={{ textAlign: 'right' }}>Crit</span>
+        <span style={{ textAlign: 'right' }}>DPS</span>
+      </div>
+      {spells.map(s => {
+        const share = totalForPct > 0 ? s.total / totalForPct : 0
+        const barPct = topShare > 0 ? (share / topShare) * 100 : 0
+        const avgHit = s.hitCount > 0 ? s.total / s.hitCount : 0
+        const dps = duration > 0 ? s.total / duration : 0
+        const critPct = s.critCount === undefined ? null
+          : s.hitCount > 0 ? Math.round((s.critCount / s.hitCount) * 100) : 0
+        return (
+          <div
+            key={s.spellId || s.spellName}
+            style={{ ...fullRowStyle, gridTemplateColumns: DAMAGE_FULL_COLUMNS }}
+            onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-hover)' }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
+          >
+            <BarFill pct={barPct} color={classColor} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, position: 'relative', overflow: 'hidden', minWidth: 0 }}>
+              <SpellIcon spellId={s.spellId} />
+              <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.spellName}</span>
+            </div>
+            <span style={fullMonoPrimary}>{formatNum(s.total)}</span>
+            <span style={fullMonoSecondary}>{(share * 100).toFixed(0)}%</span>
+            <span style={fullMonoSecondary}>{s.hitCount || '—'}</span>
+            <span style={fullMonoMuted}>{s.hitCount > 0 ? formatNum(avgHit) : '—'}</span>
+            <span style={fullMonoCrit}>{critPct === null ? '—' : `${critPct}%`}</span>
+            <span style={fullMonoPrimary}>{formatNum(dps)}</span>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+interface FullHealProps {
+  spells: BreakdownSpellRow[]
+  classColor: string
+  duration: number
+  playerTotal: number
+}
+
+export function FullHealSpellTable({ spells, classColor, duration, playerTotal }: FullHealProps) {
+  const totalForPct = playerTotal > 0 ? playerTotal : spells.reduce((s, r) => s + r.total, 0)
+  const topShare = spells[0] && totalForPct > 0 ? spells[0].total / totalForPct : 0
+
+  return (
+    <div>
+      <div style={{ ...fullHeaderStyle, gridTemplateColumns: HEAL_FULL_COLUMNS }}>
+        <span>Ability</span>
+        <span style={{ textAlign: 'right' }}>Amount</span>
+        <span style={{ textAlign: 'right' }}>%</span>
+        <span style={{ textAlign: 'right' }}>Hits</span>
+        <span style={{ textAlign: 'right' }}>Avg Hit</span>
+        <span style={{ textAlign: 'right' }}>Crit</span>
+        <span style={{ textAlign: 'right' }}>HPS</span>
+      </div>
+      {spells.map(s => {
+        const share = totalForPct > 0 ? s.total / totalForPct : 0
+        const barPct = topShare > 0 ? (share / topShare) * 100 : 0
+        const avgHit = s.hitCount > 0 ? s.total / s.hitCount : 0
+        const hps = duration > 0 ? s.total / duration : 0
+        const critPct = s.critCount === undefined ? null
+          : s.hitCount > 0 ? Math.round((s.critCount / s.hitCount) * 100) : 0
+        return (
+          <div
+            key={s.spellId || s.spellName}
+            style={{ ...fullRowStyle, gridTemplateColumns: HEAL_FULL_COLUMNS }}
+            onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-hover)' }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
+          >
+            <BarFill pct={barPct} color={classColor} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, position: 'relative', overflow: 'hidden', minWidth: 0 }}>
+              <SpellIcon spellId={s.spellId} />
+              <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.spellName}</span>
+            </div>
+            <span style={fullMonoPrimary}>{formatNum(s.total)}</span>
+            <span style={fullMonoSecondary}>{(share * 100).toFixed(0)}%</span>
+            <span style={fullMonoSecondary}>{s.hitCount || '—'}</span>
+            <span style={fullMonoMuted}>{s.hitCount > 0 ? formatNum(avgHit) : '—'}</span>
+            <span style={fullMonoCrit}>{critPct === null ? '—' : `${critPct}%`}</span>
+            <span style={fullMonoPrimary}>{formatNum(hps)}</span>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+// ——— Interrupt table (still on PlayerSnapshot) ———
+// ClientEvent doesn't carry the kicked-spell name, so byKicked can't be
+// reconstructed from events. Until the wire grows that field, interrupts
+// stay on the pre-aggregated path with an Ability-axis row hide for
+// consistency with the meter chips. Source filter is implicit (player drill).
+// Target filter doesn't apply here for the same wire-shape reason.
 
 interface InterruptProps {
   spells: Record<string, InterruptSpellStats>
@@ -146,7 +364,12 @@ interface InterruptProps {
 }
 
 export function InterruptSpellTable({ spells, heading, classColor }: InterruptProps) {
-  const rows = Object.values(spells).sort((a, b) => b.count - a.count)
+  const filterAbility = useStore(s => s.filters.Ability)
+  const rows = useMemo(() => {
+    const arr = Object.values(spells)
+    const visible = filterAbility ? arr.filter(s => filterAbility.includes(s.spellName)) : arr
+    return [...visible].sort((a, b) => b.count - a.count)
+  }, [spells, filterAbility])
   const total = rows.reduce((sum, s) => sum + s.count, 0)
   const topCount = rows[0]?.count ?? 1
 
@@ -177,43 +400,6 @@ export function InterruptSpellTable({ spells, heading, classColor }: InterruptPr
           </div>
         ))
       )}
-    </div>
-  )
-}
-
-interface HealProps { spells: Record<string, SpellHealStats>; classColor: string }
-
-export function HealSpellTable({ spells, classColor }: HealProps) {
-  const rows = Object.values(spells).sort((a, b) => b.total - a.total)
-  const topTotal = rows[0]?.total ?? 1
-
-  return (
-    <div>
-      <div style={headerStyle}>
-        <span style={{ flex: 1 }}>Spell</span>
-        <span style={{ width: 56, textAlign: 'right' }}>Total</span>
-        <span style={{ width: 36, textAlign: 'right' }}>Hits</span>
-        <span style={{ width: 44, textAlign: 'right' }}>Crit%</span>
-        <span style={{ width: 56, textAlign: 'right' }}>Ovheal%</span>
-      </div>
-      {rows.map(s => (
-        <div
-          key={s.spellId}
-          style={rowStyle}
-          onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-hover)' }}
-          onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
-        >
-          <BarFill pct={(s.total / topTotal) * 100} color={classColor} />
-          <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 6, position: 'relative', overflow: 'hidden' }}>
-            <SpellIcon spellId={s.spellId} />
-            <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.spellName}</span>
-          </div>
-          <span style={{ ...primaryCol, width: 56 }}>{formatNum(s.total)}</span>
-          <span style={{ ...secondaryCol, width: 36 }}>{s.hitCount}</span>
-          <span style={{ ...secondaryCol, width: 44 }}>{pct(s.critCount, s.hitCount)}</span>
-          <span style={{ ...secondaryCol, width: 56 }}>{pct(s.overheal, s.total + s.overheal)}</span>
-        </div>
-      ))}
     </div>
   )
 }
