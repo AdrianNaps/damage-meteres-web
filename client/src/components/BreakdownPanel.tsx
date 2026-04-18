@@ -1,12 +1,18 @@
 import { useEffect, useState } from 'react'
 import { useStore, selectCurrentView, resolveSpecId } from '../store'
 import { getClassColor } from './PlayerRow'
-import { DamageSpellTable, HealSpellTable, InterruptSpellTable } from './SpellTable'
+import {
+  DamageSpellTable,
+  HealSpellTable,
+  InterruptSpellTable,
+  FullDamageSpellTable,
+  FullHealSpellTable,
+} from './SpellTable'
 import { TargetTable, type TargetRowStyle } from './TargetTable'
-import { TargetDrillDown } from './TargetDrillDown'
-import { requestTargetDetail } from '../ws'
+import { TargetScopedSpellTable, FullTargetScopedSpellTable } from './SpellTable'
+import { specIconUrl } from '../utils/icons'
 import { formatNum, shortName } from '../utils/format'
-import type { SegmentSnapshot, KeyRunSnapshot, BossSectionSnapshot } from '../types'
+import type { ClientEvent } from '../types'
 
 const METRIC_LABELS: Record<string, string> = {
   damage: 'Damage',
@@ -15,46 +21,28 @@ const METRIC_LABELS: Record<string, string> = {
   interrupts: 'Interrupts',
 }
 
-// Exhaustive container-id resolver — the `never` fallthrough will fail the
-// build if a new SegmentSnapshot/KeyRunSnapshot/BossSectionSnapshot variant is
-// added without wiring its id here.
-function resolveViewId(view: SegmentSnapshot | KeyRunSnapshot | BossSectionSnapshot): string {
-  switch (view.type) {
-    case 'segment':       return view.id
-    case 'key_run':       return view.keyRunId
-    case 'boss_section':  return view.bossSectionId
-    default: {
-      const _exhaustive: never = view
-      return _exhaustive
-    }
-  }
-}
-
 export function BreakdownPanel() {
   const selectedPlayer = useStore(s => s.selectedPlayer)
   const currentView = useStore(selectCurrentView)
   const metric = useStore(s => s.drillMetric ?? s.metric)
+  const mode = useStore(s => s.mode)
   const setSelectedPlayer = useStore(s => s.setSelectedPlayer)
   const [viewMode, setViewMode] = useState<'spells' | 'targets'>('spells')
   const [drillTarget, setDrillTarget] = useState<string | null>(null)
-  const targetDetail = useStore(s => s.targetDetail)
-  const setTargetDetail = useStore(s => s.setTargetDetail)
   const playerSpecs = useStore(s => s.playerSpecs)
 
   // Reset drill state when the player OR the metric changes — switching
-  // damage→healing on the same player would otherwise leave stale damage-world
-  // sources visible under a "Healing" heading.
+  // damage→healing on the same player would otherwise leave a stale damage-
+  // world target visible under a "Healing" heading.
   useEffect(() => {
     setDrillTarget(null)
-    setTargetDetail(null)
-  }, [selectedPlayer, metric, setTargetDetail])
+  }, [selectedPlayer, metric])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         if (drillTarget) {
           setDrillTarget(null)
-          setTargetDetail(null)
         } else {
           setSelectedPlayer(null)
         }
@@ -62,7 +50,7 @@ export function BreakdownPanel() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [drillTarget, setSelectedPlayer, setTargetDetail])
+  }, [drillTarget, setSelectedPlayer])
 
   if (!selectedPlayer || !currentView) return null
 
@@ -78,13 +66,18 @@ export function BreakdownPanel() {
     metric === 'damage' ? player.damage.total
     : metric === 'healing' ? player.healing.total
     : player.interrupts.total
-  const duration = (currentView as { duration?: number }).duration ?? 0
+  // Duration shape varies by view: segments carry `duration`, while key-run
+  // and boss-section aggregates carry `activeDurationSec`. Per-spell DPS/HPS
+  // cells come out as 0 on aggregate views if we don't handle both.
+  const duration =
+    'duration' in currentView ? currentView.duration
+    : 'activeDurationSec' in currentView ? currentView.activeDurationSec
+    : 0
 
   function handleModeChange(mode: 'spells' | 'targets') {
     setViewMode(mode)
     if (mode !== 'targets') {
       setDrillTarget(null)
-      setTargetDetail(null)
     }
   }
 
@@ -100,28 +93,46 @@ export function BreakdownPanel() {
     }
     const isHealing = metric === 'healing'
     // Player-aware row decorator: resolves healing sources/targets to their own
-    // class color, spec icon, and short name. Reused by both the list and the
-    // drill-down heading so the whole healing flow reads consistently.
+    // class color, spec icon, and short name. Reused by the targets list and
+    // the drill-down heading so the whole healing flow reads consistently.
     const playerRowStyle = (name: string): TargetRowStyle | null => {
       const specId = resolveSpecId(playerSpecs, name)
       if (specId === undefined) return null
       return { displayName: shortName(name), color: getClassColor(specId), specId }
     }
 
-    if (drillTarget && targetDetail?.targetName === drillTarget) {
+    if (drillTarget) {
+      const events: ClientEvent[] = currentView.events ?? []
+      const kind = isHealing ? 'heal' : 'damage'
+      const headingStyle = isHealing ? playerRowStyle(drillTarget) : null
       return (
-        <TargetDrillDown
-          detail={targetDetail}
-          classColor={color}
-          resolveRow={isHealing ? playerRowStyle : undefined}
-          headingStyle={isHealing ? playerRowStyle(targetDetail.targetName) : undefined}
-          onBack={() => { setDrillTarget(null); setTargetDetail(null) }}
-        />
+        <TargetScopedView
+          targetName={drillTarget}
+          headingStyle={headingStyle}
+          onBack={() => setDrillTarget(null)}
+        >
+          {mode === 'full' ? (
+            <FullTargetScopedSpellTable
+              events={events}
+              playerName={player.name}
+              targetName={drillTarget}
+              kind={kind}
+              classColor={color}
+              duration={duration}
+            />
+          ) : (
+            <TargetScopedSpellTable
+              events={events}
+              playerName={player.name}
+              targetName={drillTarget}
+              kind={kind}
+              classColor={color}
+            />
+          )}
+        </TargetScopedView>
       )
     }
     if (viewMode === 'targets') {
-      const viewType = currentView.type
-      const viewId = resolveViewId(currentView)
       const resolveRow = isHealing ? playerRowStyle : undefined
       return (
         <TargetTable
@@ -131,12 +142,14 @@ export function BreakdownPanel() {
           rateLabel={isHealing ? 'HPS' : 'DPS'}
           classColor={color}
           resolveRow={resolveRow}
-          onSelect={(name) => {
-            setDrillTarget(name)
-            requestTargetDetail(viewType, viewId, name, isHealing ? 'healing' : 'damage')
-          }}
+          onSelect={(name) => setDrillTarget(name)}
         />
       )
+    }
+    if (mode === 'full') {
+      return isHealing
+        ? <FullHealSpellTable spells={player.healing.spells} classColor={color} duration={duration} playerTotal={player.healing.total} />
+        : <FullDamageSpellTable spells={player.damage.spells} classColor={color} duration={duration} playerTotal={player.damage.total} />
     }
     return isHealing
       ? <HealSpellTable spells={player.healing.spells} classColor={color} />
@@ -257,6 +270,62 @@ function SegmentedControl<T extends string>({
           {opt.label}
         </button>
       ))}
+    </div>
+  )
+}
+
+// Target-drill wrapper: back button + heading, shared across Summary and Full.
+// Body (the scoped ability list) is passed in as children so the frame stays
+// identical while the layout varies per mode.
+function TargetScopedView({
+  targetName,
+  headingStyle,
+  onBack,
+  children,
+}: {
+  targetName: string
+  headingStyle: TargetRowStyle | null
+  onBack: () => void
+  children: React.ReactNode
+}) {
+  const headingName = headingStyle?.displayName ?? targetName
+  const headingColor = headingStyle?.color ?? 'var(--text-primary)'
+  const headingIcon = specIconUrl(headingStyle?.specId)
+  return (
+    <div>
+      <button
+        onClick={onBack}
+        style={{
+          background: 'none',
+          border: 'none',
+          cursor: 'pointer',
+          fontSize: 12,
+          color: 'var(--text-secondary)',
+          padding: '0 16px',
+          marginBottom: 12,
+          transition: 'color 0.15s',
+        }}
+        onMouseEnter={e => { e.currentTarget.style.color = 'var(--text-primary)' }}
+        onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-secondary)' }}
+      >
+        &larr; Targets
+      </button>
+      <div style={{ marginBottom: 8, padding: '0 16px', display: 'flex', alignItems: 'center', gap: 8 }}>
+        {headingIcon && (
+          <img
+            src={headingIcon}
+            alt=""
+            width={20}
+            height={20}
+            style={{ flexShrink: 0, border: '1px solid rgba(0, 0, 0, 0.7)', borderRadius: 2 }}
+            onError={e => { e.currentTarget.style.display = 'none' }}
+          />
+        )}
+        <span style={{ fontSize: 14, fontWeight: 600, color: headingColor }}>
+          {headingName}
+        </span>
+      </div>
+      {children}
     </div>
   )
 }

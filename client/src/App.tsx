@@ -59,9 +59,13 @@ function ContentPanel() {
   const selectedPlayer = useStore(s => s.selectedPlayer)
   const selectedDeath = useStore(s => s.selectedDeath)
 
-  // Drill panel is Summary-only; Full mode's drill-down UX is a different design
-  // that will land later.
-  const hasDrill = mode === 'summary' && !!(selectedPlayer || selectedDeath)
+  // Death recap stays Summary-only — Full mode surfaces deaths as a top-level
+  // table. Spell/target breakdown is shared across both modes with a wider
+  // layout in Full.
+  const hasBreakdown = !!selectedPlayer
+  const hasDeath = mode === 'summary' && !!selectedDeath
+  const hasDrill = hasBreakdown || hasDeath
+  const drillWidth = hasDrill ? (mode === 'full' ? 720 : 420) : 0
 
   const players = currentView?.players ?? {}
   const duration =
@@ -113,8 +117,8 @@ function ContentPanel() {
         </div>
 
         <div style={{
-          width: hasDrill ? 420 : 0,
-          minWidth: hasDrill ? 420 : 0,
+          width: drillWidth,
+          minWidth: drillWidth,
           background: 'var(--bg-root)',
           borderLeft: hasDrill ? '1px solid var(--border-default)' : 'none',
           overflow: 'hidden',
@@ -124,8 +128,8 @@ function ContentPanel() {
           flexDirection: 'column',
           minHeight: 0,
         }}>
-          {mode === 'summary' && selectedPlayer && <BreakdownPanel />}
-          {mode === 'summary' && selectedDeath && <DeathRecapPanel />}
+          {hasBreakdown && <BreakdownPanel />}
+          {hasDeath && <DeathRecapPanel />}
         </div>
       </div>
     </div>

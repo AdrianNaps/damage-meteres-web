@@ -1,4 +1,4 @@
-import { memo, useDeferredValue, useMemo } from 'react'
+import { memo, useCallback, useDeferredValue, useMemo } from 'react'
 import { useStore, selectCurrentView, selectIsLoading, resolveSpecId } from '../store'
 import type { PlayerSnapshot } from '../types'
 import {
@@ -74,6 +74,8 @@ export function FullMeterView() {
   const perspective = useStore(s => s.perspective)
   const filters = useStore(s => s.filters)
   const metric = useStore(s => s.metric)
+  const selectedPlayer = useStore(s => s.selectedPlayer)
+  const setSelectedPlayer = useStore(s => s.setSelectedPlayer)
 
   // useDeferredValue on interactive inputs so a metric/filter/perspective
   // change yields two renders: one fast with the old rows (table still shows
@@ -119,6 +121,8 @@ export function FullMeterView() {
       category={deferredMetric}
       allies={allies}
       duration={duration}
+      selectedPlayer={selectedPlayer}
+      setSelectedPlayer={setSelectedPlayer}
     />
   )
 }
@@ -130,6 +134,8 @@ function FilteredPlayerTable({
   category,
   allies,
   duration,
+  selectedPlayer,
+  setSelectedPlayer,
 }: {
   events: Parameters<typeof computeUnitRows>[0]
   perspective: Parameters<typeof computeUnitRows>[1]
@@ -137,6 +143,8 @@ function FilteredPlayerTable({
   category: 'damage' | 'healing' | 'interrupts'
   allies: Record<string, PlayerSnapshot>
   duration: number
+  selectedPlayer: string | null
+  setSelectedPlayer: (name: string | null, drillMetric?: 'damage' | 'healing' | 'interrupts') => void
 }) {
   const playerSpecs = useStore(s => s.playerSpecs)
 
@@ -148,6 +156,20 @@ function FilteredPlayerTable({
   const config = METRIC_CONFIG[category]
   const topValue = rows[0]?.value ?? 0
   const totalValue = rows.reduce((sum, r) => sum + r.value, 0)
+
+  // Only allies are shown in the drill panel; enemy rows have no entry in
+  // `currentView.players`, so selecting them would render an empty breakdown.
+  // Stable so memoized rows don't thrash on unrelated renders.
+  const onRowClick = useCallback(
+    (name: string) => {
+      if (perspective !== 'allies') return
+      const next = selectedPlayer === name ? null : name
+      setSelectedPlayer(next, next ? category : undefined)
+    },
+    [perspective, selectedPlayer, setSelectedPlayer, category]
+  )
+
+  const rowClickable = perspective === 'allies'
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
@@ -167,6 +189,8 @@ function FilteredPlayerTable({
               config={config}
               specId={resolveSpecId(playerSpecs, row.name, row.specId)}
               showActive={perspective === 'allies'}
+              isSelected={rowClickable && selectedPlayer === row.name}
+              onClick={rowClickable ? onRowClick : undefined}
             />
           ))
         )}
@@ -225,6 +249,8 @@ function FullPlayerRowImpl({
   config,
   specId,
   showActive,
+  isSelected,
+  onClick,
 }: {
   row: UnitRow
   rank: number
@@ -234,6 +260,8 @@ function FullPlayerRowImpl({
   config: MetricConfig
   specId: number | undefined
   showActive: boolean
+  isSelected: boolean
+  onClick: ((name: string) => void) | undefined
 }) {
   const color = getClassColor(specId)
   const specIcon = specIconUrl(specId)
@@ -241,9 +269,11 @@ function FullPlayerRowImpl({
   const fillPct = topValue > 0 ? (row.value / topValue) * 100 : 0
   const shareOfTotal = totalValue > 0 ? (row.value / totalValue) * 100 : 0
   const stats = config.stats(row)
+  const clickable = !!onClick
 
   return (
     <div
+      onClick={clickable ? () => onClick(row.name) : undefined}
       style={{
         display: 'grid',
         gridTemplateColumns: playerGridColumns(stats.length),
@@ -252,7 +282,12 @@ function FullPlayerRowImpl({
         minHeight: 36,
         padding: '0 14px',
         borderBottom: '1px solid var(--border-subtle)',
+        cursor: clickable ? 'pointer' : 'default',
+        background: isSelected ? 'var(--bg-active)' : 'transparent',
+        transition: 'background 0.1s',
       }}
+      onMouseEnter={clickable && !isSelected ? e => { e.currentTarget.style.background = 'var(--bg-hover)' } : undefined}
+      onMouseLeave={clickable && !isSelected ? e => { e.currentTarget.style.background = 'transparent' } : undefined}
     >
       <RankCell rank={rank} />
       <PlayerNameCell name={row.name} color={color} specIcon={specIcon} />
