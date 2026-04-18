@@ -189,6 +189,9 @@ interface AppState {
   bootInfo: BootInfoState | null
   settingsOpen: boolean
   logPickerOpen: boolean
+  // Per-metric view options. User preference, not scope- or source-scoped:
+  // flipping the toggle should persist across segments and sources.
+  healingShowOverheal: boolean
 
   // Per-source-state setters. sourceId defaults to activeSourceId so existing
   // call sites (component clicks) keep working unchanged. WS message handlers
@@ -220,6 +223,7 @@ interface AppState {
   setBootInfo: (info: BootInfoState | null) => void
   setSettingsOpen: (open: boolean) => void
   setLogPickerOpen: (open: boolean) => void
+  setHealingShowOverheal: (show: boolean) => void
   refreshBootInfo: () => Promise<void>
 
   // Source registry actions.
@@ -426,6 +430,7 @@ export const useStore = create<AppState>((set) => ({
   bootInfo: null,
   settingsOpen: false,
   logPickerOpen: false,
+  healingShowOverheal: false,
 
   setSelectedSegment: (s, sourceId) => set(state => {
     const sid = sourceId ?? state.activeSourceId
@@ -841,6 +846,7 @@ export const useStore = create<AppState>((set) => ({
   setBootInfo: (info) => set({ bootInfo: info }),
   setSettingsOpen: (open) => set({ settingsOpen: open }),
   setLogPickerOpen: (open) => set({ logPickerOpen: open }),
+  setHealingShowOverheal: (show) => set({ healingShowOverheal: show }),
 
   setActiveSource: (sourceId) => set(state => {
     if (sourceId === state.activeSourceId) return {}

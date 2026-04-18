@@ -1095,10 +1095,14 @@ function drawXLabels(
 ) {
   ctx.fillStyle = '#a8aab4'
   ctx.font = MONO_FONT
-  ctx.textAlign = 'center'
+  // Anchor the first/last labels to the plot edges instead of centering them
+  // over the tick. Center alignment lets half the label spill past the plot
+  // bounds, which clips against the canvas right edge (PAD.right is only
+  // 8px — not enough for a "6:40" label).
   for (let i = 0; i <= count; i++) {
     const x = PAD.left + plotW * i / count
     const sec = Math.round(offset + duration * i / count)
+    ctx.textAlign = i === 0 ? 'left' : i === count ? 'right' : 'center'
     ctx.fillText(formatTime(sec), x, h - 2)
   }
 }

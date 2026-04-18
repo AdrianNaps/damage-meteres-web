@@ -28,7 +28,7 @@ function playerGridColumns(statCount: number): string {
 const DEATHS_GRID_COLUMNS = '32px 60px 180px minmax(140px, 1fr) 160px 90px'
 
 type StatFormat = 'shorthand' | 'integer'
-type NumericStat = { label: string; value: number; format: StatFormat; bold?: boolean }
+type NumericStat = { label: string; value: number; format: StatFormat; bold?: boolean; suffix?: string }
 
 interface MetricConfig {
   labels: string[]
@@ -43,13 +43,32 @@ const DAMAGE_CONFIG: MetricConfig = {
   ],
 }
 
-const HEALING_CONFIG: MetricConfig = {
-  labels: ['Total', 'Overheal', 'HPS'],
+// Two shapes for Healing depending on the overheal toggle. When off, the
+// Overheal column is hidden (the column is noise if the user isn't thinking
+// about it). When on, the column appears AND the bar renders as stacked
+// effective + overheal — see FilteredPlayerTable for the bar scale logic.
+const HEALING_EFFECTIVE_CONFIG: MetricConfig = {
+  labels: ['Total', 'HPS'],
   stats: r => [
     { label: 'Total', value: r.total, format: 'shorthand' },
-    { label: 'Overheal', value: r.overheal ?? 0, format: 'shorthand' },
     { label: 'HPS', value: r.value, format: 'shorthand', bold: true },
   ],
+}
+
+const HEALING_WITH_OVERHEAL_CONFIG: MetricConfig = {
+  labels: ['Total', 'Overheal', 'HPS'],
+  stats: r => {
+    const oh = r.overheal ?? 0
+    const raw = r.total + oh
+    // Share of raw throughput that was overheal. Guard raw===0 so a row with
+    // zero healing doesn't render "(NaN%)".
+    const ohPct = raw > 0 ? (oh / raw) * 100 : 0
+    return [
+      { label: 'Total', value: r.total, format: 'shorthand' },
+      { label: 'Overheal', value: oh, format: 'shorthand', suffix: raw > 0 ? `(${Math.round(ohPct)}%)` : undefined },
+      { label: 'HPS', value: r.value, format: 'shorthand', bold: true },
+    ]
+  },
 }
 
 const INTERRUPTS_CONFIG: MetricConfig = {
@@ -58,12 +77,6 @@ const INTERRUPTS_CONFIG: MetricConfig = {
     { label: 'Count', value: r.value, format: 'integer', bold: true },
     { label: 'Spells', value: r.distinctAbilities ?? 0, format: 'integer' },
   ],
-}
-
-const METRIC_CONFIG: Record<'damage' | 'healing' | 'interrupts', MetricConfig> = {
-  damage: DAMAGE_CONFIG,
-  healing: HEALING_CONFIG,
-  interrupts: INTERRUPTS_CONFIG,
 }
 
 function formatStat(stat: NumericStat): string {
@@ -172,15 +185,29 @@ function FilteredPlayerTable({
   setSelectedPlayer: (name: string | null, drillMetric?: Metric) => void
 }) {
   const playerSpecs = useStore(s => s.playerSpecs)
+  const healingShowOverheal = useStore(s => s.healingShowOverheal)
 
   const rows = useMemo(
     () => computeUnitRows(events, perspective, filters, category, allies, duration),
     [events, perspective, filters, category, allies, duration]
   )
 
-  const config = METRIC_CONFIG[category]
+  const showOverheal = category === 'healing' && healingShowOverheal
+  const config =
+    category === 'damage'     ? DAMAGE_CONFIG
+    : category === 'interrupts' ? INTERRUPTS_CONFIG
+    : showOverheal            ? HEALING_WITH_OVERHEAL_CONFIG
+    : HEALING_EFFECTIVE_CONFIG
+
   const topValue = rows[0]?.value ?? 0
   const totalValue = rows.reduce((sum, r) => sum + r.value, 0)
+
+  // When overheal is on the bar stacks effective + overheal, so the scale must
+  // expand to include the top row's overheal too — otherwise the stacked bar
+  // would clip past 100%. Ranking stays by effective HPS (row order unchanged).
+  const barScale = showOverheal && duration > 0
+    ? rows.reduce((m, r) => Math.max(m, r.value + (r.overheal ?? 0) / duration), 0)
+    : topValue
 
   // Only allies are shown in the drill panel; enemy rows have no entry in
   // `currentView.players`, so selecting them would render an empty breakdown.
@@ -208,8 +235,9 @@ function FilteredPlayerTable({
               key={row.name}
               row={row}
               rank={i + 1}
-              topValue={topValue}
+              barScale={barScale}
               totalValue={totalValue}
+              overhealPerSec={showOverheal && duration > 0 ? (row.overheal ?? 0) / duration : 0}
               activePct={perspective === 'allies' ? computeActivePct(allies[row.name], duration) : null}
               config={config}
               specId={resolveSpecId(playerSpecs, row.name, row.specId)}
@@ -268,8 +296,9 @@ const FullPlayerRow = memo(FullPlayerRowImpl)
 function FullPlayerRowImpl({
   row,
   rank,
-  topValue,
+  barScale,
   totalValue,
+  overhealPerSec,
   activePct,
   config,
   specId,
@@ -279,8 +308,9 @@ function FullPlayerRowImpl({
 }: {
   row: UnitRow
   rank: number
-  topValue: number
+  barScale: number
   totalValue: number
+  overhealPerSec: number
   activePct: number | null
   config: MetricConfig
   specId: number | undefined
@@ -291,7 +321,8 @@ function FullPlayerRowImpl({
   const color = getClassColor(specId)
   const specIcon = specIconUrl(specId)
 
-  const fillPct = topValue > 0 ? (row.value / topValue) * 100 : 0
+  const fillPct = barScale > 0 ? (row.value / barScale) * 100 : 0
+  const overhealPct = barScale > 0 ? (overhealPerSec / barScale) * 100 : 0
   const shareOfTotal = totalValue > 0 ? (row.value / totalValue) * 100 : 0
   const stats = config.stats(row)
   const clickable = !!onClick
@@ -316,7 +347,7 @@ function FullPlayerRowImpl({
     >
       <RankCell rank={rank} />
       <PlayerNameCell name={row.name} color={color} specIcon={specIcon} />
-      <BarCell color={color} fillPct={fillPct} shareOfTotal={shareOfTotal} />
+      <BarCell color={color} fillPct={fillPct} overhealPct={overhealPct} shareOfTotal={shareOfTotal} />
       {showActive ? <ActiveCell pct={activePct} /> : <span />}
       {stats.map((s, i) => (
         <StatCell key={i} stat={s} />
@@ -528,10 +559,14 @@ function PlayerNameCell({
 function BarCell({
   color,
   fillPct,
+  overhealPct,
   shareOfTotal,
 }: {
   color: string
   fillPct: number
+  // Overheal segment stacked after the effective fill. 0 for non-healing metrics
+  // or when the overheal toggle is off.
+  overhealPct: number
   shareOfTotal: number
 }) {
   return (
@@ -543,14 +578,22 @@ function BarCell({
         borderRadius: 2,
         overflow: 'hidden',
         position: 'relative',
+        display: 'flex',
       }}>
         <div style={{
           width: `${fillPct}%`,
           height: '100%',
           background: color,
           opacity: 0.85,
-          borderRadius: 2,
         }} />
+        {overhealPct > 0 && (
+          <div style={{
+            width: `${overhealPct}%`,
+            height: '100%',
+            background: color,
+            opacity: 0.25,
+          }} />
+        )}
       </div>
       <span style={{
         fontSize: 11,
@@ -589,6 +632,11 @@ function StatCell({ stat }: { stat: NumericStat }) {
       textAlign: 'right',
     }}>
       {formatStat(stat)}
+      {stat.suffix && (
+        <span style={{ marginLeft: 4, color: 'var(--text-muted)' }}>
+          {stat.suffix}
+        </span>
+      )}
     </span>
   )
 }

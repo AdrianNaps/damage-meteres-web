@@ -12,6 +12,7 @@ import { DeathRecapPanel } from './components/DeathRecapPanel'
 import { SettingsModal } from './components/SettingsModal'
 import { LogsBanner } from './components/LogsBanner'
 import { FilterBar } from './components/FilterBar'
+import { MetricOptionsStrip } from './components/MetricOptionsStrip'
 import { LogPicker } from './components/LogPicker'
 import { computeEnemyPlayers } from './utils/filters'
 import type { ClientEvent } from './types'
@@ -121,6 +122,12 @@ function ContentPanel() {
       {currentView && (isOverall || Object.keys(graphPlayers).length > 0) && (
         <GraphContainer metric={metric} players={graphPlayers} duration={duration} inactive={isOverall} />
       )}
+
+      {/* Table-scoped view controls. Full-only; always rendered so switching
+          categories doesn't shift the table up/down. Reserved for per-metric
+          options on the right (e.g. Healing's overheal toggle) and, later, a
+          Table / Timeline view switcher on the left. */}
+      {mode === 'full' && <MetricOptionsStrip />}
 
       {/* Main content area: modules/rows + inline drill panel. Shared shell so
           the drill push-sidebar behaves identically in Summary and Full. */}
