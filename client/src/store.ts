@@ -715,10 +715,13 @@ export const useStore = create<AppState>((set) => ({
       // Ability filter values are metric-specific names (damage/heal spell
       // names vs buff/debuff names) with non-overlapping namespaces. Carrying
       // a stale value across the boundary would present as an invisible
-      // always-empty filter, just with a renamed chip.
-      if (slice.filters.Ability) {
+      // always-empty filter, just with a renamed chip. InterruptedAbility is
+      // even more aura-foreign (no picker exists on aura metrics) so it gets
+      // the same treatment.
+      if (slice.filters.Ability || slice.filters.InterruptedAbility) {
         const next = { ...slice.filters }
         delete next.Ability
+        delete next.InterruptedAbility
         patch.filters = Object.keys(next).length === 0 ? EMPTY_FILTERS : next
       }
       // Strip aura-graph focus keys (see GraphContainer.tsx AURA_DAMAGE_KEY /

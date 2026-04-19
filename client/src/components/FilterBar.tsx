@@ -6,6 +6,7 @@ import {
   computeUnitUniverse,
   computeAuraAbilityUniverse,
   computeAuraUnitUniverse,
+  hasAnyFilter,
 } from '../utils/filters'
 import type { ClientEvent, PlayerSnapshot, AuraWindowWire } from '../types'
 import { FilterPicker, type PickerOption } from './FilterPicker'
@@ -35,6 +36,7 @@ function axisLabels(metric: Metric, axis: FilterAxis): AxisLabels {
       case 'Source':  return { label: 'Caster', defaultLabel: 'Any caster' }
       case 'Target':  return { label: 'Target', defaultLabel: 'Any target' }
       case 'Ability': return { label: 'Buff',   defaultLabel: 'All buffs' }
+      case 'InterruptedAbility': return { label: 'Interrupted', defaultLabel: 'Any interrupted spell' }
     }
   }
   if (metric === 'debuffs') {
@@ -42,6 +44,7 @@ function axisLabels(metric: Metric, axis: FilterAxis): AxisLabels {
       case 'Source':  return { label: 'Caster', defaultLabel: 'Any caster' }
       case 'Target':  return { label: 'Target', defaultLabel: 'Any target' }
       case 'Ability': return { label: 'Debuff', defaultLabel: 'All debuffs' }
+      case 'InterruptedAbility': return { label: 'Interrupted', defaultLabel: 'Any interrupted spell' }
     }
   }
   if (metric === 'damageTaken') {
@@ -181,7 +184,7 @@ export function FilterBar() {
     setOpen(prev => prev === axis ? null : axis)
   }
 
-  const hasAnyFilter = !!(filters.Source || filters.Target || filters.Ability || filters.InterruptedAbility || filters.TimeWindow)
+  const anyFilterActive = hasAnyFilter(filters)
 
   return (
     <>
@@ -236,7 +239,7 @@ export function FilterBar() {
           onClearAxis={axis => setFilter(axis, undefined)}
           onClearTimeWindow={() => setTimeWindowFilter(undefined)}
         />
-        {hasAnyFilter && (
+        {anyFilterActive && (
           <button
             onClick={clearAllFilters}
             style={{

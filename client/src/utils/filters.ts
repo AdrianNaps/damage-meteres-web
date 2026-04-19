@@ -137,8 +137,18 @@ function passesPerspective(e: ClientEvent, category: Metric, perspective: Perspe
   return perspective === 'allies' ? isAlly : !isAlly
 }
 
-function hasAnyFilter(filters: FilterState): boolean {
-  return !!(filters.Source || filters.Target || filters.Ability || filters.InterruptedAbility || filters.TimeWindow)
+// True when the filter state carries at least one axis that could narrow
+// the given category's event walk. `InterruptedAbility` is a no-op on every
+// kind except 'interrupt'/'interruptAttempt' (see passesFilters) — so when
+// it's the only axis set and we're looking at damage/healing/deaths/aura
+// rows, the fast-path caches should still fire. Category-less calls (e.g.
+// the FilterBar's "Clear all" visibility) treat every axis as potentially
+// relevant, which is what the button's semantics require.
+export function hasAnyFilter(filters: FilterState, category?: Metric): boolean {
+  const interruptedRelevant = category === undefined || category === 'interrupts'
+    ? filters.InterruptedAbility
+    : undefined
+  return !!(filters.Source || filters.Target || filters.Ability || interruptedRelevant || filters.TimeWindow)
 }
 
 // Scope-relative time basis for TimeWindow translation. events[0].t is the
@@ -177,7 +187,7 @@ export function computeUnitRows(
   allies: Record<string, PlayerSnapshot>,
   durationSec: number,
 ): UnitRow[] {
-  if (!hasAnyFilter(filters)) {
+  if (!hasAnyFilter(filters, category)) {
     const sub = getOrInit(unitRowsCache, events)
     const key = `${perspective}:${category}`
     const cached = sub.get(key)
@@ -288,7 +298,7 @@ export function computeDeathRows(
   filters: FilterState,
   allies: Record<string, PlayerSnapshot>,
 ): DeathRow[] {
-  if (!hasAnyFilter(filters)) {
+  if (!hasAnyFilter(filters, 'deaths')) {
     const sub = getOrInit(deathRowsCache, events)
     const key = perspective
     const cached = sub.get(key)
@@ -337,7 +347,11 @@ export function computeAbilityUniverse(
   category: Metric,
   allies: Record<string, PlayerSnapshot>,
 ): AbilityEntry[] {
-  if (!filters.Source && !filters.Target && !filters.InterruptedAbility) {
+  // InterruptedAbility only narrows this universe for the interrupts metric
+  // (the impl below gates on category); for any other metric a stale chip
+  // shouldn't disable the cache fast-path.
+  const interruptedNarrows = category === 'interrupts' && !!filters.InterruptedAbility
+  if (!filters.Source && !filters.Target && !interruptedNarrows) {
     const sub = getOrInit(abilityUniverseCache, events)
     const key = `${perspective}:${category}`
     const cached = sub.get(key)
@@ -596,7 +610,7 @@ export function computeAuraRows(
   perspective: Perspective,
   kind: AuraKind,
 ): AuraRow[] {
-  if (!hasAnyFilter(filters)) {
+  if (!hasAnyFilter(filters, kind === 'BUFF' ? 'buffs' : 'debuffs')) {
     const sub = getOrInit(auraRowsCache, auras)
     // The WeakMap is keyed on the auras array so it's already scoped to one
     // snapshot; kind + perspective distinguish the tab + partition within
@@ -1030,12 +1044,19 @@ const EMPTY_BREAKDOWN: PlayerBreakdown = {
 // entries auto-evict when the snapshot leaves snapshotCache.
 const breakdownCache = new WeakMap<ClientEvent[], Map<string, Map<string, PlayerBreakdown>>>()
 
-function filterCacheKey(filters: FilterState): string {
+function filterCacheKey(filters: FilterState, category?: Metric): string {
   // JSON shape sidesteps separator collisions (e.g. a unit name containing
   // `|` or `;`). Per-axis values are sorted for canonicality so chip order
   // doesn't churn the key. Cost is negligible — small object, microseconds.
+  // InterruptedAbility is only included when the category actually reads it
+  // (interrupts) — otherwise a stale chip from a prior interrupts view would
+  // split the cache across otherwise-identical filter states.
   const canonical: Record<string, string[] | { startSec: number; endSec: number }> = {}
-  for (const axis of ['Source', 'Target', 'Ability', 'InterruptedAbility'] as const) {
+  const includeInterrupted = category === undefined || category === 'interrupts'
+  const axes = includeInterrupted
+    ? ['Source', 'Target', 'Ability', 'InterruptedAbility'] as const
+    : ['Source', 'Target', 'Ability'] as const
+  for (const axis of axes) {
     const v = filters[axis]
     if (!v || v.length === 0) continue
     canonical[axis] = [...v].sort()
@@ -1235,10 +1256,14 @@ export function selectPlayerBreakdown(
   // Snapshot fast-path: only valid for damage-dealt and healing-done, since
   // PlayerSnapshot carries no damage-taken aggregation. damageTaken always
   // walks events (still fast — one pass over ~20k events).
-  if (snapshot && !hasAnyFilter(filters) && category !== 'damageTaken') {
+  // Breakdown categories (damage/damageTaken/heal) never consult
+  // InterruptedAbility — map to a non-interrupts metric so a stale chip from
+  // the interrupts view doesn't disable the fast path or balloon cache keys.
+  const breakdownMetric: Metric = category === 'heal' ? 'healing' : category
+  if (snapshot && !hasAnyFilter(filters, breakdownMetric) && category !== 'damageTaken') {
     return projectSnapshot(snapshot, category === 'heal' ? 'heal' : 'damage', durationSec)
   }
-  const cacheKey = `${category}:${durationSec}:${filterCacheKey(filters)}`
+  const cacheKey = `${category}:${durationSec}:${filterCacheKey(filters, breakdownMetric)}`
   let perEvents = breakdownCache.get(events)
   if (!perEvents) {
     perEvents = new Map()
@@ -1276,7 +1301,7 @@ export function mostRestrictiveFilter(
         return { axis, label: 'Time window' }
       }
       const values = (filters[axis] as string[] | undefined) ?? []
-      const axisDisplay = axis === 'InterruptedAbility' ? 'Interrupted' : axis
+      const axisDisplay = axis === 'InterruptedAbility' ? 'Interrupted Spell' : axis
       const label = values.length === 1 ? `${axisDisplay}: ${values[0]}` : `${axisDisplay} filter`
       return { axis, label }
     }
