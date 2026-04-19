@@ -213,10 +213,20 @@ export function connectWs() {
           break
         }
         case 'encounter_start':
-        case 'encounter_end':
-          // Request fresh segment list for the source that emitted the event.
           send({ type: 'get_segment_list', sourceId })
           break
+        case 'encounter_end': {
+          send({ type: 'get_segment_list', sourceId })
+          // The snapshot the client holds for this segment was taken when
+          // combat started and is now stale (no mid-pull pushes). Refresh it
+          // so the tab shows the full pull instead of staying frozen at the
+          // T=0 snapshot until the user clicks away and back.
+          const endedSlice = state.sources.get(sourceId)
+          if (endedSlice && endedSlice.selectedSegmentId === msg.segmentId) {
+            send({ type: 'get_segment', sourceId, segmentId: msg.segmentId })
+          }
+          break
+        }
         case 'target_detail':
           // target_detail is only meaningful for the active source's drill
           // panel — drop frames from non-active sources to avoid clobbering.
