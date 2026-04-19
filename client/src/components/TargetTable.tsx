@@ -1,16 +1,12 @@
 import { formatNum, pct } from '../utils/format'
 import { specIconUrl } from '../utils/icons'
+import { usePlayerRowStyle, type PlayerRowStyle } from '../utils/usePlayerRowStyle'
 import type { BreakdownTargetRow } from '../utils/filters'
 
-// Optional per-row override — used by healing-mode to render each target as a
-// class-colored player entry (short name + spec icon + own class color on the
-// bar). If not provided (or returns null), the row falls back to the raw
-// targetName and the shared classColor.
-export interface TargetRowStyle {
-  displayName: string
-  color: string
-  specId?: number
-}
+// Re-exported for consumers that still build their own row style (e.g. the
+// per-heading override used by TargetScopedView). New callers should rely on
+// the automatic ally-player styling baked into this component.
+export type TargetRowStyle = PlayerRowStyle
 
 interface Props {
   // Pre-filtered, pre-sorted by the breakdown selector. The component is a
@@ -24,7 +20,6 @@ interface Props {
   // and row content are otherwise identical.
   columnLabel?: 'Target' | 'Attacker'
   classColor: string
-  resolveRow?: (targetName: string) => TargetRowStyle | null
   onSelect: (targetName: string) => void
 }
 
@@ -86,8 +81,13 @@ function BarFill({ pct, color }: { pct: number; color: string }) {
   )
 }
 
-export function TargetTable({ targets, totalAmount, duration, rateLabel, columnLabel = 'Target', classColor, resolveRow, onSelect }: Props) {
+export function TargetTable({ targets, totalAmount, duration, rateLabel, columnLabel = 'Target', classColor, onSelect }: Props) {
   const topTotal = targets[0]?.total ?? 1
+  // Auto-resolve ally player styling — targets that resolve to a known player
+  // render with that player's class color, spec icon, and short name;
+  // everything else falls through to the shared classColor. This makes
+  // "targets are players" the default at every drill site.
+  const resolveRow = usePlayerRowStyle()
 
   return (
     <div>
@@ -98,7 +98,7 @@ export function TargetTable({ targets, totalAmount, duration, rateLabel, columnL
         <span style={{ width: 36, textAlign: 'right' }}>%</span>
       </div>
       {targets.map(t => {
-        const style = resolveRow?.(t.targetName) ?? null
+        const style = resolveRow(t.targetName)
         const displayName = style?.displayName ?? t.targetName
         const barColor = style?.color ?? classColor
         const iconSrc = specIconUrl(style?.specId)

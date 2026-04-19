@@ -81,11 +81,6 @@ export function FilterBar() {
   const deferredFilterSource = useDeferredValue(filters.Source)
   const deferredFilterTarget = useDeferredValue(filters.Target)
   const isBuffsMetric = deferredMetric === 'buffs'
-  // damageTaken is an allies-only view (a "who took damage" table only makes
-  // sense for the group, not for enemies). Mirrors buffs's no-perspective
-  // pattern — toggle hidden, store.setMetric snaps perspective to allies on
-  // entry.
-  const isDamageTakenMetric = deferredMetric === 'damageTaken'
 
   // Picker options are derived on render. Cheap for a few hundred units / a
   // few hundred abilities; if this ever becomes a bottleneck, memoize on
@@ -143,10 +138,8 @@ export function FilterBar() {
         background: 'var(--bg-root)',
       }}>
         {/* Perspective is ally-only for buffs (enemy-cast buffs are dropped
-            at the parser) and for damageTaken (enemy-as-victim is the same
-            data as Damage Done viewed from the other side), so the toggle
-            is hidden for both. */}
-        {!isBuffsMetric && !isDamageTakenMetric && (
+            at the parser), so the toggle is hidden there. */}
+        {!isBuffsMetric && (
           <>
             <PerspectiveToggle perspective={perspective} onChange={setPerspective} />
             <Divider />

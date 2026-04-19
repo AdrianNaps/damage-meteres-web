@@ -1,16 +1,11 @@
 import type { TargetDetail } from '../types'
 import { formatNum, pct } from '../utils/format'
 import { specIconUrl } from '../utils/icons'
-import type { TargetRowStyle } from './TargetTable'
+import { usePlayerRowStyle } from '../utils/usePlayerRowStyle'
 
 interface Props {
   detail: TargetDetail
   classColor: string
-  // Same shape as TargetTable.resolveRow — lets healing-mode render each source
-  // (and the heading) with the respective player's class color, spec icon, and
-  // short name. Omit for damage mode (enemy mobs).
-  resolveRow?: (sourceName: string) => TargetRowStyle | null
-  headingStyle?: TargetRowStyle | null
   onBack: () => void
 }
 
@@ -71,8 +66,12 @@ function BarFill({ pct, color }: { pct: number; color: string }) {
   )
 }
 
-export function TargetDrillDown({ detail, classColor, resolveRow, headingStyle, onBack }: Props) {
+export function TargetDrillDown({ detail, classColor, onBack }: Props) {
   const topTotal = detail.sources[0]?.total ?? 1
+  // Auto-resolve ally player styling for the heading and each source row —
+  // same convention enforced in TargetTable / TargetScopedView.
+  const resolveRow = usePlayerRowStyle()
+  const headingStyle = resolveRow(detail.targetName)
   const headingName = headingStyle?.displayName ?? detail.targetName
   const headingColor = headingStyle?.color ?? 'var(--text-primary)'
   const headingIcon = specIconUrl(headingStyle?.specId)
@@ -119,7 +118,7 @@ export function TargetDrillDown({ detail, classColor, resolveRow, headingStyle, 
         <span style={{ width: 36, textAlign: 'right' }}>%</span>
       </div>
       {detail.sources.map(s => {
-        const style = resolveRow?.(s.sourceName) ?? null
+        const style = resolveRow(s.sourceName)
         const displayName = style?.displayName ?? s.sourceName
         const barColor = style?.color ?? classColor
         const iconSrc = specIconUrl(style?.specId)

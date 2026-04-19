@@ -8,10 +8,11 @@ import {
   FullDamageSpellTable,
   FullHealSpellTable,
 } from './SpellTable'
-import { TargetTable, type TargetRowStyle } from './TargetTable'
+import { TargetTable } from './TargetTable'
 import { selectPlayerBreakdown } from '../utils/filters'
 import { specIconUrl } from '../utils/icons'
 import { formatNum, shortName } from '../utils/format'
+import { usePlayerRowStyle } from '../utils/usePlayerRowStyle'
 import type { ClientEvent, PlayerSnapshot } from '../types'
 
 const METRIC_LABELS: Record<string, string> = {
@@ -67,10 +68,17 @@ export function BreakdownPanel() {
 
   if (!selectedPlayer || !currentView) return null
 
-  const player = currentView.players[selectedPlayer]
-  if (!player) return null
+  // Under damageTaken + enemies perspective the drilled subject is an enemy
+  // victim with no entry in `currentView.players`. Allow that only for
+  // damageTaken; for every other metric an ally snapshot is required (the
+  // interrupts path below reads from it directly, and damage/heal without a
+  // snapshot means we shouldn't be rendering a drill panel).
+  const player: PlayerSnapshot | undefined = currentView.players[selectedPlayer]
+  if (!player && metric !== 'damageTaken') return null
 
-  const color = getClassColor(resolveSpecId(playerSpecs, selectedPlayer, player.specId))
+  const enemySubject = !player
+  const specId = player ? resolveSpecId(playerSpecs, selectedPlayer, player.specId) : undefined
+  const color = enemySubject ? 'var(--text-secondary)' : getClassColor(specId)
   // Duration shape varies by view: segments carry `duration`, while key-run
   // and boss-section aggregates carry `activeDurationSec`. Per-spell DPS/HPS
   // cells come out as 0 on aggregate views if we don't handle both.
@@ -95,8 +103,8 @@ export function BreakdownPanel() {
     ? selectPlayerBreakdown(events, selectedPlayer, breakdownCategory, deferredFilters, duration, player, allies)
     : null
 
-  const value = breakdown ? breakdown.rate : player.interrupts.total
-  const total = breakdown ? breakdown.total : player.interrupts.total
+  const value = breakdown ? breakdown.rate : player?.interrupts.total ?? 0
+  const total = breakdown ? breakdown.total : player?.interrupts.total ?? 0
 
   function handleModeChange(nextViewMode: 'spells' | 'targets') {
     setViewMode(nextViewMode)
@@ -110,6 +118,9 @@ export function BreakdownPanel() {
 
   function renderContent() {
     if (metric === 'interrupts') {
+      // Interrupts is ally-only; enemy subjects are gated out upstream. Guard
+      // anyway so TS narrows player to PlayerSnapshot below.
+      if (!player) return null
       return (
         <>
           <InterruptSpellTable spells={player.interrupts.byKicker} heading="Interrupt Ability" classColor={color} />
@@ -130,24 +141,14 @@ export function BreakdownPanel() {
     const isHealing = metric === 'healing'
     const isDamageTaken = metric === 'damageTaken'
     const rateLabel = isHealing ? 'HPS' : isDamageTaken ? 'DTPS' : 'DPS'
-    // Player-aware row decorator: resolves healing sources/targets to their own
-    // class color, spec icon, and short name. Reused by the targets list and
-    // the drill-down heading so the whole healing flow reads consistently.
-    const playerRowStyle = (name: string): TargetRowStyle | null => {
-      const specId = resolveSpecId(playerSpecs, name)
-      if (specId === undefined) return null
-      return { displayName: shortName(name), color: getClassColor(specId), specId }
-    }
 
     if (drillValue) {
       // The breakdown's spells[] is already scoped to this attacker/target
       // (the drill filter pinned it). The drill view is just the regular
       // Full-mode spell table inside a back-button frame.
-      const headingStyle = isHealing ? playerRowStyle(drillValue) : null
       return (
         <TargetScopedView
           targetName={drillValue}
-          headingStyle={headingStyle}
           backLabel={isDamageTaken ? 'Attackers' : 'Targets'}
           onBack={() => setFilter(otherSideAxis, undefined)}
         >
@@ -164,7 +165,6 @@ export function BreakdownPanel() {
       )
     }
     if (viewMode === 'targets') {
-      const resolveRow = isHealing ? playerRowStyle : undefined
       return (
         <TargetTable
           targets={breakdown.targets}
@@ -173,7 +173,6 @@ export function BreakdownPanel() {
           rateLabel={rateLabel}
           columnLabel={isDamageTaken ? 'Attacker' : 'Target'}
           classColor={color}
-          resolveRow={resolveRow}
           onSelect={(name) => setFilter(otherSideAxis, [name])}
         />
       )
@@ -200,7 +199,7 @@ export function BreakdownPanel() {
       >
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ fontWeight: 600, fontSize: 15, color }}>{shortName(player.name)}</span>
+            <span style={{ fontWeight: 600, fontSize: 15, color }}>{shortName(selectedPlayer)}</span>
             <span style={{
               fontSize: 9, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em',
               padding: '1px 6px', borderRadius: 2,
@@ -326,17 +325,19 @@ function SegmentedControl<T extends string>({
 // identical while the layout varies per mode.
 function TargetScopedView({
   targetName,
-  headingStyle,
   backLabel = 'Targets',
   onBack,
   children,
 }: {
   targetName: string
-  headingStyle: TargetRowStyle | null
   backLabel?: string
   onBack: () => void
   children: React.ReactNode
 }) {
+  // Auto-resolve the heading when targetName is a known ally — same convention
+  // as TargetTable rows. Enemies / unknown names fall through to plain name.
+  const resolveStyle = usePlayerRowStyle()
+  const headingStyle = resolveStyle(targetName)
   const headingName = headingStyle?.displayName ?? targetName
   const headingColor = headingStyle?.color ?? 'var(--text-primary)'
   const headingIcon = specIconUrl(headingStyle?.specId)

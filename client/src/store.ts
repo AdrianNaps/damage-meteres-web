@@ -708,13 +708,6 @@ export const useStore = create<AppState>((set) => ({
         patch.graphFocused = stripped
       }
     }
-    // damageTaken is allies-only (FilterBar hides the perspective toggle).
-    // Snap to allies on entry so the view renders cleanly; leaving the user
-    // on enemies would either produce an empty view or a nonsense one (enemy
-    // victims of ally damage — just Damage Done viewed from the other side).
-    if (m === 'damageTaken' && slice.perspective === 'enemies') {
-      patch.perspective = 'allies'
-    }
     return applySliceUpdate(state, sid, patch)
   }),
 

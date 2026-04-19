@@ -942,12 +942,13 @@ function computeAllPlayerBreakdowns(
 
   for (const e of events) {
     if (e.kind !== kind) continue
-    // The breakdown panel only ever opens on an ally row (FullMeterView gates
-    // enemy-perspective clicks), so bucketing enemy subjects is wasted work
-    // that grows with trash count on M+ aggregates. For damageTaken the
-    // subject is dst; for everything else it's src.
+    // For damage and heal, only ally subjects are drillable (no enemy-side
+    // snapshot exists), so skip bucketing enemies — wasted work that grows
+    // with trash count on M+ aggregates. For damageTaken, both sides are
+    // drillable (enemy victims under the enemies perspective), so let all
+    // subjects through.
     const subject = byTarget ? e.dst : e.src
-    if (!allies[subject]) continue
+    if (!byTarget && !allies[subject]) continue
     if (sourceFilter && !sourceFilter.includes(e.src)) continue
     if (targetFilter && !targetFilter.includes(e.dst)) continue
     if (abilityFilter && !abilityFilter.includes(e.ability)) continue

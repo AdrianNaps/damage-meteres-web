@@ -357,19 +357,21 @@ function FilteredPlayerTable({
     ? sumArr(primaryPerSec) + sumArr(secondaryPerSec)
     : sumArr(primaryPerSec)
 
-  // Only allies are shown in the drill panel; enemy rows have no entry in
-  // `currentView.players`, so selecting them would render an empty breakdown.
-  // Stable so memoized rows don't thrash on unrelated renders.
+  // Drill-down is supported for ally rows across all metrics, and for enemy
+  // rows under damageTaken (enemy victim → spells/attackers breakdown). Other
+  // enemy-perspective metrics have no aggregated snapshot on the enemy side,
+  // so selecting them would render an empty breakdown.
+  const drillEnabled = perspective === 'allies' || category === 'damageTaken'
   const onRowClick = useCallback(
     (name: string) => {
-      if (perspective !== 'allies') return
+      if (!drillEnabled) return
       const next = selectedPlayer === name ? null : name
       setSelectedPlayer(next, next ? category : undefined)
     },
-    [perspective, selectedPlayer, setSelectedPlayer, category]
+    [drillEnabled, selectedPlayer, setSelectedPlayer, category]
   )
 
-  const rowClickable = perspective === 'allies'
+  const rowClickable = drillEnabled
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
