@@ -1,14 +1,16 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react'
-import { useStore, selectCurrentView, resolveSpecId } from '../store'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useStore, selectCurrentView } from '../store'
 import { spellIconUrl } from '../utils/icons'
-import { shortName } from '../utils/format'
-import { getClassColor } from './PlayerRow'
+import { usePlayerRowStyle } from '../utils/usePlayerRowStyle'
+import { SegmentedControl } from './SegmentedControl'
 import type { AuraWindowWire, BuffSection } from '../types'
 
-// Per-target drill for a selected buff row. Shows one row per recipient with
-// their individual uptime %, application count, and a mini timeline. Recipient
-// names are class-colored; clicking a name narrows the Recipient filter to
-// that player so the main buffs table re-scopes in sync.
+// Drill panel for a selected buff row. Renders two toggled views of the same
+// window set: Recipients (per-target uptime) and Casters (per-caster uptime).
+// Clicking a row narrows the matching global filter so the main buffs table
+// re-scopes in sync — Recipient → filters.Target, Caster → filters.Source.
+
+type ViewMode = 'recipients' | 'casters'
 
 const SECTION_LABELS: Record<BuffSection, string> = {
   personal: 'Personal',
@@ -29,9 +31,11 @@ export function BuffBreakdownPanel() {
   const selectedBuff = useStore(s => s.selectedBuff)
   const setSelectedBuff = useStore(s => s.setSelectedBuff)
   const currentView = useStore(selectCurrentView)
-  const playerSpecs = useStore(s => s.playerSpecs)
   const setFilter = useStore(s => s.setFilter)
   const filters = useStore(s => s.filters)
+  const perspective = useStore(s => s.perspective)
+  const resolveRowStyle = usePlayerRowStyle()
+  const [viewMode, setViewMode] = useState<ViewMode>('recipients')
   // Subscribed (not `useStore.getState()`) so the header icon fills in when
   // the async icon resolver lands a name for this spellId after the panel
   // has already mounted.
@@ -58,65 +62,53 @@ export function BuffBreakdownPanel() {
     return { t0, tEnd }
   }, [currentView])
 
-  const { targetRows, spell } = useMemo(() => {
-    if (!currentView || !selectedBuff || !scope) return { targetRows: [], spell: null as null | { id: string; name: string; section: BuffSection } }
+  const { targetRows, casterRows, spell } = useMemo(() => {
+    const empty = { targetRows: [] as Row[], casterRows: [] as Row[], spell: null as null | { id: string; name: string; section: BuffSection } }
+    if (!currentView || !selectedBuff || !scope) return empty
     const auras: AuraWindowWire[] = currentView.auras ?? []
-    const matching = auras.filter(w => w.id === selectedBuff)
-    if (matching.length === 0) return { targetRows: [], spell: null }
-
-    // Apply the Caster filter so the drill matches what the main table shows.
-    // Recipient + Buff filters are deliberately ignored here: Recipient would
-    // collapse the per-target view to one row (defeats the point), and Buff
-    // is already pinned to selectedBuff.
-    const casterFilter = filters.Source
-    const filtered = casterFilter
-      ? matching.filter(w => casterFilter.includes(w.c))
-      : matching
+    const allies = currentView.players ?? {}
+    const allySet = new Set(Object.keys(allies))
+    // Mirror the main table's partition: allies view keeps ally recipients
+    // (by name), enemies view keeps only REACTION_HOSTILE targets so player
+    // pets / totems / guardians don't leak into the enemy list.
+    const matching = auras.filter(w => {
+      if (w.id !== selectedBuff) return false
+      return perspective === 'allies' ? allySet.has(w.d) : w.h === 1
+    })
+    if (matching.length === 0) return empty
 
     const spellName = matching[0].n
-
     // Infer section from the snapshot's classification map.
     const classification = currentView.buffClassification ?? {}
     const section = classification[selectedBuff] ?? 'external'
-
-    type TargetAgg = { target: string; count: number; windows: AuraWindowWire[] }
-    const byTarget = new Map<string, TargetAgg>()
-    for (const w of filtered) {
-      let agg = byTarget.get(w.d)
-      if (!agg) {
-        agg = { target: w.d, count: 0, windows: [] }
-        byTarget.set(w.d, agg)
-      }
-      // Refresh-aware count — matches the main table's convention.
-      agg.count += 1 + (w.r ?? 0)
-      agg.windows.push(w)
-    }
-
     const scopeMs = scope.tEnd - scope.t0
-    // Fold class color into the memo so it doesn't recompute per-render in
-    // the row component. playerSpecs updates are already baked into the
-    // memo deps via the outer closure.
-    const rows = [...byTarget.values()].map(a => {
-      const uptimeMs = unionMs(a.windows, scope.t0, scope.tEnd)
-      return {
-        ...a,
-        uptimeMs,
-        uptimePct: scopeMs > 0 ? (uptimeMs / scopeMs) * 100 : 0,
-        classColor: getClassColor(resolveSpecId(playerSpecs, a.target)),
-      }
-    })
-    rows.sort((a, b) => b.uptimePct - a.uptimePct)
+
+    // Symmetric drill filtering: each axis view applies the OTHER axis's
+    // filter. Recipients view respects the Caster chip (so if the main table
+    // is filtered to "by caster X", the drill shows "recipients of X's casts")
+    // and vice versa. The drill's own axis is skipped — applying it would
+    // collapse the view to a single row.
+    const casterFilter = filters.Source
+    const recipientFilter = filters.Target
+    const forRecipients = casterFilter
+      ? matching.filter(w => casterFilter.includes(w.c))
+      : matching
+    const forCasters = recipientFilter
+      ? matching.filter(w => recipientFilter.includes(w.d))
+      : matching
 
     return {
-      targetRows: rows,
+      targetRows: bucketRows(forRecipients, w => w.d, scope, scopeMs, resolveRowStyle),
+      casterRows: bucketRows(forCasters, w => w.c, scope, scopeMs, resolveRowStyle),
       spell: { id: selectedBuff, name: spellName, section },
     }
-  }, [currentView, selectedBuff, scope, filters.Source, playerSpecs])
+  }, [currentView, selectedBuff, scope, filters.Source, filters.Target, perspective, resolveRowStyle])
 
   if (!selectedBuff || !currentView || !spell || !scope) return null
 
   const iconUrl = spellIconUrl(iconName)
   const accentColor = SECTION_BAR_COLORS[spell.section]
+  const activeRows = viewMode === 'recipients' ? targetRows : casterRows
 
   return (
     <>
@@ -151,7 +143,7 @@ export function BuffBreakdownPanel() {
             </span>
           </div>
           <div style={{ fontSize: 12, fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', marginTop: 2 }}>
-            {targetRows.length} {targetRows.length === 1 ? 'recipient' : 'recipients'}
+            {activeRows.length} {countLabel(activeRows.length, viewMode)}
           </div>
         </div>
         <button
@@ -166,6 +158,17 @@ export function BuffBreakdownPanel() {
         >
           &times;
         </button>
+      </div>
+
+      <div className="px-4 pt-2.5">
+        <SegmentedControl<ViewMode>
+          options={[
+            { key: 'recipients', label: 'Recipients' },
+            { key: 'casters', label: 'Casters' },
+          ]}
+          active={viewMode}
+          onChange={setViewMode}
+        />
       </div>
 
       <div className="flex-1 overflow-y-auto">
@@ -183,19 +186,19 @@ export function BuffBreakdownPanel() {
             color: 'var(--text-muted)',
           }}
         >
-          <span>Recipient</span>
+          <span>{viewMode === 'recipients' ? 'Recipient' : 'Caster'}</span>
           <span style={{ textAlign: 'right' }}>Uptime %</span>
           <span>Uptime</span>
           <span style={{ textAlign: 'right' }}>Count</span>
         </div>
-        {targetRows.length === 0 ? (
+        {activeRows.length === 0 ? (
           <div style={{ padding: '32px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>
             No windows for this buff under the current filters.
           </div>
-        ) : targetRows.map(row => (
+        ) : activeRows.map(row => (
           <TargetRow
-            key={row.target}
-            name={row.target}
+            key={row.name}
+            displayName={row.displayName}
             uptimePct={row.uptimePct}
             count={row.count}
             windows={row.windows}
@@ -203,7 +206,7 @@ export function BuffBreakdownPanel() {
             tEndMs={scope.tEnd}
             color={row.classColor}
             barColor={accentColor}
-            onClick={() => setFilter('Target', [row.target])}
+            onClick={() => setFilter(viewMode === 'recipients' ? 'Target' : 'Source', [row.name])}
           />
         ))}
       </div>
@@ -211,8 +214,13 @@ export function BuffBreakdownPanel() {
   )
 }
 
+function countLabel(n: number, view: ViewMode): string {
+  if (view === 'recipients') return n === 1 ? 'recipient' : 'recipients'
+  return n === 1 ? 'caster' : 'casters'
+}
+
 function TargetRow({
-  name,
+  displayName,
   uptimePct,
   count,
   windows,
@@ -222,7 +230,7 @@ function TargetRow({
   barColor,
   onClick,
 }: {
-  name: string
+  displayName: string
   uptimePct: number
   count: number
   windows: AuraWindowWire[]
@@ -250,7 +258,7 @@ function TargetRow({
       onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
     >
       <span className="truncate" style={{ fontSize: 13, color, minWidth: 0 }}>
-        {shortName(name)}
+        {displayName}
       </span>
       <span style={{ fontSize: 12, fontFamily: 'var(--font-mono)', textAlign: 'right', color: 'var(--text-primary)' }}>
         {uptimePct.toFixed(1)}%
@@ -374,4 +382,57 @@ function unionMs(windows: AuraWindowWire[], t0Ms: number, tEndMs: number): numbe
   }
   total += ce - cs
   return total
+}
+
+// Row emitted for both Recipients and Casters views. `name` is the grouping
+// key (target for recipients, caster for casters) and is what the click
+// handler passes to setFilter.
+interface Row {
+  name: string
+  displayName: string
+  classColor: string
+  uptimeMs: number
+  uptimePct: number
+  count: number
+  windows: AuraWindowWire[]
+}
+
+// Bucket windows by a chosen axis (target or caster), compute uptime%/count
+// per bucket, and resolve ally styling. Shared between the two drill views —
+// the only thing that differs is the key extractor.
+function bucketRows(
+  windows: AuraWindowWire[],
+  keyOf: (w: AuraWindowWire) => string,
+  scope: { t0: number; tEnd: number },
+  scopeMs: number,
+  resolveStyle: ReturnType<typeof usePlayerRowStyle>,
+): Row[] {
+  type Agg = { name: string; count: number; windows: AuraWindowWire[] }
+  const by = new Map<string, Agg>()
+  for (const w of windows) {
+    const k = keyOf(w)
+    let agg = by.get(k)
+    if (!agg) {
+      agg = { name: k, count: 0, windows: [] }
+      by.set(k, agg)
+    }
+    // Refresh-aware count — matches the main table's convention.
+    agg.count += 1 + (w.r ?? 0)
+    agg.windows.push(w)
+  }
+  const rows: Row[] = [...by.values()].map(a => {
+    const uptimeMs = unionMs(a.windows, scope.t0, scope.tEnd)
+    const style = resolveStyle(a.name)
+    return {
+      name: a.name,
+      count: a.count,
+      windows: a.windows,
+      uptimeMs,
+      uptimePct: scopeMs > 0 ? (uptimeMs / scopeMs) * 100 : 0,
+      displayName: style?.displayName ?? a.name,
+      classColor: style?.color ?? 'var(--text-secondary)',
+    }
+  })
+  rows.sort((a, b) => b.uptimePct - a.uptimePct)
+  return rows
 }

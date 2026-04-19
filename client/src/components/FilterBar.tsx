@@ -88,13 +88,13 @@ export function FilterBar() {
   // that walks aura windows instead of the event stream.
   const { sources, targets } = useMemo(
     () => isBuffsMetric
-      ? computeBuffUnitUniverse(auras, allies)
+      ? computeBuffUnitUniverse(auras, allies, deferredPerspective)
       : computeUnitUniverse(events, deferredPerspective, deferredMetric, allies),
     [isBuffsMetric, auras, allies, events, deferredPerspective, deferredMetric]
   )
   const abilityUniverse = useMemo(
     () => isBuffsMetric
-      ? computeBuffAbilityUniverse(auras, { Source: deferredFilterSource, Target: deferredFilterTarget })
+      ? computeBuffAbilityUniverse(auras, { Source: deferredFilterSource, Target: deferredFilterTarget }, allies, deferredPerspective)
       : computeAbilityUniverse(events, deferredPerspective, { Source: deferredFilterSource, Target: deferredFilterTarget }, deferredMetric, allies),
     [isBuffsMetric, auras, events, deferredPerspective, deferredFilterSource, deferredFilterTarget, deferredMetric, allies]
   )
@@ -137,14 +137,8 @@ export function FilterBar() {
         flexWrap: 'wrap',
         background: 'var(--bg-root)',
       }}>
-        {/* Perspective is ally-only for buffs (enemy-cast buffs are dropped
-            at the parser), so the toggle is hidden there. */}
-        {!isBuffsMetric && (
-          <>
-            <PerspectiveToggle perspective={perspective} onChange={setPerspective} />
-            <Divider />
-          </>
-        )}
+        <PerspectiveToggle perspective={perspective} onChange={setPerspective} />
+        <Divider />
         <PickerButton
           ref={sourceRef}
           {...axisLabels(metric, 'Source')}
