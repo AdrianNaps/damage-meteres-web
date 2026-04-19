@@ -487,7 +487,7 @@ export function GraphContainer({ metric, players, duration, inactive }: Props) {
       // Selected-buff uptime band: render beneath the drag/time-window
       // overlays so those still win visually when both are active.
       if (isAura && selectedAuraWindows && selectedAuraScope) {
-        drawBuffUptimeBand(ctx, plotW, plotH, selectedAuraWindows, selectedAuraScope.t0, selectedAuraScope.tEnd)
+        drawAuraUptimeBand(ctx, plotW, plotH, selectedAuraWindows, selectedAuraScope.t0, selectedAuraScope.tEnd)
       }
 
       // Overlay stack on top of the line graph:
@@ -1086,7 +1086,7 @@ function drawLustBand(
 // visually correlate "when was X up" with the DPS/HPS curves beneath.
 // Uses the shared amber accent so it reads as "focus this," consistent with
 // the group-avg line's color language.
-function drawBuffUptimeBand(
+function drawAuraUptimeBand(
   ctx: CanvasRenderingContext2D,
   plotW: number,
   plotH: number,
