@@ -1,5 +1,5 @@
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
-import { useStore, selectCurrentView, selectIsLoading, resolveSpecId, type Metric, type FilterState } from '../store'
+import { useStore, selectCurrentView, selectIsLoading, resolveSpecId, type Metric, type FilterState, type Perspective } from '../store'
 import type { PlayerSnapshot, AuraWindowWire, BuffSection } from '../types'
 import {
   computeUnitRows,
@@ -952,7 +952,7 @@ function FilteredBuffsTable({
   endTime: number | null
   durationSec: number
   allies: Record<string, PlayerSnapshot>
-  perspective: Parameters<typeof computeBuffRows>[7]
+  perspective: Perspective
 }) {
   const selectedBuff = useStore(s => s.selectedBuff)
   const setSelectedBuff = useStore(s => s.setSelectedBuff)
