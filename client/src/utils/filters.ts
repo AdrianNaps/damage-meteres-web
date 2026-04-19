@@ -12,7 +12,11 @@ export interface UnitRow {
   total: number
   casts?: number
   overheal?: number
-  distinctAbilities?: number   // interrupts: # distinct abilities kicked (pre-filter: byKicked)
+  // interrupts: total SPELL_CAST_SUCCESS presses of known interrupt spells
+  // (landed or not). Used by the Attempts lens to re-rank and as the "Total"
+  // column; row.value stays as the lands count so the Lands lens doesn't
+  // have to special-case.
+  attempts?: number
   // damageTaken: total mitigated amount (absorbed + blocked) across all hits on
   // this unit. Used by the Mitigated lens to re-rank and rescale the bar.
   // Absent for other metrics.
@@ -176,11 +180,17 @@ function computeUnitRowsImpl(
   const kind = kindFor(category)
   const allySet = makeAllySet(allies)
   const t0 = scopeT0(events)
-  type Bucket = { total: number; count: number; overheal: number; mitigated: number; abilities: Set<string> }
+  type Bucket = { total: number; count: number; attempts: number; overheal: number; mitigated: number }
   const agg = new Map<string, Bucket>()
 
   for (const e of events) {
-    if (e.kind !== kind) continue
+    // Interrupts straddle two event kinds: 'interrupt' (land) and
+    // 'interruptAttempt' (press). Other categories stay single-kind. A landing
+    // interrupt produces one of each at the same timestamp, so counting them
+    // independently gives lands=count(interrupt), attempts=count(interruptAttempt).
+    if (category === 'interrupts') {
+      if (e.kind !== 'interrupt' && e.kind !== 'interruptAttempt') continue
+    } else if (e.kind !== kind) continue
     if (!passesPerspective(e, category, perspective, allySet)) continue
     if (!passesFilters(e, filters, t0)) continue
 
@@ -189,7 +199,7 @@ function computeUnitRowsImpl(
 
     let bucket = agg.get(subject)
     if (!bucket) {
-      bucket = { total: 0, count: 0, overheal: 0, mitigated: 0, abilities: new Set() }
+      bucket = { total: 0, count: 0, attempts: 0, overheal: 0, mitigated: 0 }
       agg.set(subject, bucket)
     }
     if (category === 'damageTaken') {
@@ -206,12 +216,15 @@ function computeUnitRowsImpl(
       const effective = e.fullAbsorb ? 0 : rawAmount
       bucket.total += effective
       bucket.mitigated += absorbed + blocked
+      bucket.count += 1
+    } else if (category === 'interrupts') {
+      if (e.kind === 'interrupt') bucket.count += 1
+      else /* interruptAttempt */ bucket.attempts += 1
     } else {
       bucket.total += e.amount ?? 0
+      bucket.count += 1
     }
-    bucket.count += 1
-    if (category === 'healing')    bucket.overheal += e.overheal ?? 0
-    if (category === 'interrupts') bucket.abilities.add(e.ability)
+    if (category === 'healing') bucket.overheal += e.overheal ?? 0
   }
 
   const rows: UnitRow[] = []
@@ -220,13 +233,18 @@ function computeUnitRowsImpl(
     // doesn't show in the Healing view when Ability filters them out." The
     // drop test is category-specific: damageTaken keeps rows that only have
     // mitigation (meaningful under the Mitigated/Incoming lens); interrupts
-    // counts hits rather than summed amount; everything else drops on total.
+    // keeps rows with any press (attempts or lands) so the Attempts lens
+    // still surfaces a player who missed every kick; everything else drops
+    // on total.
     const shouldDrop =
-      category === 'interrupts'  ? bucket.count === 0
+      category === 'interrupts'  ? (bucket.count === 0 && bucket.attempts === 0)
       : category === 'damageTaken' ? (bucket.total === 0 && bucket.mitigated === 0)
       : bucket.total === 0
     if (shouldDrop) continue
 
+    // value is the "default" ranking dimension a caller-provided lens falls
+    // back to. Interrupts default lens ranks by lands; the Attempts lens in
+    // FullMeterView re-ranks by row.attempts.
     const value = category === 'interrupts'
       ? bucket.count
       : (durationSec > 0 ? bucket.total / durationSec : 0)
@@ -235,7 +253,7 @@ function computeUnitRowsImpl(
     const row: UnitRow = { name, specId, value, total: bucket.total }
     if (category === 'damage')      row.casts = bucket.count
     if (category === 'healing')     row.overheal = bucket.overheal
-    if (category === 'interrupts')  row.distinctAbilities = bucket.abilities.size
+    if (category === 'interrupts')  row.attempts = bucket.attempts
     if (category === 'damageTaken') row.mitigated = bucket.mitigated
     rows.push(row)
   }
@@ -386,7 +404,11 @@ export function hasMatchingData(
   const allySet = makeAllySet(allies)
   const t0 = scopeT0(events)
   for (const e of events) {
-    if (e.kind !== kind) continue
+    // Interrupts surface either a land or a press — a pull where no kick
+    // landed but some were pressed still has data for the Attempts lens.
+    if (category === 'interrupts') {
+      if (e.kind !== 'interrupt' && e.kind !== 'interruptAttempt') continue
+    } else if (e.kind !== kind) continue
     if (!passesPerspective(e, category, perspective, allySet)) continue
     if (!passesFilters(e, filters, t0)) continue
     return true
@@ -461,17 +483,22 @@ export function computeBuffRows(
   filters: FilterState,
   t0Ms: number,
   tEndMs: number,
+  allies: Record<string, PlayerSnapshot>,
+  perspective: Perspective,
 ): BuffRow[] {
   if (!hasAnyFilter(filters)) {
     const sub = getOrInit(buffRowsCache, auras)
-    const cacheKey = `${t0Ms}:${tEndMs}`
+    // The WeakMap is keyed on the auras array so it's already scoped to one
+    // snapshot; perspective distinguishes the ally vs enemy partition within
+    // that snapshot.
+    const cacheKey = `${perspective}:${t0Ms}:${tEndMs}`
     const cached = sub.get(cacheKey)
     if (cached) return cached
-    const rows = computeBuffRowsImpl(auras, classification, filters, t0Ms, tEndMs)
+    const rows = computeBuffRowsImpl(auras, classification, filters, t0Ms, tEndMs, allies, perspective)
     sub.set(cacheKey, rows)
     return rows
   }
-  return computeBuffRowsImpl(auras, classification, filters, t0Ms, tEndMs)
+  return computeBuffRowsImpl(auras, classification, filters, t0Ms, tEndMs, allies, perspective)
 }
 
 function computeBuffRowsImpl(
@@ -480,6 +507,8 @@ function computeBuffRowsImpl(
   filters: FilterState,
   t0Ms: number,
   tEndMs: number,
+  allies: Record<string, PlayerSnapshot>,
+  perspective: Perspective,
 ): BuffRow[] {
   if (auras.length === 0 || tEndMs <= t0Ms) return []
 
@@ -490,6 +519,7 @@ function computeBuffRowsImpl(
   const casterFilter = filters.Source
   const recipientFilter = filters.Target
   const buffFilter = filters.Ability
+  const allySet = makeAllySet(allies)
 
   // Group by spellId. Keep per-target window lists for the eventual drill panel
   // (PR 5) so a row already has them memoized — avoids a second pass.
@@ -502,6 +532,11 @@ function computeBuffRowsImpl(
   const bySpell = new Map<string, Agg>()
 
   for (const w of auras) {
+    // Allies view: target is a known ally (by name).
+    // Enemies view: target was REACTION_HOSTILE at APPLIED — a name-only
+    // check would leak player pets / totems / guardians into the enemy list
+    // since they're non-ally but friendly.
+    if (perspective === 'allies' ? !allySet.has(w.d) : w.h !== 1) continue
     if (casterFilter && !casterFilter.includes(w.c)) continue
     if (recipientFilter && !recipientFilter.includes(w.d)) continue
     if (buffFilter && !buffFilter.includes(w.n)) continue
@@ -563,29 +598,38 @@ function resolveBuffScope(
 }
 
 // Unit universe for the buffs metric — casters + recipients that appear in
-// the aura windows. Allies-only in v1 (enemy-cast buffs dropped at parser),
-// so the set is naturally ally-scoped.
-const buffUnitUniverseCache = new WeakMap<AuraWindowWire[], { sources: string[]; targets: string[] }>()
+// the aura windows. Partitioned by perspective so the allies view picker
+// lists only ally recipients (and their casters) and the enemies view lists
+// only non-ally recipients.
+const buffUnitUniverseCache = new WeakMap<AuraWindowWire[], Map<Perspective, { sources: string[]; targets: string[] }>>()
 
 export function computeBuffUnitUniverse(
   auras: AuraWindowWire[],
   allies: Record<string, PlayerSnapshot>,
+  perspective: Perspective,
 ): { sources: string[]; targets: string[] } {
-  const cached = buffUnitUniverseCache.get(auras)
+  const sub = getOrInit(buffUnitUniverseCache, auras)
+  const cached = sub.get(perspective)
   if (cached) return cached
+  const allySet = makeAllySet(allies)
   const sources = new Set<string>()
   const targets = new Set<string>()
   for (const w of auras) {
+    if (perspective === 'allies' ? !allySet.has(w.d) : w.h !== 1) continue
     sources.add(w.c)
     targets.add(w.d)
   }
-  // Include allies as fallback recipients even if they never gained/lost a
-  // buff in this scope — the picker should still list them so a user can
-  // filter to "buffs on <X>" and get an empty state, not a missing option.
-  // (Mirrors how the damage/healing picker lists allies with zero activity.)
-  for (const name of Object.keys(allies)) targets.add(name)
+  if (perspective === 'allies') {
+    // Include allies as fallback recipients even if they never gained/lost a
+    // buff in this scope — the picker should still list them so a user can
+    // filter to "buffs on <X>" and get an empty state, not a missing option.
+    // (Mirrors how the damage/healing picker lists allies with zero activity.)
+    // No equivalent fallback for enemies — we don't have a canonical enemy
+    // roster outside the aura stream itself.
+    for (const name of Object.keys(allies)) targets.add(name)
+  }
   const result = { sources: [...sources].sort(), targets: [...targets].sort() }
-  buffUnitUniverseCache.set(auras, result)
+  sub.set(perspective, result)
   return result
 }
 
@@ -594,14 +638,18 @@ export function computeBuffUnitUniverse(
 export function computeBuffAbilityUniverse(
   auras: AuraWindowWire[],
   filters: Pick<FilterState, 'Source' | 'Target'>,
+  allies: Record<string, PlayerSnapshot>,
+  perspective: Perspective,
 ): AbilityEntry[] {
   type Agg = { count: number; sources: Map<string, number> }
   const byBuff = new Map<string, Agg>()
 
   const srcFilter = filters.Source
   const tgtFilter = filters.Target
+  const allySet = makeAllySet(allies)
 
   for (const w of auras) {
+    if (perspective === 'allies' ? !allySet.has(w.d) : w.h !== 1) continue
     if (srcFilter && !srcFilter.includes(w.c)) continue
     if (tgtFilter && !tgtFilter.includes(w.d)) continue
     let agg = byBuff.get(w.n)
@@ -641,13 +689,17 @@ export function hasMatchingBuffData(
   filters: FilterState,
   t0Ms: number,
   tEndMs: number,
+  allies: Record<string, PlayerSnapshot>,
+  perspective: Perspective,
 ): boolean {
   const { effStart, effEnd } = resolveBuffScope(t0Ms, tEndMs, filters.TimeWindow)
   if (effEnd <= effStart) return false
   const casterFilter = filters.Source
   const recipientFilter = filters.Target
   const buffFilter = filters.Ability
+  const allySet = makeAllySet(allies)
   for (const w of auras) {
+    if (perspective === 'allies' ? !allySet.has(w.d) : w.h !== 1) continue
     if (casterFilter && !casterFilter.includes(w.c)) continue
     if (recipientFilter && !recipientFilter.includes(w.d)) continue
     if (buffFilter && !buffFilter.includes(w.n)) continue

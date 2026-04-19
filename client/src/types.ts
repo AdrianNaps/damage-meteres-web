@@ -71,6 +71,10 @@ export interface InterruptSpellStats {
   spellId: string
   spellName: string
   count: number
+  // Attempts (cast-success events) for this kicker spell. Only meaningful on
+  // `byKicker` entries; undefined on `byKicked` and on legacy snapshots that
+  // predate attempt tracking. The lens renders undefined as "-".
+  casts?: number
 }
 
 export interface PlayerInterruptRecord {
@@ -88,6 +92,10 @@ export interface PlayerInterruptRecord {
 
 export interface InterruptData {
   total: number
+  // Total SPELL_CAST_SUCCESS events for known interrupt spells — attempts,
+  // whether or not each press landed. Always ≥ total. Undefined on legacy
+  // snapshots; the lens treats that as "unknown" and falls back to count.
+  attempts?: number
   byKicker: Record<string, InterruptSpellStats>
   byKicked: Record<string, InterruptSpellStats>
   records: PlayerInterruptRecord[]
@@ -107,7 +115,12 @@ export interface PlayerSnapshot {
 
 export interface ClientEvent {
   t: number
-  kind: 'damage' | 'heal' | 'interrupt' | 'death'
+  // 'interrupt' is a land (SPELL_INTERRUPT); 'interruptAttempt' is a press
+  // (SPELL_CAST_SUCCESS for a known interrupt spell). A landing interrupt
+  // produces both at the same timestamp; a missed one only produces
+  // 'interruptAttempt'. Attempts lens ranks on presses; Lands lens ranks on
+  // landings only.
+  kind: 'damage' | 'heal' | 'interrupt' | 'interruptAttempt' | 'death'
   src: string
   dst: string
   ability: string
@@ -145,6 +158,7 @@ export interface AuraWindowWire {
   s: number   // start ms (absolute)
   e: number   // end ms (absolute — clamped to segment end if still open)
   r?: number  // refresh count inside this window (undefined = 0)
+  h?: 1       // target was hostile at event time — enemies-perspective filter signal. Omitted for friendly targets (allies, player pets, totems, guardians). Legacy snapshots (pre-hostile-flag) read as undefined → treated as friendly on the enemies view, which is safe (they simply won't appear).
 }
 
 export interface SegmentSnapshot {

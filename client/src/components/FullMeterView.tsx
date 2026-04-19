@@ -1,4 +1,4 @@
-import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef } from 'react'
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { useStore, selectCurrentView, selectIsLoading, resolveSpecId, type Metric, type FilterState } from '../store'
 import type { PlayerSnapshot, AuraWindowWire, BuffSection } from '../types'
 import {
@@ -121,12 +121,29 @@ const DAMAGE_TAKEN_MITIGATED_CONFIG: MetricConfig = {
   ],
 }
 
-const INTERRUPTS_CONFIG: MetricConfig = {
-  labels: ['Count', 'Spells'],
+// Two shapes for Interrupts depending on the lens — mirrors healing.
+// Lands (default) reports landing kicks only: one bold Count column, bar
+// scaled to lands. Attempts surfaces the full press count with a Missed (%)
+// column and stacks lands primary + missed lighter on the bar, ranked by
+// attempts. row.value is always lands; row.attempts is always presses.
+const INTERRUPTS_LANDS_CONFIG: MetricConfig = {
+  labels: ['Count'],
   stats: r => [
     { label: 'Count', value: r.value, format: 'integer', bold: true },
-    { label: 'Spells', value: r.distinctAbilities ?? 0, format: 'integer' },
   ],
+}
+
+const INTERRUPTS_ATTEMPTS_CONFIG: MetricConfig = {
+  labels: ['Attempts', 'Missed'],
+  stats: r => {
+    const attempts = r.attempts ?? 0
+    const missed = Math.max(0, attempts - r.value)
+    const missedPct = attempts > 0 ? (missed / attempts) * 100 : 0
+    return [
+      { label: 'Attempts', value: attempts, format: 'integer', bold: true },
+      { label: 'Missed', value: missed, format: 'integer', suffix: attempts > 0 ? `(${Math.round(missedPct)}%)` : undefined },
+    ]
+  },
 }
 
 function formatStat(stat: NumericStat): string {
@@ -184,6 +201,8 @@ export function FullMeterView() {
         startTime={currentView.startTime}
         endTime={currentView.endTime}
         durationSec={duration}
+        allies={allies}
+        perspective={deferredPerspective}
       />
     )
   }
@@ -237,6 +256,7 @@ function FilteredPlayerTable({
   const playerSpecs = useStore(s => s.playerSpecs)
   const healingLens = useStore(s => s.healingLens)
   const damageTakenLens = useStore(s => s.damageTakenLens)
+  const interruptsLens = useStore(s => s.interruptsLens)
 
   const baseRows = useMemo(
     () => computeUnitRows(events, perspective, filters, category, allies, duration),
@@ -247,17 +267,19 @@ function FilteredPlayerTable({
   // with no secondary stack. 'healingRaw' = bar stacks effective + overheal,
   // ranked by raw. 'damageTakenIncoming' = bar stacks landed + mitigated,
   // ranked by gross (landed + mitigated/sec). 'damageTakenMitigated' = bar
-  // and ranking both swap to mitigated/sec (no stack).
-  type LensMode = 'default' | 'healingRaw' | 'damageTakenIncoming' | 'damageTakenMitigated'
+  // and ranking both swap to mitigated/sec (no stack). 'interruptsAttempts'
+  // = bar stacks lands + missed, ranked by attempts (= lands + missed).
+  type LensMode = 'default' | 'healingRaw' | 'damageTakenIncoming' | 'damageTakenMitigated' | 'interruptsAttempts'
   const lensMode: LensMode =
     category === 'healing' && healingLens === 'raw' ? 'healingRaw'
     : category === 'damageTaken' && damageTakenLens === 'incoming' ? 'damageTakenIncoming'
     : category === 'damageTaken' && damageTakenLens === 'mitigated' ? 'damageTakenMitigated'
+    : category === 'interrupts' && interruptsLens === 'attempts' ? 'interruptsAttempts'
     : 'default'
 
   const config =
     category === 'damage'                 ? DAMAGE_CONFIG
-    : category === 'interrupts'           ? INTERRUPTS_CONFIG
+    : category === 'interrupts'           ? (lensMode === 'interruptsAttempts' ? INTERRUPTS_ATTEMPTS_CONFIG : INTERRUPTS_LANDS_CONFIG)
     : category === 'damageTaken'          ? (lensMode === 'damageTakenMitigated' ? DAMAGE_TAKEN_MITIGATED_CONFIG
                                             : lensMode === 'damageTakenIncoming' ? DAMAGE_TAKEN_INCOMING_CONFIG
                                             : DAMAGE_TAKEN_EFFECTIVE_CONFIG)
@@ -291,7 +313,37 @@ function FilteredPlayerTable({
     overhealPerSec: number[] | null
     mitigatedPerSec: number[] | null
   }>(() => {
-    if (lensMode === 'default' || duration <= 0) {
+    if (lensMode === 'default') {
+      return {
+        rows: baseRows,
+        barScale: baseRows[0]?.value ?? 0,
+        primaryPerSec: baseRows.map(r => r.value),
+        secondaryPerSec: baseRows.map(() => 0),
+        overhealPerSec: null,
+        mitigatedPerSec: null,
+      }
+    }
+    // Interrupts-attempts: primary=lands, secondary=missed, ranked by attempts.
+    // Values are raw counts, no duration scaling — kept in the *PerSec arrays
+    // to match the rest of the pipeline's plumbing.
+    if (lensMode === 'interruptsAttempts') {
+      const paired = baseRows.map(r => {
+        const attempts = r.attempts ?? 0
+        const missed = Math.max(0, attempts - r.value)
+        return { r, attempts, missed }
+      })
+      paired.sort((a, b) => b.attempts - a.attempts)
+      return {
+        rows: paired.map(p => p.r),
+        barScale: paired[0]?.attempts ?? 0,
+        primaryPerSec: paired.map(p => p.r.value),
+        secondaryPerSec: paired.map(p => p.missed),
+        overhealPerSec: null,
+        mitigatedPerSec: null,
+      }
+    }
+    // Per-second lenses below need a non-zero duration to compute rates.
+    if (duration <= 0) {
       return {
         rows: baseRows,
         barScale: baseRows[0]?.value ?? 0,
@@ -353,7 +405,7 @@ function FilteredPlayerTable({
   // — which is row.value under default/healingRaw and mitigated/sec under
   // damageTakenMitigated (where primary is already mitigated).
   const sumArr = (xs: number[]) => xs.reduce((s, v) => s + v, 0)
-  const totalValue = lensMode === 'damageTakenIncoming'
+  const totalValue = (lensMode === 'damageTakenIncoming' || lensMode === 'interruptsAttempts')
     ? sumArr(primaryPerSec) + sumArr(secondaryPerSec)
     : sumArr(primaryPerSec)
 
@@ -383,10 +435,13 @@ function FilteredPlayerTable({
           rows.map((row, i) => {
             const primary = primaryPerSec[i] ?? row.value
             const secondary = secondaryPerSec[i] ?? 0
-            // Incoming lens: "share of gross" lines up with the stacked bar's
-            // total width, matching what the user reads in Total/DTPS. Other
-            // lenses keep the established "share of primary" convention.
-            const shareNumerator = lensMode === 'damageTakenIncoming' ? primary + secondary : primary
+            // Stacked-bar lenses (damageTakenIncoming, interruptsAttempts) use
+            // "share of the full bar width" so the number matches what the eye
+            // sees. Other lenses keep the established "share of primary"
+            // convention.
+            const shareNumerator = (lensMode === 'damageTakenIncoming' || lensMode === 'interruptsAttempts')
+              ? primary + secondary
+              : primary
             return (
               <FullPlayerRow
                 key={row.name}
@@ -887,6 +942,8 @@ function FilteredBuffsTable({
   startTime,
   endTime,
   durationSec,
+  allies,
+  perspective,
 }: {
   auras: AuraWindowWire[]
   classification: Record<string, BuffSection>
@@ -894,17 +951,31 @@ function FilteredBuffsTable({
   startTime: number
   endTime: number | null
   durationSec: number
+  allies: Record<string, PlayerSnapshot>
+  perspective: Parameters<typeof computeBuffRows>[7]
 }) {
   const selectedBuff = useStore(s => s.selectedBuff)
   const setSelectedBuff = useStore(s => s.setSelectedBuff)
+  // Collapse state is per-section and local to the table instance. Reset on
+  // remount (i.e. new scope / perspective swap) is fine — exploring a fresh
+  // pull is a fresh read. A Set means an absent key = expanded, which keeps
+  // the default "everything visible" behavior without seeding on mount.
+  const [collapsed, setCollapsed] = useState<Set<BuffSection>>(() => new Set())
+  const toggleSection = useCallback((key: BuffSection) => {
+    setCollapsed(prev => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key); else next.add(key)
+      return next
+    })
+  }, [])
   // For in-progress scopes (endTime === null) we can't reach this path in
   // practice — Full mode is gated on completed snapshots — but defend anyway
   // by deriving tEnd from durationSec.
   const tEnd = endTime ?? (startTime + durationSec * 1000)
 
   const rows = useMemo(
-    () => computeBuffRows(auras, classification, filters, startTime, tEnd),
-    [auras, classification, filters, startTime, tEnd],
+    () => computeBuffRows(auras, classification, filters, startTime, tEnd, allies, perspective),
+    [auras, classification, filters, startTime, tEnd, allies, perspective],
   )
 
   // Split rows into section groups while preserving the already-sorted order.
@@ -937,7 +1008,7 @@ function FilteredBuffsTable({
   }
   if (rows.length === 0) {
     const anyFilter = !!(filters.Source || filters.Target || filters.Ability || filters.TimeWindow)
-    if (anyFilter && !hasMatchingBuffData(auras, filters, startTime, tEnd)) {
+    if (anyFilter && !hasMatchingBuffData(auras, filters, startTime, tEnd, allies, perspective)) {
       return <FilterEmptyState />
     }
     return <EmptyState text="No buff data in this scope" />
@@ -947,22 +1018,30 @@ function FilteredBuffsTable({
     <div className="flex-1 flex flex-col min-h-0">
       <BuffsColumnHeader />
       <div className="flex-1 overflow-y-auto">
-        {grouped.map(group => (
-          <div key={group.key}>
-            <BuffSectionHeader label={SECTION_LABELS[group.key]} count={group.rows.length} />
-            {group.rows.map((row, i) => (
-              <FullBuffRow
-                key={row.spellId}
-                row={row}
-                rank={i + 1}
-                t0Ms={startTime}
-                tEndMs={tEnd}
-                isSelected={selectedBuff === row.spellId}
-                onClick={() => setSelectedBuff(selectedBuff === row.spellId ? null : row.spellId)}
+        {grouped.map(group => {
+          const isCollapsed = collapsed.has(group.key)
+          return (
+            <div key={group.key}>
+              <BuffSectionHeader
+                label={SECTION_LABELS[group.key]}
+                count={group.rows.length}
+                collapsed={isCollapsed}
+                onToggle={() => toggleSection(group.key)}
               />
-            ))}
-          </div>
-        ))}
+              {!isCollapsed && group.rows.map((row, i) => (
+                <FullBuffRow
+                  key={row.spellId}
+                  row={row}
+                  rank={i + 1}
+                  t0Ms={startTime}
+                  tEndMs={tEnd}
+                  isSelected={selectedBuff === row.spellId}
+                  onClick={() => setSelectedBuff(selectedBuff === row.spellId ? null : row.spellId)}
+                />
+              ))}
+            </div>
+          )
+        })}
       </div>
     </div>
   )
@@ -990,9 +1069,28 @@ function BuffsColumnHeader() {
   )
 }
 
-function BuffSectionHeader({ label, count }: { label: string; count: number }) {
+function BuffSectionHeader({
+  label,
+  count,
+  collapsed,
+  onToggle,
+}: {
+  label: string
+  count: number
+  collapsed: boolean
+  onToggle: () => void
+}) {
   return (
     <div
+      onClick={onToggle}
+      role="button"
+      tabIndex={0}
+      onKeyDown={e => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          onToggle()
+        }
+      }}
       style={{
         padding: '6px 14px',
         fontSize: 10,
@@ -1002,10 +1100,29 @@ function BuffSectionHeader({ label, count }: { label: string; count: number }) {
         color: 'var(--text-muted)',
         background: 'var(--bg-root)',
         borderBottom: '1px solid var(--border-subtle)',
+        cursor: 'pointer',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
+        userSelect: 'none',
+        transition: 'color 0.1s',
       }}
+      onMouseEnter={e => { e.currentTarget.style.color = 'var(--text-primary)' }}
+      onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)' }}
     >
+      {/* Monospace chevron keeps horizontal alignment stable when the rotation
+          swaps between ▸ and ▾ (different advance widths on some fonts). */}
+      <span style={{
+        fontFamily: 'var(--font-mono)',
+        fontSize: 9,
+        width: 10,
+        display: 'inline-block',
+        textAlign: 'center',
+      }}>
+        {collapsed ? '▸' : '▾'}
+      </span>
       {label}
-      <span style={{ color: 'var(--text-muted)', marginLeft: 6, fontWeight: 400 }}>
+      <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>
         ({count})
       </span>
     </div>

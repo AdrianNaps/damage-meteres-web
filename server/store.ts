@@ -77,10 +77,21 @@ export interface InterruptSpellStats {
   spellId: string
   spellName: string
   count: number
+  // Attempts (cast-success events) for this kicker spell. Only meaningful on
+  // `byKicker` entries — `byKicked` counts interrupted spells, which don't
+  // have a meaningful attempts value. Optional so legacy snapshots without
+  // attempt tracking read as undefined and the client lens can show "-".
+  casts?: number
 }
 
 export interface InterruptData {
   total: number
+  // Total SPELL_CAST_SUCCESS events for known interrupt spells — the "pressed
+  // the button" count regardless of whether each press landed. Always ≥ total.
+  // The difference (attempts - total) is interrupts that missed because the
+  // target wasn't casting, another kicker won the race, or the cast was on
+  // CD. See server/interrupts.ts for the known-interrupt list.
+  attempts: number
   // Kicker's own abilities (e.g. Pummel, Kick, Mind Freeze)
   byKicker: Record<string, InterruptSpellStats>
   // Enemy spells that got interrupted
@@ -196,6 +207,7 @@ export function materializeAuras(segment: Segment, cutoffMs: number): AuraWindow
       preExisting: false,
       stillOpen: true,
       refreshCount: open.refreshCount,
+      targetHostile: open.targetHostile,
     })
   }
   return out
@@ -210,6 +222,7 @@ export function auraWindowsToWire(windows: AuraWindow[]): AuraWindowWire[] {
     const w = windows[i]
     const wire: AuraWindowWire = { id: w.spellId, n: w.spellName, c: w.caster, d: w.target, s: w.start, e: w.end }
     if (w.refreshCount > 0) wire.r = w.refreshCount
+    if (w.targetHostile) wire.h = 1
     out[i] = wire
   }
   return out
@@ -657,6 +670,7 @@ export class SegmentStore {
             deaths: [...player.deaths],
             interrupts: {
               total: player.interrupts.total,
+              attempts: player.interrupts.attempts,
               byKicker: Object.fromEntries(
                 Object.entries(player.interrupts.byKicker).map(([k, v]) => [k, { ...v }])
               ),
@@ -766,10 +780,15 @@ export class SegmentStore {
           mp.deaths.push(...player.deaths)
 
           mp.interrupts.total += player.interrupts.total
+          mp.interrupts.attempts += player.interrupts.attempts
           for (const [sid, s] of Object.entries(player.interrupts.byKicker)) {
             const existing = mp.interrupts.byKicker[sid]
-            if (!existing) mp.interrupts.byKicker[sid] = { ...s }
-            else existing.count += s.count
+            if (!existing) {
+              mp.interrupts.byKicker[sid] = { ...s }
+            } else {
+              existing.count += s.count
+              if (s.casts !== undefined) existing.casts = (existing.casts ?? 0) + s.casts
+            }
           }
           for (const [sid, s] of Object.entries(player.interrupts.byKicked)) {
             const existing = mp.interrupts.byKicked[sid]

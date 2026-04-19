@@ -23,6 +23,11 @@ const BOSS_MIRRORED_DAMAGE_SPELLS = new Set<string>([
 // aggregator needs them to compute the spiritLinkDamage-style healing offset.
 import { REDISTRIBUTION_DAMAGE_SPELLS } from './types.js'
 
+// Interrupt spell set (mutable hybrid — see server/interrupts.ts). Static IDs
+// seed the set; SPELL_INTERRUPT adds any newly observed spellId so Attempts
+// counting stays accurate for anything unlisted (hero talents, later patches).
+import { INTERRUPT_SPELL_IDS } from './interrupts.js'
+
 // Hero-talent / class-fantasy procs that place an absorb shield on a friendly NPC
 // ally but should be credited to the casting player. In SPELL_ABSORBED the absorber
 // slot holds the allied creature (no PLAYER_FLAG), but the outer dest is the player
@@ -157,32 +162,50 @@ export function parseLine(raw: string): ParsedEvent | ParsedEvent[] | null {
       }
     }
 
-    // Some hero-talent / class-fantasy clones cast through a non-player source
-    // that never emits SPELL_SUMMON (e.g. Rogue Subtlety "Akaari's Soul" NPC 144961
-    // that fires Secret Technique / 282449 as the 5 shadow clones). The advanced-log
-    // block on SPELL_CAST_SUCCESS carries the owning player's GUID at fields[13]
-    // (the ownerGUID slot immediately after infoGUID in the full advanced block).
-    // If the source carries PET_FLAG or GUARDIAN_FLAG — i.e. it's an owned unit
-    // rather than a boss, environment NPC, or charmed player — re-emit as a
-    // synthetic summon so the aggregator's existing petToOwner bootstrap picks it
-    // up and subsequent SPELL_DAMAGE events from the clone get credited to the
-    // owning player. `recordPetOwner` is idempotent so re-firing on every cast by
-    // an already-registered pet is a no-op.
-    //
-    // The synthetic summon source has an empty name string because the raw event
-    // doesn't carry the owner's name — the aggregator's summon handler is guarded
-    // to not overwrite guidToName with an empty string, and by the time clones
-    // deal damage the owner's name is already populated via earlier player events
-    // or COMBATANT_INFO.
     case 'SPELL_CAST_SUCCESS': {
-      // Narrow to owned units: pets, guardians, and clone-style summons. Filters
-      // out the ~all Creature casts in the log (bosses, environment NPCs, charmed
-      // players) that would otherwise run through the pet-owner bootstrap.
-      if (!(source.flags & (PET_FLAG | GUARDIAN_FLAG))) return null
+      const spellId = fields[9]
+      const isPlayerSrc = source.guid.startsWith('Player-')
+      const isPetFlagSrc = !!(source.flags & (PET_FLAG | GUARDIAN_FLAG))
+
+      // (a) Interrupt attempt. A player or player-owned pet casting a spellId
+      // in the interrupt set — the aggregator counts these as Attempts,
+      // independent of whether the paired SPELL_INTERRUPT lands. Checked
+      // against the live set so the auto-add from SPELL_INTERRUPT covers
+      // anything missing from the static list.
+      if ((isPlayerSrc || isPetFlagSrc) && INTERRUPT_SPELL_IDS.has(spellId)) {
+        return {
+          timestamp, type: eventType, source, dest,
+          payload: {
+            type: 'interruptAttempt',
+            spellId,
+            spellName: stripQuotes(fields[10]),
+          }
+        }
+      }
+
+      // (b) Pet-summon bootstrap for clone-style summons that never emit
+      // SPELL_SUMMON (e.g. Rogue Subtlety "Akaari's Soul" NPC 144961 firing
+      // Secret Technique / 282449 as the 5 shadow clones). The advanced-log
+      // block on SPELL_CAST_SUCCESS carries the owning player's GUID at
+      // fields[13] (the ownerGUID slot immediately after infoGUID in the
+      // full advanced block). If the source carries PET_FLAG or GUARDIAN_FLAG
+      // — i.e. it's an owned unit rather than a boss, environment NPC, or
+      // charmed player — re-emit as a synthetic summon so the aggregator's
+      // existing petToOwner bootstrap picks it up and subsequent SPELL_DAMAGE
+      // events from the clone get credited to the owning player.
+      // `recordPetOwner` is idempotent so re-firing on every cast by an
+      // already-registered pet is a no-op.
+      //
+      // The synthetic summon source has an empty name string because the raw
+      // event doesn't carry the owner's name — the aggregator's summon
+      // handler is guarded to not overwrite guidToName with an empty string,
+      // and by the time clones deal damage the owner's name is already
+      // populated via earlier player events or COMBATANT_INFO.
+      if (!isPetFlagSrc) return null
       if (source.guid.startsWith('Player-')) return null
-      // Full advanced-log block is 17 fields after the prefix; require the whole
-      // block to be present rather than just enough to read [13], so truncated
-      // rows can't feed garbage into the owner slot.
+      // Full advanced-log block is 17 fields after the prefix; require the
+      // whole block to be present rather than just enough to read [13], so
+      // truncated rows can't feed garbage into the owner slot.
       if (fields.length < 25) return null
       const ownerGuid = fields[13]
       if (!ownerGuid?.startsWith('Player-')) return null
@@ -518,9 +541,10 @@ export function parseLine(raw: string): ParsedEvent | ParsedEvent[] | null {
 
     // BUFF application or refresh on a friendly target. Both emit 'aura'
     // payloads; the direction distinguishes a fresh window open from a
-    // reapplication of an already-open one. DEBUFFs and non-player targets
-    // are dropped at the parser in v1 (the future debuffs metric will flip
-    // these filters).
+    // reapplication of an already-open one. DEBUFFs are dropped at the parser
+    // (future debuffs metric will relax that). Both player and non-player
+    // (enemy) targets flow through — the buffs metric supports an enemies
+    // perspective so we can surface things like purgeable mob buffs.
     //
     // Field layout: [9]=spellId [10]=spellName [11]=school [12]=BUFF|DEBUFF [13?]=amount
     // We ignore the trailing amount on APPLIED/REFRESH entirely — only REMOVED
@@ -531,7 +555,6 @@ export function parseLine(raw: string): ParsedEvent | ParsedEvent[] | null {
     case 'SPELL_AURA_REFRESH': {
       if (fields.length < 13) return null
       if (fields[12] !== 'BUFF') return null
-      if (!dest.guid.startsWith('Player-')) return null
       return {
         timestamp, type: eventType, source, dest,
         payload: {
@@ -564,11 +587,12 @@ export function parseLine(raw: string): ParsedEvent | ParsedEvent[] | null {
     // player. The aggregator drops any heal (including these synthetic
     // aura-expiry overheal events) whose dest is a creature, matching WCL.
     //
-    // (b) AURA-WINDOW CLOSE. For any BUFF removal with a player dest, emit an
-    // 'aura' payload so the aggregator can close the matching open window (or
-    // retroactively seed a pre-existing one when no APPLIED was seen). Fires
-    // independently of the absorb-overheal path, so a single row can return
-    // both events as an array.
+    // (b) AURA-WINDOW CLOSE. Emit an 'aura' payload for every BUFF removal so
+    // the aggregator can close the matching open window (or retroactively seed
+    // a pre-existing one when no APPLIED was seen). Fires independently of
+    // the absorb-overheal path, so a single row can return both events as an
+    // array. Targets off both sides (players + enemies) to keep ally/enemy
+    // perspectives symmetric for the buffs metric.
     //
     // Field layout:
     //   Non-absorb buff (13 fields): [9]=spellId [10]=spellName [11]=school [12]=BUFF|DEBUFF
@@ -603,20 +627,18 @@ export function parseLine(raw: string): ParsedEvent | ParsedEvent[] | null {
         }
       }
 
-      // (b) Aura-window close. Only fires for player-dest BUFFs; enemies and
-      // non-player friendlies (pets, npcs) are out of scope for v1.
-      if (dest.guid.startsWith('Player-')) {
-        emitted.push({
-          timestamp, type: eventType, source, dest,
-          payload: {
-            type: 'aura',
-            direction: 'removed',
-            spellId,
-            spellName,
-            auraKind: 'BUFF',
-          },
-        })
-      }
+      // (b) Aura-window close. Fires for every BUFF removal regardless of
+      // target side so ally + enemy perspectives stay symmetric.
+      emitted.push({
+        timestamp, type: eventType, source, dest,
+        payload: {
+          type: 'aura',
+          direction: 'removed',
+          spellId,
+          spellName,
+          auraKind: 'BUFF',
+        },
+      })
 
       if (emitted.length === 0) return null
       if (emitted.length === 1) return emitted[0]
@@ -627,6 +649,11 @@ export function parseLine(raw: string): ParsedEvent | ParsedEvent[] | null {
       // [9]=spellId [10]=spellName [11]=school [12]=extraSpellId [13]=extraSpellName [14]=extraSchool
       if (!(source.flags & ATTRIBUTABLE_SOURCE_FLAGS)) return null
       if (fields.length < 14) return null
+      // Hybrid interrupt-set catch-up: any spellId we see landing an interrupt
+      // gets added to the live set so subsequent SPELL_CAST_SUCCESS events for
+      // the same ability are counted as Attempts. Idempotent for IDs already
+      // in the static baseline.
+      INTERRUPT_SPELL_IDS.add(fields[9])
       return {
         timestamp, type: eventType, source, dest,
         payload: {

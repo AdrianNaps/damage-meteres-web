@@ -25,6 +25,12 @@ export type HealingLens = 'effective' | 'raw'
 // before getting to the "landed vs prevented" split. Graph stays lens-
 // independent so flipping the lens doesn't reshape the curve.
 export type DamageTakenLens = 'incoming' | 'effective' | 'mitigated'
+// Interrupts lens. Lands = count of SPELL_INTERRUPT events, the "got credit"
+// number (hidden Attempts column, solid bar). Attempts = surface the full
+// press count with a Missed (%) column and a bar that stacks lands primary +
+// missed lighter, ranked by attempts — mirrors the healing-raw overheal
+// treatment.
+export type InterruptsLens = 'lands' | 'attempts'
 export type FilterAxis = 'Source' | 'Target' | 'Ability'
 export type SourceKind = 'live' | 'archive'
 
@@ -208,6 +214,7 @@ interface AppState {
   // sources.
   healingLens: HealingLens
   damageTakenLens: DamageTakenLens
+  interruptsLens: InterruptsLens
 
   // Per-source-state setters. sourceId defaults to activeSourceId so existing
   // call sites (component clicks) keep working unchanged. WS message handlers
@@ -241,6 +248,7 @@ interface AppState {
   setLogPickerOpen: (open: boolean) => void
   setHealingLens: (lens: HealingLens) => void
   setDamageTakenLens: (lens: DamageTakenLens) => void
+  setInterruptsLens: (lens: InterruptsLens) => void
   refreshBootInfo: () => Promise<void>
 
   // Source registry actions.
@@ -449,6 +457,7 @@ export const useStore = create<AppState>((set) => ({
   logPickerOpen: false,
   healingLens: 'effective',
   damageTakenLens: 'incoming',
+  interruptsLens: 'lands',
 
   setSelectedSegment: (s, sourceId) => set(state => {
     const sid = sourceId ?? state.activeSourceId
@@ -867,6 +876,7 @@ export const useStore = create<AppState>((set) => ({
   setLogPickerOpen: (open) => set({ logPickerOpen: open }),
   setHealingLens: (lens) => set({ healingLens: lens }),
   setDamageTakenLens: (lens) => set({ damageTakenLens: lens }),
+  setInterruptsLens: (lens) => set({ interruptsLens: lens }),
 
   setActiveSource: (sourceId) => set(state => {
     if (sourceId === state.activeSourceId) return {}

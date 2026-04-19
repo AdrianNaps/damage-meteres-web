@@ -1,5 +1,6 @@
-export const PET_FLAG      = 0x1000  // WoW unit flag: TYPE_PET (persistent player-owned pet)
-export const GUARDIAN_FLAG = 0x2000  // WoW unit flag: TYPE_GUARDIAN (temporary summoned guardian)
+export const PET_FLAG        = 0x1000  // WoW unit flag: TYPE_PET (persistent player-owned pet)
+export const GUARDIAN_FLAG   = 0x2000  // WoW unit flag: TYPE_GUARDIAN (temporary summoned guardian)
+export const REACTION_HOSTILE = 0x0040 // WoW unit flag: REACTION_HOSTILE — distinguishes true enemies from friendly NPCs (pets, totems, guardians)
 
 // Damage redistribution abilities (e.g. Tempered in Battle, Spirit Link Totem).
 // WCL treats these as "spiritLinkDamage": damage events are excluded from the
@@ -37,6 +38,7 @@ export type EventType =
   | 'SPELL_AURA_APPLIED'
   | 'SPELL_AURA_REFRESH'
   | 'SPELL_AURA_REMOVED'
+  | 'SPELL_CAST_SUCCESS'
   | 'SPELL_INTERRUPT'
   | 'UNIT_DIED'
 
@@ -131,6 +133,17 @@ export interface InterruptPayload {
   extraSpellName: string
 }
 
+// A SPELL_CAST_SUCCESS event for a spellId in the known-interrupts set. Used
+// to count Attempts alongside Lands so the Interrupts lens can distinguish
+// "pressed the button" from "got credit." An attempt that lands generates both
+// an InterruptAttemptPayload (from SPELL_CAST_SUCCESS) and an InterruptPayload
+// (from the paired SPELL_INTERRUPT) — the aggregator counts them independently.
+export interface InterruptAttemptPayload {
+  type: 'interruptAttempt'
+  spellId: string
+  spellName: string
+}
+
 // Aura application, refresh, or removal for the buffs metric. Emitted from
 // SPELL_AURA_APPLIED / SPELL_AURA_REFRESH / SPELL_AURA_REMOVED for BUFFs on
 // player destinations. Aggregator pairs APPLIED/REMOVED into AuraWindows and
@@ -144,7 +157,7 @@ export interface AuraPayload {
   auraKind: 'BUFF' | 'DEBUFF'
 }
 
-export type EventPayload = DamagePayload | HealPayload | EncounterPayload | DeathPayload | CombatantInfoPayload | ChallengeModePayload | SummonPayload | InterruptPayload | AuraPayload
+export type EventPayload = DamagePayload | HealPayload | EncounterPayload | DeathPayload | CombatantInfoPayload | ChallengeModePayload | SummonPayload | InterruptPayload | InterruptAttemptPayload | AuraPayload
 
 export interface ParsedEvent {
   timestamp: number
@@ -214,6 +227,7 @@ export interface AuraWindow {
   preExisting: boolean   // retroactively seeded from REMOVED-without-APPLIED
   stillOpen: boolean     // no REMOVED seen; closed at segment end
   refreshCount: number   // SPELL_AURA_REFRESHes observed inside this window
+  targetHostile: boolean // true when dest carried REACTION_HOSTILE at event time — used to split the enemies perspective from friendly NPCs (pets, totems, guardians)
 }
 
 // In-flight open-aura bookkeeping. Stored on Segment, keyed by
@@ -227,6 +241,7 @@ export interface AuraOpen {
   target: string
   start: number
   refreshCount: number
+  targetHostile: boolean
 }
 
 // Wire-shrunk variant of AuraWindow — 1-letter keys because a 6-min raid fight
@@ -242,6 +257,7 @@ export interface AuraWindowWire {
   s: number   // start ms
   e: number   // end ms
   r?: number  // SPELL_AURA_REFRESH count folded into this window
+  h?: 1       // target was hostile (REACTION_HOSTILE) at event time — enemies perspective filters on this flag. Omitted for friendly targets (allies, player pets, guardians) to keep legacy snapshots parsing cleanly and shave bytes off the common case.
 }
 
 // Pared-down event used by the client to re-aggregate under arbitrary filters.
@@ -256,7 +272,12 @@ export interface AuraWindowWire {
 // fields read as undefined and degrade gracefully to effective-only.
 export interface ClientEvent {
   t: number
-  kind: 'damage' | 'heal' | 'interrupt' | 'death'
+  // 'interrupt' = SPELL_INTERRUPT (land). 'interruptAttempt' = SPELL_CAST_SUCCESS
+  // for a known interrupt spell (press, may or may not have landed). A landing
+  // interrupt produces BOTH events at the same timestamp; a missed one only
+  // produces 'interruptAttempt'. The Interrupts lens in Full mode ranks on
+  // whichever kind the lens selects.
+  kind: 'damage' | 'heal' | 'interrupt' | 'interruptAttempt' | 'death'
   src: string              // canonical source name (pets/support already resolved to owner)
   dst: string              // canonical dest name
   ability: string          // spell name; 'death' kind stores the killing-blow ability

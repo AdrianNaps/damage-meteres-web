@@ -1,5 +1,5 @@
 import type { ParsedEvent, DamagePayload, HealPayload, CombatantInfoPayload, DeathPayload, DeathRecapEvent, AuraPayload, ClientEvent } from './types.js'
-import { PET_FLAG, GUARDIAN_FLAG, REDISTRIBUTION_DAMAGE_SPELLS } from './types.js'
+import { PET_FLAG, GUARDIAN_FLAG, REACTION_HOSTILE, REDISTRIBUTION_DAMAGE_SPELLS } from './types.js'
 
 import type { Segment, PlayerData, SpellDamageStats, SpellHealStats, TargetDamageStats, PlayerDeathRecord } from './store.js'
 import { ACTIVE_TIME_GAP_MS } from './store.js'
@@ -453,13 +453,15 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
   } else if (payload.type === 'aura') {
     const aura = payload as AuraPayload
 
-    // Resolve caster (player / pet→owner). Enemy-cast buffs on players and
-    // buffs from unresolvable pets are dropped — v1 buffs metric is ally-focused.
+    // Resolve caster. Player and player-owned (pet/guardian) sources get their
+    // pet→owner resolution as before so ally auras stay attributed to the
+    // summoner. Non-player casters (enemy mobs self-buffing, boss empowerments,
+    // etc.) pass through unmodified so the enemies perspective can surface
+    // them — a buff on an enemy is useful even if the caster is just the mob.
     const hasPetFlag = !!(event.source.flags & (PET_FLAG | GUARDIAN_FLAG))
     const isPlayerSrc = isPlayerGuid(event.source.guid)
     const knownOwnedCreature = !isPlayerSrc && !hasPetFlag
       && !!segment.petToOwner[event.source.guid]
-    if (!isPlayerSrc && !hasPetFlag && !knownOwnedCreature) return
 
     let casterName = event.source.name
     let casterGuid = event.source.guid
@@ -472,6 +474,12 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
     }
     casterName = casterName.normalize('NFC')
     const targetName = event.dest.name.normalize('NFC')
+    // Pin the hostile flag at APPLIED time. The same GUID could theoretically
+    // flip reaction mid-fight (charm/mind-control), but pinning at the window
+    // open keeps the enemies perspective stable for the duration of the
+    // window. Retroactively-seeded windows use the REMOVED event's flags,
+    // which is the best signal available when no APPLIED was seen.
+    const targetHostile = !!(event.dest.flags & REACTION_HOSTILE)
 
     // Key by GUIDs not names to keep per-instance windows distinct even when
     // two characters share a display name across servers.
@@ -495,6 +503,7 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
         target: targetName,
         start: event.timestamp,
         refreshCount: 0,
+        targetHostile,
       })
       return
     }
@@ -525,6 +534,7 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
         preExisting: false,
         stillOpen: false,
         refreshCount: open.refreshCount,
+        targetHostile: open.targetHostile,
       })
       return
     }
@@ -546,8 +556,69 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
         preExisting: true,
         stillOpen: false,
         refreshCount: 0,
+        targetHostile,
       })
     }
+    return
+  } else if (payload.type === 'interruptAttempt') {
+    // A SPELL_CAST_SUCCESS for a known interrupt spell — track as an attempt
+    // on the casting player, independent of whether the paired SPELL_INTERRUPT
+    // lands. Non-player sources are dropped: the lens only surfaces ally
+    // attempts, matching how byKicker is ally-only today.
+    let sourceName = event.source.name
+    let sourceGuid = event.source.guid
+    const hasPetFlag = !!(event.source.flags & (PET_FLAG | GUARDIAN_FLAG))
+    const knownOwnedCreature = !isPlayerGuid(event.source.guid) && !hasPetFlag
+      && !!segment.petToOwner[event.source.guid]
+    const isPet = hasPetFlag || knownOwnedCreature
+    if (isPet) {
+      let ownerGuid = segment.petToOwner[event.source.guid]
+      if (!ownerGuid) {
+        const key = petBatchKey(event.source.guid)
+        if (key) ownerGuid = segment.petBatchToOwner[key]
+        if (ownerGuid) recordPetOwner(segment, event.source.guid, ownerGuid)
+      }
+      const ownerName = ownerGuid ? segment.guidToName[ownerGuid] : undefined
+      if (!ownerName) return
+      sourceName = ownerName
+      sourceGuid = ownerGuid
+    } else if (!isPlayerGuid(event.source.guid)) {
+      return
+    }
+
+    const player = getOrCreatePlayer(segment, sourceName, sourceGuid)
+    if (!player) return
+    player.interrupts.attempts++
+
+    // Populate byKicker's `casts` alongside the existing `count` (lands). An
+    // attempt whose kicker isn't yet in byKicker seeds a new entry with
+    // count=0; a land seen later will bump count. The reverse ordering (land
+    // before attempt) is also handled because SPELL_INTERRUPT creates the
+    // entry with count=1 and attempts increments casts on top.
+    const kicker = player.interrupts.byKicker[payload.spellId]
+    if (!kicker) {
+      player.interrupts.byKicker[payload.spellId] = {
+        spellId: payload.spellId,
+        spellName: payload.spellName,
+        count: 0,
+        casts: 1,
+      }
+    } else {
+      kicker.casts = (kicker.casts ?? 0) + 1
+    }
+
+    // Mirror the land-path event push so the Full-mode filter bar can
+    // re-aggregate attempts under arbitrary Source/Target/Ability combos.
+    // Kind is distinct from 'interrupt' so the Lands lens keeps its existing
+    // count semantics; the Attempts lens sums both kinds.
+    segment.events.push({
+      t: event.timestamp,
+      kind: 'interruptAttempt',
+      src: sourceName,
+      dst: event.dest.name,
+      ability: payload.spellName,
+      spellId: payload.spellId,
+    })
     return
   } else if (payload.type === 'interrupt') {
     // Resolve pet/guardian source back to owning player, same as damage/heal paths.
@@ -652,7 +723,7 @@ function getOrCreatePlayer(segment: Segment, name: string, guid: string): Player
       damage: { total: 0, spells: {}, targets: {} },
       healing: { total: 0, overheal: 0, spells: {}, targets: {} },
       deaths: [],
-      interrupts: { total: 0, byKicker: {}, byKicked: {}, records: [] },
+      interrupts: { total: 0, attempts: 0, byKicker: {}, byKicked: {}, records: [] },
       damageActiveMs: 0,
       healActiveMs: 0,
       firstDamageTime: null,
