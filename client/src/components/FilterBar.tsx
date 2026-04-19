@@ -3,8 +3,8 @@ import { useStore, selectCurrentView, type FilterAxis, type FilterState, type Me
 import {
   computeAbilityUniverse,
   computeUnitUniverse,
-  computeBuffAbilityUniverse,
-  computeBuffUnitUniverse,
+  computeAuraAbilityUniverse,
+  computeAuraUnitUniverse,
 } from '../utils/filters'
 import type { ClientEvent, PlayerSnapshot, AuraWindowWire } from '../types'
 import { FilterPicker, type PickerOption } from './FilterPicker'
@@ -31,9 +31,16 @@ interface AxisLabels { label: string; defaultLabel: string }
 function axisLabels(metric: Metric, axis: FilterAxis): AxisLabels {
   if (metric === 'buffs') {
     switch (axis) {
-      case 'Source':  return { label: 'Caster',    defaultLabel: 'Any caster' }
-      case 'Target':  return { label: 'Recipient', defaultLabel: 'Any recipient' }
-      case 'Ability': return { label: 'Buff',      defaultLabel: 'All buffs' }
+      case 'Source':  return { label: 'Caster', defaultLabel: 'Any caster' }
+      case 'Target':  return { label: 'Target', defaultLabel: 'Any target' }
+      case 'Ability': return { label: 'Buff',   defaultLabel: 'All buffs' }
+    }
+  }
+  if (metric === 'debuffs') {
+    switch (axis) {
+      case 'Source':  return { label: 'Caster', defaultLabel: 'Any caster' }
+      case 'Target':  return { label: 'Target', defaultLabel: 'Any target' }
+      case 'Ability': return { label: 'Debuff', defaultLabel: 'All debuffs' }
     }
   }
   if (metric === 'damageTaken') {
@@ -80,23 +87,26 @@ export function FilterBar() {
   const deferredMetric = useDeferredValue(metric)
   const deferredFilterSource = useDeferredValue(filters.Source)
   const deferredFilterTarget = useDeferredValue(filters.Target)
-  const isBuffsMetric = deferredMetric === 'buffs'
+  const auraKind: 'BUFF' | 'DEBUFF' | null =
+    deferredMetric === 'buffs' ? 'BUFF'
+    : deferredMetric === 'debuffs' ? 'DEBUFF'
+    : null
 
   // Picker options are derived on render. Cheap for a few hundred units / a
   // few hundred abilities; if this ever becomes a bottleneck, memoize on
-  // (events, perspective, filters, metric). Buffs takes a separate path
+  // (events, perspective, filters, metric). Aura metrics take a separate path
   // that walks aura windows instead of the event stream.
   const { sources, targets } = useMemo(
-    () => isBuffsMetric
-      ? computeBuffUnitUniverse(auras, allies, deferredPerspective)
+    () => auraKind
+      ? computeAuraUnitUniverse(auras, allies, deferredPerspective, auraKind)
       : computeUnitUniverse(events, deferredPerspective, deferredMetric, allies),
-    [isBuffsMetric, auras, allies, events, deferredPerspective, deferredMetric]
+    [auraKind, auras, allies, events, deferredPerspective, deferredMetric]
   )
   const abilityUniverse = useMemo(
-    () => isBuffsMetric
-      ? computeBuffAbilityUniverse(auras, { Source: deferredFilterSource, Target: deferredFilterTarget }, allies, deferredPerspective)
+    () => auraKind
+      ? computeAuraAbilityUniverse(auras, { Source: deferredFilterSource, Target: deferredFilterTarget }, allies, deferredPerspective, auraKind)
       : computeAbilityUniverse(events, deferredPerspective, { Source: deferredFilterSource, Target: deferredFilterTarget }, deferredMetric, allies),
-    [isBuffsMetric, auras, events, deferredPerspective, deferredFilterSource, deferredFilterTarget, deferredMetric, allies]
+    [auraKind, auras, events, deferredPerspective, deferredFilterSource, deferredFilterTarget, deferredMetric, allies]
   )
 
   const sourceOptions = useMemo(
@@ -398,8 +408,15 @@ function buildPickerPlaceholder(metric: Metric, axis: FilterAxis): string {
   if (metric === 'buffs') {
     switch (axis) {
       case 'Source':  return 'Search casters…'
-      case 'Target':  return 'Search recipients…'
+      case 'Target':  return 'Search targets…'
       case 'Ability': return 'Search buffs…'
+    }
+  }
+  if (metric === 'debuffs') {
+    switch (axis) {
+      case 'Source':  return 'Search casters…'
+      case 'Target':  return 'Search targets…'
+      case 'Ability': return 'Search debuffs…'
     }
   }
   if (metric === 'damageTaken') {

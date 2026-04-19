@@ -4,12 +4,13 @@ import type { PlayerSnapshot, AuraWindowWire, BuffSection } from '../types'
 import {
   computeUnitRows,
   computeDeathRows,
-  computeBuffRows,
+  computeAuraRows,
   hasMatchingData,
-  hasMatchingBuffData,
+  hasMatchingAuraData,
   type UnitRow,
   type DeathRow,
-  type BuffRow,
+  type AuraRow,
+  type AuraKind,
 } from '../utils/filters'
 import { formatNum, shortName } from '../utils/format'
 import { specIconUrl, spellIconUrl } from '../utils/icons'
@@ -189,12 +190,13 @@ export function FullMeterView() {
     : 'activeDurationSec' in currentView ? currentView.activeDurationSec
     : 0
 
-  // Buffs metric takes a separate path — its row shape is per-buff, not
-  // per-player, and the aura windows live in a different field on the
-  // snapshot than the event stream.
-  if (deferredMetric === 'buffs') {
+  // Aura metrics (Buffs, Debuffs) take a separate path — their row shape is
+  // per-aura, not per-player, and the aura windows live in a different field
+  // on the snapshot than the event stream.
+  if (deferredMetric === 'buffs' || deferredMetric === 'debuffs') {
     return (
-      <FilteredBuffsTable
+      <FilteredAurasTable
+        kind={deferredMetric === 'debuffs' ? 'DEBUFF' : 'BUFF'}
         auras={currentView.auras ?? EMPTY_AURAS}
         classification={currentView.buffClassification ?? EMPTY_CLASSIFICATION}
         filters={deferredFilters}
@@ -924,10 +926,13 @@ function FullLoadingSkeleton() {
   )
 }
 
-// ─── Buffs ────────────────────────────────────────────────────────────────
-// Per-buff rows grouped by Personal / Raid / External classification.
+// ─── Auras (Buffs / Debuffs) ──────────────────────────────────────────────
+// Per-aura rows. Buffs are grouped by Personal / Raid / External
+// classification; Debuffs render flat (no section taxonomy). The Section
+// column is reserved in the grid for both so tab-switching doesn't cause the
+// header to reflow.
 // Grid: rank | icon+name (flex) | section badge | timeline bar | uptime% | count.
-const BUFFS_GRID_COLUMNS = '32px minmax(240px, 1.2fr) 80px minmax(160px, 2fr) 80px 80px'
+const AURAS_GRID_COLUMNS = '32px minmax(240px, 1.2fr) 80px minmax(160px, 2fr) 80px 80px'
 
 const SECTION_LABELS: Record<BuffSection, string> = {
   personal: 'Personal',
@@ -935,7 +940,12 @@ const SECTION_LABELS: Record<BuffSection, string> = {
   external: 'External',
 }
 
-function FilteredBuffsTable({
+// Per-row accent when no section applies (debuffs). Picked to sit apart from
+// the buff section palette so a row-level glance distinguishes them.
+const DEBUFF_BAR_COLOR = '#a855f7'
+
+function FilteredAurasTable({
+  kind,
   auras,
   classification,
   filters,
@@ -945,6 +955,7 @@ function FilteredBuffsTable({
   allies,
   perspective,
 }: {
+  kind: AuraKind
   auras: AuraWindowWire[]
   classification: Record<string, BuffSection>
   filters: FilterState
@@ -954,12 +965,13 @@ function FilteredBuffsTable({
   allies: Record<string, PlayerSnapshot>
   perspective: Perspective
 }) {
-  const selectedBuff = useStore(s => s.selectedBuff)
-  const setSelectedBuff = useStore(s => s.setSelectedBuff)
+  const selectedAura = useStore(s => s.selectedAura)
+  const setSelectedAura = useStore(s => s.setSelectedAura)
+  const isBuff = kind === 'BUFF'
   // Collapse state is per-section and local to the table instance. Reset on
-  // remount (i.e. new scope / perspective swap) is fine — exploring a fresh
-  // pull is a fresh read. A Set means an absent key = expanded, which keeps
-  // the default "everything visible" behavior without seeding on mount.
+  // remount (i.e. new scope / perspective / kind swap) is fine — exploring a
+  // fresh pull is a fresh read. A Set means an absent key = expanded, which
+  // keeps the default "everything visible" behavior without seeding on mount.
   const [collapsed, setCollapsed] = useState<Set<BuffSection>>(() => new Set())
   const toggleSection = useCallback((key: BuffSection) => {
     setCollapsed(prev => {
@@ -974,26 +986,28 @@ function FilteredBuffsTable({
   const tEnd = endTime ?? (startTime + durationSec * 1000)
 
   const rows = useMemo(
-    () => computeBuffRows(auras, classification, filters, startTime, tEnd, allies, perspective),
-    [auras, classification, filters, startTime, tEnd, allies, perspective],
+    () => computeAuraRows(auras, classification, filters, startTime, tEnd, allies, perspective, kind),
+    [auras, classification, filters, startTime, tEnd, allies, perspective, kind],
   )
 
-  // Split rows into section groups while preserving the already-sorted order.
-  // computeBuffRows emits rows in section order, so a single linear pass
-  // accumulates contiguous runs — cheaper than the three `rows.filter` scans
-  // the earlier shape did.
+  // Group into section runs for buffs (already sorted by section → uptime%).
+  // Debuffs get a single synthetic group so the same renderer walks them.
   const grouped = useMemo(() => {
-    const out: { key: BuffSection; rows: BuffRow[] }[] = []
-    let cur: { key: BuffSection; rows: BuffRow[] } | null = null
+    if (!isBuff) return [{ key: null as BuffSection | null, rows }]
+    const out: { key: BuffSection | null; rows: AuraRow[] }[] = []
+    let cur: { key: BuffSection | null; rows: AuraRow[] } | null = null
     for (const r of rows) {
-      if (!cur || cur.key !== r.section) {
-        cur = { key: r.section, rows: [] }
+      const section = r.section ?? 'external'
+      if (!cur || cur.key !== section) {
+        cur = { key: section, rows: [] }
         out.push(cur)
       }
       cur.rows.push(r)
     }
     return out
-  }, [rows])
+  }, [rows, isBuff])
+
+  const kindLabel = isBuff ? 'buff' : 'debuff'
 
   // Empty-state fork — three distinct "rows is empty" states:
   //   1. auras.length === 0          → snapshot had no aura activity
@@ -1001,42 +1015,60 @@ function FilteredBuffsTable({
   //   2. rows empty + filter active  → the user's chips narrowed everything
   //                                    away; show the filter-guidance state.
   //   3. rows empty + no filter      → scope intersection yielded nothing
-  //                                    (e.g. zero-width TimeWindow). Rare;
-  //                                    falls through to the neutral message.
+  //                                    (e.g. zero-width TimeWindow) or no
+  //                                    auras of the active kind exist.
   if (auras.length === 0) {
-    return <EmptyState text="No buff data in this scope" />
+    return <EmptyState text={`No ${kindLabel} data in this scope`} />
   }
   if (rows.length === 0) {
     const anyFilter = !!(filters.Source || filters.Target || filters.Ability || filters.TimeWindow)
-    if (anyFilter && !hasMatchingBuffData(auras, filters, startTime, tEnd, allies, perspective)) {
+    if (anyFilter && !hasMatchingAuraData(auras, filters, startTime, tEnd, allies, perspective, kind)) {
       return <FilterEmptyState />
     }
-    return <EmptyState text="No buff data in this scope" />
+    return <EmptyState text={`No ${kindLabel} data in this scope`} />
   }
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      <BuffsColumnHeader />
+      <AurasColumnHeader kind={kind} />
       <div className="flex-1 overflow-y-auto">
         {grouped.map(group => {
+          // Debuffs: no section headers, flat list.
+          if (group.key === null) {
+            return (
+              <div key="flat">
+                {group.rows.map((row, i) => (
+                  <FullAuraRow
+                    key={row.spellId}
+                    row={row}
+                    rank={i + 1}
+                    t0Ms={startTime}
+                    tEndMs={tEnd}
+                    isSelected={selectedAura === row.spellId}
+                    onClick={() => setSelectedAura(selectedAura === row.spellId ? null : row.spellId)}
+                  />
+                ))}
+              </div>
+            )
+          }
           const isCollapsed = collapsed.has(group.key)
           return (
             <div key={group.key}>
-              <BuffSectionHeader
+              <AuraSectionHeader
                 label={SECTION_LABELS[group.key]}
                 count={group.rows.length}
                 collapsed={isCollapsed}
-                onToggle={() => toggleSection(group.key)}
+                onToggle={() => toggleSection(group.key!)}
               />
               {!isCollapsed && group.rows.map((row, i) => (
-                <FullBuffRow
+                <FullAuraRow
                   key={row.spellId}
                   row={row}
                   rank={i + 1}
                   t0Ms={startTime}
                   tEndMs={tEnd}
-                  isSelected={selectedBuff === row.spellId}
-                  onClick={() => setSelectedBuff(selectedBuff === row.spellId ? null : row.spellId)}
+                  isSelected={selectedAura === row.spellId}
+                  onClick={() => setSelectedAura(selectedAura === row.spellId ? null : row.spellId)}
                 />
               ))}
             </div>
@@ -1047,12 +1079,12 @@ function FilteredBuffsTable({
   )
 }
 
-function BuffsColumnHeader() {
+function AurasColumnHeader({ kind }: { kind: AuraKind }) {
   return (
     <div
       style={{
         display: 'grid',
-        gridTemplateColumns: BUFFS_GRID_COLUMNS,
+        gridTemplateColumns: AURAS_GRID_COLUMNS,
         alignItems: 'center',
         gap: 12,
         padding: '6px 14px',
@@ -1060,8 +1092,8 @@ function BuffsColumnHeader() {
       }}
     >
       <HeaderCell align="center">#</HeaderCell>
-      <HeaderCell>Buff</HeaderCell>
-      <HeaderCell align="right">Section</HeaderCell>
+      <HeaderCell>{kind === 'BUFF' ? 'Buff' : 'Debuff'}</HeaderCell>
+      <HeaderCell align="right">{kind === 'BUFF' ? 'Section' : ''}</HeaderCell>
       <HeaderCell>Uptime</HeaderCell>
       <HeaderCell align="right">Uptime %</HeaderCell>
       <HeaderCell align="right">Count</HeaderCell>
@@ -1069,7 +1101,7 @@ function BuffsColumnHeader() {
   )
 }
 
-function BuffSectionHeader({
+function AuraSectionHeader({
   label,
   count,
   collapsed,
@@ -1129,9 +1161,9 @@ function BuffSectionHeader({
   )
 }
 
-const FullBuffRow = memo(FullBuffRowImpl)
+const FullAuraRow = memo(FullAuraRowImpl)
 
-function FullBuffRowImpl({
+function FullAuraRowImpl({
   row,
   rank,
   t0Ms,
@@ -1139,7 +1171,7 @@ function FullBuffRowImpl({
   isSelected,
   onClick,
 }: {
-  row: BuffRow
+  row: AuraRow
   rank: number
   t0Ms: number
   tEndMs: number
@@ -1151,7 +1183,7 @@ function FullBuffRowImpl({
       onClick={onClick}
       style={{
         display: 'grid',
-        gridTemplateColumns: BUFFS_GRID_COLUMNS,
+        gridTemplateColumns: AURAS_GRID_COLUMNS,
         alignItems: 'center',
         gap: 12,
         minHeight: 32,
@@ -1165,9 +1197,9 @@ function FullBuffRowImpl({
       onMouseLeave={!isSelected ? e => { e.currentTarget.style.background = 'transparent' } : undefined}
     >
       <RankCell rank={rank} />
-      <BuffNameCell spellId={row.spellId} spellName={row.spellName} />
+      <AuraNameCell spellId={row.spellId} spellName={row.spellName} />
       <SectionBadge section={row.section} />
-      <BuffTimelineBar windows={row.windows} t0Ms={t0Ms} tEndMs={tEndMs} section={row.section} />
+      <AuraTimelineBar windows={row.windows} t0Ms={t0Ms} tEndMs={tEndMs} section={row.section} />
       <span style={{
         fontSize: 12, fontFamily: 'var(--font-mono)', fontWeight: 600,
         color: 'var(--text-primary)', textAlign: 'right',
@@ -1184,9 +1216,9 @@ function FullBuffRowImpl({
   )
 }
 
-// Per-row canvas strip showing union-of-windows for a single buff. Union
+// Per-row canvas strip showing union-of-windows for a single aura. Union
 // (not per-window-stacked) because the uptime metric shows "was anyone
-// buffed" — matching what the % reads. Resize-aware via ResizeObserver so
+// affected" — matching what the % reads. Resize-aware via ResizeObserver so
 // the strip adapts to grid column changes.
 const TIMELINE_BAR_HEIGHT = 8
 const SECTION_BAR_COLORS: Record<BuffSection, string> = {
@@ -1195,7 +1227,7 @@ const SECTION_BAR_COLORS: Record<BuffSection, string> = {
   external: '#f59e0b',   // amber, matches the section badge
 }
 
-function BuffTimelineBar({
+function AuraTimelineBar({
   windows,
   t0Ms,
   tEndMs,
@@ -1204,11 +1236,13 @@ function BuffTimelineBar({
   windows: AuraWindowWire[]
   t0Ms: number
   tEndMs: number
-  section: BuffSection
+  // Buffs always carry a section; debuffs don't and fall back to the shared
+  // debuff accent so the strip still reads coherently against adjacent rows.
+  section: BuffSection | undefined
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
-  const color = SECTION_BAR_COLORS[section]
+  const color = section ? SECTION_BAR_COLORS[section] : DEBUFF_BAR_COLOR
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current
@@ -1297,7 +1331,7 @@ function drawTimelineTrack(ctx: CanvasRenderingContext2D, w: number, h: number) 
   ctx.fillRect(0, 0, w, h)
 }
 
-function BuffNameCell({ spellId, spellName }: { spellId: string; spellName: string }) {
+function AuraNameCell({ spellId, spellName }: { spellId: string; spellName: string }) {
   const iconName = useStore(s => s.spellIcons[spellId])
   const url = spellIconUrl(iconName)
   return (
@@ -1327,7 +1361,9 @@ function BuffNameCell({ spellId, spellName }: { spellId: string; spellName: stri
   )
 }
 
-function SectionBadge({ section }: { section: BuffSection }) {
+function SectionBadge({ section }: { section: BuffSection | undefined }) {
+  // Debuffs render no badge — the grid cell stays reserved so rows align.
+  if (!section) return <span />
   const color =
     section === 'raid'     ? 'var(--status-success, #22c55e)'
     : section === 'external' ? 'var(--data-group-avg, #f59e0b)'

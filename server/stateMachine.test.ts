@@ -609,9 +609,15 @@ test('aura: SPELL_AURA_REMOVED emits both overheal re-emit and aura-remove when 
   assert.equal(arr[1].payload.type, 'aura')
 })
 
-test('aura: parser drops DEBUFFs in v1', () => {
+test('aura: parser keeps DEBUFFs and tags auraKind', () => {
   const raw = '4/17/2026 19:54:50.384-7  SPELL_AURA_APPLIED,Creature-1,"Boss",0xa48,0x0,Player-1,"Adrianw",0x511,0x0,12345,"Test Debuff",0x20,DEBUFF'
-  assert.equal(parseLine(raw), null)
+  const parsed = parseLine(raw)
+  assert.ok(parsed && !Array.isArray(parsed), 'expected a single parsed event')
+  const evt = parsed as ParsedEvent
+  assert.equal(evt.payload.type, 'aura')
+  const aura = evt.payload as AuraPayload
+  assert.equal(aura.auraKind, 'DEBUFF')
+  assert.equal(aura.direction, 'applied')
 })
 
 test('aura: SPELL_AURA_REFRESH folds into the open window and increments refreshCount', () => {

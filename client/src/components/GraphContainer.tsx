@@ -5,7 +5,7 @@ import { useStore, resolveSpecId, GRAPH_GROUP_AVG_KEY, selectGraphTimeOffset, se
 import { formatNum, shortName, formatTime } from '../utils/format'
 
 interface Props {
-  metric: 'damage' | 'damageTaken' | 'healing' | 'deaths' | 'interrupts' | 'buffs'
+  metric: 'damage' | 'damageTaken' | 'healing' | 'deaths' | 'interrupts' | 'buffs' | 'debuffs'
   players: Record<string, PlayerSnapshot>
   duration: number
   inactive?: boolean
@@ -16,13 +16,15 @@ const PAD = { top: 4, right: 8, bottom: 16, left: 40 }
 const UNFOCUSED_ALPHA = 0.18
 const GROUP_AVG_COLOR = '#f59e0b'
 
-// Buffs-mode two-line graph: group-DPS and group-HPS share the plot area as
-// shape comparisons (no y-axis labels — different magnitudes would make
-// absolute values misleading at a glance, WCL makes the same choice).
-const BUFFS_DAMAGE_COLOR = '#ef4444'
-const BUFFS_HEALING_COLOR = '#10b981'
-const BUFFS_DAMAGE_KEY = '__buffs_damage__'
-const BUFFS_HEALING_KEY = '__buffs_healing__'
+// Aura-mode two-line graph (Buffs or Debuffs): group-DPS and group-HPS share
+// the plot area as shape comparisons (no y-axis labels — different magnitudes
+// would make absolute values misleading at a glance, WCL makes the same
+// choice). Store strips any `__aura_*` focus keys when leaving the aura
+// family so a later aura session starts with both lines visible.
+const AURA_DAMAGE_COLOR = '#ef4444'
+const AURA_HEALING_COLOR = '#10b981'
+const AURA_DAMAGE_KEY = '__aura_damage__'
+const AURA_HEALING_KEY = '__aura_healing__'
 
 // Spell-ID allowlist for the group haste-buff family (Bloodlust / Heroism /
 // Time Warp / etc.). Overlaid on every line graph so "when was lust up" is
@@ -157,21 +159,22 @@ export function GraphContainer({ metric, players, duration, inactive }: Props) {
   const timeWindowFilter = useStore(s => s.filters.TimeWindow)
   const setTimeWindowFilter = useStore(s => s.setTimeWindowFilter)
   const mode = useStore(s => s.mode)
-  const selectedBuff = useStore(s => s.selectedBuff)
+  const selectedAura = useStore(s => s.selectedAura)
   const currentView = useStore(selectCurrentView)
 
-  // Uptime band overlay: when the user drilled into a specific buff, pull its
-  // windows off the current snapshot and light up the plot at each window.
-  // Only meaningful in buffs metric — we still compute for damage/healing but
-  // the gate below skips the draw.
-  const selectedBuffWindows = useMemo<AuraWindowWire[] | null>(() => {
-    if (metric !== 'buffs' || !selectedBuff || !currentView) return null
+  // Uptime band overlay: when the user drilled into a specific aura (buff or
+  // debuff), pull its windows off the current snapshot and light up the plot
+  // at each window. Only meaningful in aura metrics — we still compute for
+  // damage/healing but the gate below skips the draw.
+  const selectedAuraWindows = useMemo<AuraWindowWire[] | null>(() => {
+    if (metric !== 'buffs' && metric !== 'debuffs') return null
+    if (!selectedAura || !currentView) return null
     const auras = currentView.auras
     if (!auras || auras.length === 0) return null
-    return auras.filter(w => w.id === selectedBuff)
-  }, [metric, selectedBuff, currentView])
+    return auras.filter(w => w.id === selectedAura)
+  }, [metric, selectedAura, currentView])
 
-  const selectedBuffScope = useMemo(() => {
+  const selectedAuraScope = useMemo(() => {
     if (!currentView) return null
     const t0 = currentView.startTime
     const durationSec =
@@ -202,7 +205,7 @@ export function GraphContainer({ metric, players, duration, inactive }: Props) {
   const [drag, setDrag] = useState<{ startX: number; currentX: number } | null>(null)
 
   const isBar = metric === 'deaths' || metric === 'interrupts'
-  const isBuffs = metric === 'buffs'
+  const isAura = metric === 'buffs' || metric === 'debuffs'
   const isDamageTaken = metric === 'damageTaken'
   const dragEnabled = !inactive && !isBar && mode === 'full'
 
@@ -250,12 +253,12 @@ export function GraphContainer({ metric, players, duration, inactive }: Props) {
   // means "hidden" for buffs, "focused" for damage/healing. This preserves
   // the shared toggleFocus setter without a parallel store field.
   const focused = useMemo<Set<string>>(() => {
-    if (!isBuffs) return storedFocused
+    if (!isAura) return storedFocused
     const visible = new Set<string>()
-    if (!storedFocused.has(BUFFS_DAMAGE_KEY)) visible.add(BUFFS_DAMAGE_KEY)
-    if (!storedFocused.has(BUFFS_HEALING_KEY)) visible.add(BUFFS_HEALING_KEY)
+    if (!storedFocused.has(AURA_DAMAGE_KEY)) visible.add(AURA_DAMAGE_KEY)
+    if (!storedFocused.has(AURA_HEALING_KEY)) visible.add(AURA_HEALING_KEY)
     return visible
-  }, [storedFocused, isBuffs])
+  }, [storedFocused, isAura])
 
   // Bar data — bucketed counts plus per-bucket tooltip records. Computed once
   // per metric/players/duration change so the renderer and the hover tooltip
@@ -337,15 +340,15 @@ export function GraphContainer({ metric, players, duration, inactive }: Props) {
     const bucketSec = getLineBucketSec(duration)
     const points = Math.max(4, Math.ceil(duration / bucketSec))
 
-    if (isBuffs) {
+    if (isAura) {
       const groupDps = playerList.reduce((s, p) => s + p.dps, 0)
       const groupHps = playerList.reduce((s, p) => s + p.hps, 0)
       if (groupDps === 0 && groupHps === 0) return null
       // Deterministic-per-series synthetic data, same generator as damage/healing.
       // Real server-bucketed data will replace both once the pipeline lands.
       const series: SeriesEntry[] = [
-        { name: BUFFS_DAMAGE_KEY,  displayName: 'Damage',  data: generateSeries(groupDps, BUFFS_DAMAGE_KEY,  points), color: BUFFS_DAMAGE_COLOR  },
-        { name: BUFFS_HEALING_KEY, displayName: 'Healing', data: generateSeries(groupHps, BUFFS_HEALING_KEY, points), color: BUFFS_HEALING_COLOR },
+        { name: AURA_DAMAGE_KEY,  displayName: 'Damage',  data: generateSeries(groupDps, AURA_DAMAGE_KEY,  points), color: AURA_DAMAGE_COLOR  },
+        { name: AURA_HEALING_KEY, displayName: 'Healing', data: generateSeries(groupHps, AURA_HEALING_KEY, points), color: AURA_HEALING_COLOR },
       ]
       let maxVal = 0
       series.forEach(s => s.data.forEach(v => { if (v > maxVal) maxVal = v }))
@@ -384,7 +387,7 @@ export function GraphContainer({ metric, players, duration, inactive }: Props) {
     maxVal *= 1.1
 
     return { series, avgData, points, bucketSec, maxVal }
-  }, [isBar, isBuffs, metric, playerList, playerSpecs, duration, damageTakenPerSec])
+  }, [isBar, isAura, metric, playerList, playerSpecs, duration, damageTakenPerSec])
 
   // Clear hover state when the underlying data goes away (e.g. switching to a
   // bar metric). The slice/bucket index would otherwise point into a stale series.
@@ -471,20 +474,20 @@ export function GraphContainer({ metric, players, duration, inactive }: Props) {
       // Suppress the hover crosshair during an active drag — the drag rect
       // becomes the primary visual, and the crosshair would clutter it.
       const hoverSlice = drag ? null : (hover?.slice ?? null)
-      drawLineGraph(ctx, h, plotW, plotH, lineData, focused, duration, timeOffset, hoverSlice, isBuffs)
+      drawLineGraph(ctx, h, plotW, plotH, lineData, focused, duration, timeOffset, hoverSlice, isAura)
 
       // Always-on lust band (Bloodlust / Heroism / Time Warp / …). Drawn
       // first so a more-specific drill selection (amber) layers cleanly on
       // top when the user picks lust itself from the buffs table. Gated on
       // the Lust legend toggle — absent from storedFocused means visible.
-      if (lustWindows && selectedBuffScope && !storedFocused.has(LUST_LEGEND_KEY)) {
-        drawLustBand(ctx, plotW, plotH, lustWindows, selectedBuffScope.t0, selectedBuffScope.tEnd)
+      if (lustWindows && selectedAuraScope && !storedFocused.has(LUST_LEGEND_KEY)) {
+        drawLustBand(ctx, plotW, plotH, lustWindows, selectedAuraScope.t0, selectedAuraScope.tEnd)
       }
 
       // Selected-buff uptime band: render beneath the drag/time-window
       // overlays so those still win visually when both are active.
-      if (isBuffs && selectedBuffWindows && selectedBuffScope) {
-        drawBuffUptimeBand(ctx, plotW, plotH, selectedBuffWindows, selectedBuffScope.t0, selectedBuffScope.tEnd)
+      if (isAura && selectedAuraWindows && selectedAuraScope) {
+        drawBuffUptimeBand(ctx, plotW, plotH, selectedAuraWindows, selectedAuraScope.t0, selectedAuraScope.tEnd)
       }
 
       // Overlay stack on top of the line graph:
@@ -499,7 +502,7 @@ export function GraphContainer({ metric, players, duration, inactive }: Props) {
     } else {
       drawEmptyState(ctx, w, h)
     }
-  }, [isBar, isBuffs, barData, lineData, focused, duration, timeOffset, hover, barHover, inactive, drag, timeWindowFilter, selectedBuffWindows, selectedBuffScope, lustWindows, storedFocused])
+  }, [isBar, isAura, barData, lineData, focused, duration, timeOffset, hover, barHover, inactive, drag, timeWindowFilter, selectedAuraWindows, selectedAuraScope, lustWindows, storedFocused])
 
   useEffect(() => {
     draw()
@@ -517,7 +520,7 @@ export function GraphContainer({ metric, players, duration, inactive }: Props) {
     : metric === 'damageTaken' ? 'Incoming DTPS Over Time'
     : metric === 'healing' ? 'HPS Over Time'
     : metric === 'deaths' ? 'Deaths Over Time'
-    : metric === 'buffs' ? 'Throughput Over Time'
+    : metric === 'buffs' || metric === 'debuffs' ? 'Throughput Over Time'
     : 'Interrupts Over Time'
 
   // Canvas CSS-pixel x (relative to canvas left edge) of a mouse event.
@@ -829,17 +832,17 @@ interface LegendEntry { key: string; label: string; color: string }
 function buildLegend(
   playerList: PlayerSnapshot[],
   playerSpecs: Record<string, number>,
-  metric: 'damage' | 'damageTaken' | 'healing' | 'deaths' | 'interrupts' | 'buffs',
+  metric: 'damage' | 'damageTaken' | 'healing' | 'deaths' | 'interrupts' | 'buffs' | 'debuffs',
   isBar: boolean,
   damageTakenPerSec: Map<string, number>,
 ): LegendEntry[] {
   const entries: LegendEntry[] = []
 
-  if (metric === 'buffs') {
+  if (metric === 'buffs' || metric === 'debuffs') {
     // Group-aggregate lines: no per-player entries, no group-avg. Keys match
     // the series names in lineData so the focus Set governs visibility.
-    entries.push({ key: BUFFS_DAMAGE_KEY,  label: 'Damage',  color: BUFFS_DAMAGE_COLOR })
-    entries.push({ key: BUFFS_HEALING_KEY, label: 'Healing', color: BUFFS_HEALING_COLOR })
+    entries.push({ key: AURA_DAMAGE_KEY,  label: 'Damage',  color: AURA_DAMAGE_COLOR })
+    entries.push({ key: AURA_HEALING_KEY, label: 'Healing', color: AURA_HEALING_COLOR })
     return entries
   }
 

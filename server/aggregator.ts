@@ -504,6 +504,7 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
         start: event.timestamp,
         refreshCount: 0,
         targetHostile,
+        kind: aura.auraKind,
       })
       return
     }
@@ -535,6 +536,7 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
         stillOpen: false,
         refreshCount: open.refreshCount,
         targetHostile: open.targetHostile,
+        kind: open.kind,
       })
       return
     }
@@ -557,6 +559,7 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
         stillOpen: false,
         refreshCount: 0,
         targetHostile,
+        kind: aura.auraKind,
       })
     }
     return

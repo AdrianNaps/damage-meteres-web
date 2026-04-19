@@ -539,12 +539,11 @@ export function parseLine(raw: string): ParsedEvent | ParsedEvent[] | null {
       }
     }
 
-    // BUFF application or refresh on a friendly target. Both emit 'aura'
-    // payloads; the direction distinguishes a fresh window open from a
-    // reapplication of an already-open one. DEBUFFs are dropped at the parser
-    // (future debuffs metric will relax that). Both player and non-player
-    // (enemy) targets flow through — the buffs metric supports an enemies
-    // perspective so we can surface things like purgeable mob buffs.
+    // Aura application or refresh. Both emit 'aura' payloads; the direction
+    // distinguishes a fresh window open from a reapplication of an already-
+    // open one. BUFFs feed the Buffs metric (raid/personal/external sections);
+    // DEBUFFs feed the Debuffs metric. Both player and non-player targets flow
+    // through — ally/enemy perspective is a downstream filter.
     //
     // Field layout: [9]=spellId [10]=spellName [11]=school [12]=BUFF|DEBUFF [13?]=amount
     // We ignore the trailing amount on APPLIED/REFRESH entirely — only REMOVED
@@ -554,7 +553,8 @@ export function parseLine(raw: string): ParsedEvent | ParsedEvent[] | null {
     case 'SPELL_AURA_APPLIED':
     case 'SPELL_AURA_REFRESH': {
       if (fields.length < 13) return null
-      if (fields[12] !== 'BUFF') return null
+      const kindField = fields[12]
+      if (kindField !== 'BUFF' && kindField !== 'DEBUFF') return null
       return {
         timestamp, type: eventType, source, dest,
         payload: {
@@ -562,7 +562,7 @@ export function parseLine(raw: string): ParsedEvent | ParsedEvent[] | null {
           direction: eventType === 'SPELL_AURA_APPLIED' ? 'applied' : 'refreshed',
           spellId: fields[9],
           spellName: stripQuotes(fields[10]),
-          auraKind: 'BUFF',
+          auraKind: kindField,
         },
       }
     }
@@ -599,16 +599,18 @@ export function parseLine(raw: string): ParsedEvent | ParsedEvent[] | null {
     //   Absorb buff    (14 fields): same + [13]=absorbAmount (leftover when aura expires)
     case 'SPELL_AURA_REMOVED': {
       if (fields.length < 13) return null
-      if (fields[12] !== 'BUFF') return null
+      const kindField = fields[12]
+      if (kindField !== 'BUFF' && kindField !== 'DEBUFF') return null
 
       const spellId = fields[9]
       const spellName = stripQuotes(fields[10])
       const emitted: ParsedEvent[] = []
 
-      // (a) Absorb-overheal re-emit. Requires the 14-field layout (trailing
-      // leftover amount) and a positive leftover. Replay shields are WCL-dropped
-      // from healing attribution — see REPLAY_HEAL_SPELLS note at the top of file.
-      if (fields.length === 14 && !REPLAY_HEAL_SPELLS.has(spellId)) {
+      // (a) Absorb-overheal re-emit. BUFF-only (DEBUFF removals can't carry a
+      // shield leftover). Requires the 14-field layout (trailing leftover
+      // amount) and a positive leftover. Replay shields are WCL-dropped from
+      // healing attribution — see REPLAY_HEAL_SPELLS note at the top of file.
+      if (kindField === 'BUFF' && fields.length === 14 && !REPLAY_HEAL_SPELLS.has(spellId)) {
         const leftover = parseInt(fields[13])
         if (leftover && !isNaN(leftover) && leftover > 0) {
           emitted.push({
@@ -627,8 +629,8 @@ export function parseLine(raw: string): ParsedEvent | ParsedEvent[] | null {
         }
       }
 
-      // (b) Aura-window close. Fires for every BUFF removal regardless of
-      // target side so ally + enemy perspectives stay symmetric.
+      // (b) Aura-window close. Fires for every BUFF/DEBUFF removal regardless
+      // of target side so ally + enemy perspectives stay symmetric.
       emitted.push({
         timestamp, type: eventType, source, dest,
         payload: {
@@ -636,7 +638,7 @@ export function parseLine(raw: string): ParsedEvent | ParsedEvent[] | null {
           direction: 'removed',
           spellId,
           spellName,
-          auraKind: 'BUFF',
+          auraKind: kindField,
         },
       })
 

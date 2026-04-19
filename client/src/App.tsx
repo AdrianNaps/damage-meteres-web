@@ -7,7 +7,7 @@ import { SummaryView } from './components/SummaryView'
 import { FullMeterView } from './components/FullMeterView'
 import { GraphContainer } from './components/GraphContainer'
 import { BreakdownPanel } from './components/BreakdownPanel'
-import { BuffBreakdownPanel } from './components/BuffBreakdownPanel'
+import { AuraBreakdownPanel } from './components/AuraBreakdownPanel'
 import { DeathRecapPanel } from './components/DeathRecapPanel'
 import { SettingsModal } from './components/SettingsModal'
 import { LogsBanner } from './components/LogsBanner'
@@ -61,16 +61,17 @@ function ContentPanel() {
   const perspective = useStore(s => s.perspective)
   const selectedPlayer = useStore(s => s.selectedPlayer)
   const selectedDeath = useStore(s => s.selectedDeath)
-  const selectedBuff = useStore(s => s.selectedBuff)
+  const selectedAura = useStore(s => s.selectedAura)
 
   // Death recap stays Summary-only — Full mode surfaces deaths as a top-level
   // table. Spell/target breakdown is shared across both modes with a wider
-  // layout in Full. Buff drill is Full-only by construction (buffs metric is
-  // Full-only), and mutually exclusive with the other two.
+  // layout in Full. Aura drill (buffs + debuffs) is Full-only by construction
+  // (those metrics are Full-only), and mutually exclusive with the other two.
   const hasBreakdown = !!selectedPlayer
   const hasDeath = mode === 'summary' && !!selectedDeath
-  const hasBuffDrill = mode === 'full' && metric === 'buffs' && !!selectedBuff
-  const hasDrill = hasBreakdown || hasDeath || hasBuffDrill
+  const isAuraMetric = metric === 'buffs' || metric === 'debuffs'
+  const hasAuraDrill = mode === 'full' && isAuraMetric && !!selectedAura
+  const hasDrill = hasBreakdown || hasDeath || hasAuraDrill
   const drillWidth = hasDrill ? (mode === 'full' ? 720 : 420) : 0
 
   const players = currentView?.players ?? {}
@@ -158,7 +159,7 @@ function ContentPanel() {
         }}>
           {hasBreakdown && <BreakdownPanel />}
           {hasDeath && <DeathRecapPanel />}
-          {hasBuffDrill && <BuffBreakdownPanel />}
+          {hasAuraDrill && <AuraBreakdownPanel />}
         </div>
       </div>
     </div>
@@ -175,10 +176,11 @@ const SUMMARY_CATEGORIES: { key: Metric; label: string }[] = [
   { key: 'deaths', label: 'Deaths' },
 ]
 
-// Full mode adds Damage Taken (between Damage and Healing) and Buffs. Damage
-// Taken is Full-only because the mitigated lens + per-attacker drilldown need
-// the filter bar to be useful; buffs is Full-only because it requires the
-// server's aura windows.
+// Full mode adds Damage Taken (between Damage and Healing), Buffs, and
+// Debuffs. Damage Taken is Full-only because the mitigated lens + per-attacker
+// drilldown need the filter bar to be useful. Buffs and Debuffs are Full-only
+// because they require the server's aura windows. Debuffs sits next to Buffs
+// so switching between the two aura views is a one-click move.
 const FULL_CATEGORIES: { key: Metric; label: string }[] = [
   { key: 'damage', label: 'Damage Done' },
   { key: 'damageTaken', label: 'Damage Taken' },
@@ -186,6 +188,7 @@ const FULL_CATEGORIES: { key: Metric; label: string }[] = [
   { key: 'interrupts', label: 'Interrupts' },
   { key: 'deaths', label: 'Deaths' },
   { key: 'buffs', label: 'Buffs' },
+  { key: 'debuffs', label: 'Debuffs' },
 ]
 
 function ToggleBar({

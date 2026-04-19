@@ -5,10 +5,11 @@ import { usePlayerRowStyle } from '../utils/usePlayerRowStyle'
 import { SegmentedControl } from './SegmentedControl'
 import type { AuraWindowWire, BuffSection } from '../types'
 
-// Drill panel for a selected buff row. Renders two toggled views of the same
-// window set: Recipients (per-target uptime) and Casters (per-caster uptime).
-// Clicking a row narrows the matching global filter so the main buffs table
-// re-scopes in sync — Recipient → filters.Target, Caster → filters.Source.
+// Drill panel for a selected aura row (buff or debuff). Renders two toggled
+// views of the same window set: Recipients/Targets (per-target uptime) and
+// Casters (per-caster uptime). Clicking a row narrows the matching global
+// filter so the main aura table re-scopes in sync — Recipient → filters.Target,
+// Caster → filters.Source.
 
 type ViewMode = 'recipients' | 'casters'
 
@@ -24,12 +25,17 @@ const SECTION_BAR_COLORS: Record<BuffSection, string> = {
   external: '#f59e0b',
 }
 
+// Debuffs have no section taxonomy — pick a neutral accent so the header
+// stripe and timeline bars don't read as a buff category.
+const DEBUFF_ACCENT_COLOR = '#a855f7'
+
 const TIMELINE_HEIGHT = 8
 const ROW_GRID = '180px 60px 1fr 60px'
 
-export function BuffBreakdownPanel() {
-  const selectedBuff = useStore(s => s.selectedBuff)
-  const setSelectedBuff = useStore(s => s.setSelectedBuff)
+export function AuraBreakdownPanel() {
+  const selectedAura = useStore(s => s.selectedAura)
+  const setSelectedAura = useStore(s => s.setSelectedAura)
+  const metric = useStore(s => s.metric)
   const currentView = useStore(selectCurrentView)
   const setFilter = useStore(s => s.setFilter)
   const filters = useStore(s => s.filters)
@@ -39,16 +45,18 @@ export function BuffBreakdownPanel() {
   // Subscribed (not `useStore.getState()`) so the header icon fills in when
   // the async icon resolver lands a name for this spellId after the panel
   // has already mounted.
-  const iconName = useStore(s => selectedBuff ? s.spellIcons[selectedBuff] : undefined)
+  const iconName = useStore(s => selectedAura ? s.spellIcons[selectedAura] : undefined)
+
+  const isDebuff = metric === 'debuffs'
 
   // Escape closes the drill. Mirrors BreakdownPanel's key handler.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setSelectedBuff(null)
+      if (e.key === 'Escape') setSelectedAura(null)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [setSelectedBuff])
+  }, [setSelectedAura])
 
   const scope = useMemo(() => {
     if (!currentView) return null
@@ -63,24 +71,29 @@ export function BuffBreakdownPanel() {
   }, [currentView])
 
   const { targetRows, casterRows, spell } = useMemo(() => {
-    const empty = { targetRows: [] as Row[], casterRows: [] as Row[], spell: null as null | { id: string; name: string; section: BuffSection } }
-    if (!currentView || !selectedBuff || !scope) return empty
+    const empty = { targetRows: [] as Row[], casterRows: [] as Row[], spell: null as null | { id: string; name: string; section: BuffSection | null } }
+    if (!currentView || !selectedAura || !scope) return empty
     const auras: AuraWindowWire[] = currentView.auras ?? []
     const allies = currentView.players ?? {}
     const allySet = new Set(Object.keys(allies))
     // Mirror the main table's partition: allies view keeps ally recipients
     // (by name), enemies view keeps only REACTION_HOSTILE targets so player
-    // pets / totems / guardians don't leak into the enemy list.
+    // pets / totems / guardians don't leak into the enemy list. Kind is
+    // locked to whichever aura tab is active — selecting a buff row can't
+    // pull debuff windows into view and vice versa.
+    const wantDebuff = isDebuff
     const matching = auras.filter(w => {
-      if (w.id !== selectedBuff) return false
+      if (w.id !== selectedAura) return false
+      const isDebuffWindow = w.k === 1
+      if (wantDebuff !== isDebuffWindow) return false
       return perspective === 'allies' ? allySet.has(w.d) : w.h === 1
     })
     if (matching.length === 0) return empty
 
     const spellName = matching[0].n
-    // Infer section from the snapshot's classification map.
+    // Buffs carry a section; debuffs don't (render flat).
     const classification = currentView.buffClassification ?? {}
-    const section = classification[selectedBuff] ?? 'external'
+    const section = isDebuff ? null : (classification[selectedAura] ?? 'external')
     const scopeMs = scope.tEnd - scope.t0
 
     // Symmetric drill filtering: each axis view applies the OTHER axis's
@@ -100,15 +113,17 @@ export function BuffBreakdownPanel() {
     return {
       targetRows: bucketRows(forRecipients, w => w.d, scope, scopeMs, resolveRowStyle),
       casterRows: bucketRows(forCasters, w => w.c, scope, scopeMs, resolveRowStyle),
-      spell: { id: selectedBuff, name: spellName, section },
+      spell: { id: selectedAura, name: spellName, section },
     }
-  }, [currentView, selectedBuff, scope, filters.Source, filters.Target, perspective, resolveRowStyle])
+  }, [currentView, selectedAura, scope, filters.Source, filters.Target, perspective, resolveRowStyle, isDebuff])
 
-  if (!selectedBuff || !currentView || !spell || !scope) return null
+  if (!selectedAura || !currentView || !spell || !scope) return null
 
   const iconUrl = spellIconUrl(iconName)
-  const accentColor = SECTION_BAR_COLORS[spell.section]
+  const accentColor = spell.section ? SECTION_BAR_COLORS[spell.section] : DEBUFF_ACCENT_COLOR
   const activeRows = viewMode === 'recipients' ? targetRows : casterRows
+  const recipientLabel = isDebuff ? 'Targets' : 'Recipients'
+  const recipientHeader = isDebuff ? 'Target' : 'Recipient'
 
   return (
     <>
@@ -134,20 +149,22 @@ export function BuffBreakdownPanel() {
             <span className="truncate" style={{ fontWeight: 600, fontSize: 15, color: 'var(--text-primary)' }}>
               {spell.name}
             </span>
-            <span style={{
-              fontSize: 9, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em',
-              padding: '1px 6px', borderRadius: 2,
-              background: 'var(--bg-active)', color: accentColor,
-            }}>
-              {SECTION_LABELS[spell.section]}
-            </span>
+            {spell.section && (
+              <span style={{
+                fontSize: 9, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em',
+                padding: '1px 6px', borderRadius: 2,
+                background: 'var(--bg-active)', color: accentColor,
+              }}>
+                {SECTION_LABELS[spell.section]}
+              </span>
+            )}
           </div>
           <div style={{ fontSize: 12, fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', marginTop: 2 }}>
-            {activeRows.length} {countLabel(activeRows.length, viewMode)}
+            {activeRows.length} {countLabel(activeRows.length, viewMode, isDebuff)}
           </div>
         </div>
         <button
-          onClick={() => setSelectedBuff(null)}
+          onClick={() => setSelectedAura(null)}
           style={{
             background: 'none', border: 'none', color: 'var(--text-muted)',
             cursor: 'pointer', fontSize: 20, lineHeight: 1, padding: '4px 8px',
@@ -163,7 +180,7 @@ export function BuffBreakdownPanel() {
       <div className="px-4 pt-2.5">
         <SegmentedControl<ViewMode>
           options={[
-            { key: 'recipients', label: 'Recipients' },
+            { key: 'recipients', label: recipientLabel },
             { key: 'casters', label: 'Casters' },
           ]}
           active={viewMode}
@@ -186,14 +203,14 @@ export function BuffBreakdownPanel() {
             color: 'var(--text-muted)',
           }}
         >
-          <span>{viewMode === 'recipients' ? 'Recipient' : 'Caster'}</span>
+          <span>{viewMode === 'recipients' ? recipientHeader : 'Caster'}</span>
           <span style={{ textAlign: 'right' }}>Uptime %</span>
           <span>Uptime</span>
           <span style={{ textAlign: 'right' }}>Count</span>
         </div>
         {activeRows.length === 0 ? (
           <div style={{ padding: '32px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>
-            No windows for this buff under the current filters.
+            No windows for this {isDebuff ? 'debuff' : 'buff'} under the current filters.
           </div>
         ) : activeRows.map(row => (
           <TargetRow
@@ -214,8 +231,11 @@ export function BuffBreakdownPanel() {
   )
 }
 
-function countLabel(n: number, view: ViewMode): string {
-  if (view === 'recipients') return n === 1 ? 'recipient' : 'recipients'
+function countLabel(n: number, view: ViewMode, isDebuff: boolean): string {
+  if (view === 'recipients') {
+    if (isDebuff) return n === 1 ? 'target' : 'targets'
+    return n === 1 ? 'recipient' : 'recipients'
+  }
   return n === 1 ? 'caster' : 'casters'
 }
 

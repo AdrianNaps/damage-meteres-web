@@ -208,14 +208,15 @@ export interface PlayerInterruptRecord {
 }
 
 // Classification bucket for a buff on the client table — computed at snapshot
-// time from the full window set for each spellId.
+// time from the full window set for each spellId. Debuffs don't get sections
+// (the personal/raid/external fan-out taxonomy doesn't map) and render flat.
 export type BuffSection = 'personal' | 'raid' | 'external'
 
 // Aggregated aura window: one continuous uptime interval for a specific
 // (caster, target, spellId) triple. Windows are built from paired APPLIED/REMOVED
 // events during aggregation and closed at segment end for still-open auras.
 // REFRESHes inside a window increment `refreshCount` without splitting the
-// window — the buff is continuously up, but each refresh is an application
+// window — the aura is continuously up, but each refresh is an application
 // the user cares about for the Count column.
 export interface AuraWindow {
   spellId: string
@@ -228,6 +229,7 @@ export interface AuraWindow {
   stillOpen: boolean     // no REMOVED seen; closed at segment end
   refreshCount: number   // SPELL_AURA_REFRESHes observed inside this window
   targetHostile: boolean // true when dest carried REACTION_HOSTILE at event time — used to split the enemies perspective from friendly NPCs (pets, totems, guardians)
+  kind: 'BUFF' | 'DEBUFF' // game-engine classification, straight through from the combat-log BUFF|DEBUFF tag
 }
 
 // In-flight open-aura bookkeeping. Stored on Segment, keyed by
@@ -242,6 +244,7 @@ export interface AuraOpen {
   start: number
   refreshCount: number
   targetHostile: boolean
+  kind: 'BUFF' | 'DEBUFF'
 }
 
 // Wire-shrunk variant of AuraWindow — 1-letter keys because a 6-min raid fight
@@ -258,6 +261,7 @@ export interface AuraWindowWire {
   e: number   // end ms
   r?: number  // SPELL_AURA_REFRESH count folded into this window
   h?: 1       // target was hostile (REACTION_HOSTILE) at event time — enemies perspective filters on this flag. Omitted for friendly targets (allies, player pets, guardians) to keep legacy snapshots parsing cleanly and shave bytes off the common case.
+  k?: 1       // DEBUFF flag — omitted for BUFFs (the more common case on the wire for raid fights heavy in raid/personal buffs). Legacy snapshots (pre-debuff-metric) carry no DEBUFF windows, so absence reads correctly as BUFF.
 }
 
 // Pared-down event used by the client to re-aggregate under arbitrary filters.

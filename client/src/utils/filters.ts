@@ -46,14 +46,16 @@ export interface AbilityEntry {
   sourceCount: number
 }
 
-// One row in the Full-mode buffs table. `uptimeMs` is the UNION of windows
-// across all targets (any target has the buff at time t → group is counted
-// as up), matching WCL's "Uptime" column. `count` follows WCL's convention:
-// per-recipient application count (one Heroism fan-out of 20 = 20).
-export interface BuffRow {
+// One row in the Full-mode Buffs or Debuffs table. `uptimeMs` is the UNION
+// of windows across all targets (any target has the aura at time t → group
+// is counted as up), matching WCL's "Uptime" column. `count` follows WCL's
+// convention: per-recipient application count (one Heroism fan-out of 20
+// = 20). `section` is present only for BUFFs — debuffs render flat because
+// the personal/raid/external taxonomy doesn't map to them.
+export interface AuraRow {
   spellId: string
   spellName: string
-  section: BuffSection
+  section?: BuffSection
   uptimeMs: number
   uptimePct: number       // uptimeMs / scopeDurationMs * 100
   count: number
@@ -63,10 +65,10 @@ export interface BuffRow {
 
 // Maps a metric category to the event.kind that feeds it. Damage and
 // damageTaken both feed from the 'damage' event kind — they diverge only in
-// the row subject (see rowSubject). Buffs doesn't use the events stream — it
-// has its own aura-window feed — so callers walking events must not reach
-// this function with 'buffs'. FullMeterView branches on metric before
-// calling event-based aggregators.
+// the row subject (see rowSubject). Buffs and debuffs don't use the events
+// stream — they have their own aura-window feed — so callers walking events
+// must not reach this function with them. FullMeterView branches on metric
+// before calling event-based aggregators.
 function kindFor(category: Metric): ClientEvent['kind'] {
   switch (category) {
     case 'damage':      return 'damage'
@@ -74,7 +76,8 @@ function kindFor(category: Metric): ClientEvent['kind'] {
     case 'healing':     return 'heal'
     case 'interrupts':  return 'interrupt'
     case 'deaths':      return 'death'
-    case 'buffs':       throw new Error('kindFor(buffs) — buffs metric has no ClientEvent kind')
+    case 'buffs':       throw new Error('kindFor(buffs) — aura metric has no ClientEvent kind')
+    case 'debuffs':     throw new Error('kindFor(debuffs) — aura metric has no ClientEvent kind')
   }
 }
 
@@ -458,14 +461,15 @@ function computeUnitUniverseImpl(
   return { sources: [...sources].sort(), targets: [...targets].sort() }
 }
 
-// Buffs-metric row builder. Groups auras by spellId, unions their windows per
-// spell to compute group uptime ("any target has it at t"), and tags each row
-// with its classification section.
+// Aura-metric row builder (Buffs or Debuffs). Groups auras by spellId, unions
+// their windows per spell to compute group uptime ("any target has it at t"),
+// and — for buffs — tags each row with its classification section. Debuff
+// rows carry no section and render flat.
 //
 // Filter semantics (same store state as damage/healing, different meaning):
 //   Source (Caster)    → filter windows by `c`
 //   Target (Recipient) → filter windows by `d`
-//   Ability (Buff)     → filter rows by spell name (one spell can match)
+//   Ability (Aura)     → filter rows by spell name (one spell can match)
 //   TimeWindow         → clip windows to the selected [start,end] sub-range
 //                        before union; a window that doesn't intersect the
 //                        sub-range drops out entirely.
@@ -475,9 +479,17 @@ function computeUnitUniverseImpl(
 // union is what drives uptime%. When TimeWindow is active, the effective
 // scope shrinks to the intersection, so uptime% is computed relative to the
 // window width — matching the way damage/healing re-aggregate under filters.
-const buffRowsCache = new WeakMap<AuraWindowWire[], Map<string, BuffRow[]>>()
+const auraRowsCache = new WeakMap<AuraWindowWire[], Map<string, AuraRow[]>>()
 
-export function computeBuffRows(
+export type AuraKind = 'BUFF' | 'DEBUFF'
+
+// Wire flag test: windows without `k` are BUFFs (legacy + common case); k===1
+// marks DEBUFFs. Kept as a helper so the filter is consistent across callers.
+function matchesKind(w: AuraWindowWire, kind: AuraKind): boolean {
+  return kind === 'DEBUFF' ? w.k === 1 : w.k !== 1
+}
+
+export function computeAuraRows(
   auras: AuraWindowWire[],
   classification: Record<string, BuffSection>,
   filters: FilterState,
@@ -485,23 +497,24 @@ export function computeBuffRows(
   tEndMs: number,
   allies: Record<string, PlayerSnapshot>,
   perspective: Perspective,
-): BuffRow[] {
+  kind: AuraKind,
+): AuraRow[] {
   if (!hasAnyFilter(filters)) {
-    const sub = getOrInit(buffRowsCache, auras)
+    const sub = getOrInit(auraRowsCache, auras)
     // The WeakMap is keyed on the auras array so it's already scoped to one
-    // snapshot; perspective distinguishes the ally vs enemy partition within
+    // snapshot; kind + perspective distinguish the tab + partition within
     // that snapshot.
-    const cacheKey = `${perspective}:${t0Ms}:${tEndMs}`
+    const cacheKey = `${kind}:${perspective}:${t0Ms}:${tEndMs}`
     const cached = sub.get(cacheKey)
     if (cached) return cached
-    const rows = computeBuffRowsImpl(auras, classification, filters, t0Ms, tEndMs, allies, perspective)
+    const rows = computeAuraRowsImpl(auras, classification, filters, t0Ms, tEndMs, allies, perspective, kind)
     sub.set(cacheKey, rows)
     return rows
   }
-  return computeBuffRowsImpl(auras, classification, filters, t0Ms, tEndMs, allies, perspective)
+  return computeAuraRowsImpl(auras, classification, filters, t0Ms, tEndMs, allies, perspective, kind)
 }
 
-function computeBuffRowsImpl(
+function computeAuraRowsImpl(
   auras: AuraWindowWire[],
   classification: Record<string, BuffSection>,
   filters: FilterState,
@@ -509,7 +522,8 @@ function computeBuffRowsImpl(
   tEndMs: number,
   allies: Record<string, PlayerSnapshot>,
   perspective: Perspective,
-): BuffRow[] {
+  kind: AuraKind,
+): AuraRow[] {
   if (auras.length === 0 || tEndMs <= t0Ms) return []
 
   const { effStart, effEnd } = resolveBuffScope(t0Ms, tEndMs, filters.TimeWindow)
@@ -518,11 +532,11 @@ function computeBuffRowsImpl(
 
   const casterFilter = filters.Source
   const recipientFilter = filters.Target
-  const buffFilter = filters.Ability
+  const auraFilter = filters.Ability
   const allySet = makeAllySet(allies)
 
-  // Group by spellId. Keep per-target window lists for the eventual drill panel
-  // (PR 5) so a row already has them memoized — avoids a second pass.
+  // Group by spellId. Keep per-target window lists for the drill panel so
+  // a row already has them memoized — avoids a second pass.
   type Agg = {
     spellName: string
     windows: AuraWindowWire[]
@@ -532,6 +546,7 @@ function computeBuffRowsImpl(
   const bySpell = new Map<string, Agg>()
 
   for (const w of auras) {
+    if (!matchesKind(w, kind)) continue
     // Allies view: target is a known ally (by name).
     // Enemies view: target was REACTION_HOSTILE at APPLIED — a name-only
     // check would leak player pets / totems / guardians into the enemy list
@@ -539,7 +554,7 @@ function computeBuffRowsImpl(
     if (perspective === 'allies' ? !allySet.has(w.d) : w.h !== 1) continue
     if (casterFilter && !casterFilter.includes(w.c)) continue
     if (recipientFilter && !recipientFilter.includes(w.d)) continue
-    if (buffFilter && !buffFilter.includes(w.n)) continue
+    if (auraFilter && !auraFilter.includes(w.n)) continue
     // Must have a non-zero intersection with the effective scope window.
     if (w.e <= effStart || w.s >= effEnd) continue
 
@@ -557,29 +572,35 @@ function computeBuffRowsImpl(
     agg.count += 1 + (w.r ?? 0)
   }
 
-  const rows: BuffRow[] = []
+  const rows: AuraRow[] = []
   for (const [spellId, agg] of bySpell) {
     const uptimeMs = unionUptimeMs(agg.windows, effStart, effEnd)
-    rows.push({
+    const row: AuraRow = {
       spellId,
       spellName: agg.spellName,
-      section: classification[spellId] ?? 'external',
       uptimeMs,
       uptimePct: (uptimeMs / scopeMs) * 100,
       count: agg.count,
       windows: agg.windows,
       windowsByTarget: agg.byTarget,
-    })
+    }
+    if (kind === 'BUFF') row.section = classification[spellId] ?? 'external'
+    rows.push(row)
   }
 
-  // Sort: section order (personal → raid → external) then uptime% desc
-  // within the section. Matches the plan's default display order.
-  const sectionRank: Record<BuffSection, number> = { personal: 0, raid: 1, external: 2 }
-  rows.sort((a, b) => {
-    const sr = sectionRank[a.section] - sectionRank[b.section]
-    if (sr !== 0) return sr
-    return b.uptimePct - a.uptimePct
-  })
+  if (kind === 'BUFF') {
+    // Buffs: section order (personal → raid → external), then uptime% desc
+    // within the section. Matches the plan's default display order.
+    const sectionRank: Record<BuffSection, number> = { personal: 0, raid: 1, external: 2 }
+    rows.sort((a, b) => {
+      const sr = sectionRank[a.section ?? 'external'] - sectionRank[b.section ?? 'external']
+      if (sr !== 0) return sr
+      return b.uptimePct - a.uptimePct
+    })
+  } else {
+    // Debuffs: flat uptime% desc sort. No section grouping.
+    rows.sort((a, b) => b.uptimePct - a.uptimePct)
+  }
   return rows
 }
 
@@ -597,77 +618,83 @@ function resolveBuffScope(
   return { effStart, effEnd }
 }
 
-// Unit universe for the buffs metric — casters + recipients that appear in
-// the aura windows. Partitioned by perspective so the allies view picker
-// lists only ally recipients (and their casters) and the enemies view lists
-// only non-ally recipients.
-const buffUnitUniverseCache = new WeakMap<AuraWindowWire[], Map<Perspective, { sources: string[]; targets: string[] }>>()
+// Unit universe for the aura metrics — casters + targets that appear in the
+// aura windows for the given kind. Partitioned by perspective so the allies
+// view picker lists only ally recipients (and their casters) and the enemies
+// view lists only non-ally recipients.
+const auraUnitUniverseCache = new WeakMap<AuraWindowWire[], Map<string, { sources: string[]; targets: string[] }>>()
 
-export function computeBuffUnitUniverse(
+export function computeAuraUnitUniverse(
   auras: AuraWindowWire[],
   allies: Record<string, PlayerSnapshot>,
   perspective: Perspective,
+  kind: AuraKind,
 ): { sources: string[]; targets: string[] } {
-  const sub = getOrInit(buffUnitUniverseCache, auras)
-  const cached = sub.get(perspective)
+  const sub = getOrInit(auraUnitUniverseCache, auras)
+  const cacheKey = `${kind}:${perspective}`
+  const cached = sub.get(cacheKey)
   if (cached) return cached
   const allySet = makeAllySet(allies)
   const sources = new Set<string>()
   const targets = new Set<string>()
   for (const w of auras) {
+    if (!matchesKind(w, kind)) continue
     if (perspective === 'allies' ? !allySet.has(w.d) : w.h !== 1) continue
     sources.add(w.c)
     targets.add(w.d)
   }
   if (perspective === 'allies') {
-    // Include allies as fallback recipients even if they never gained/lost a
-    // buff in this scope — the picker should still list them so a user can
-    // filter to "buffs on <X>" and get an empty state, not a missing option.
+    // Include allies as fallback recipients even if they never gained/lost an
+    // aura in this scope — the picker should still list them so a user can
+    // filter to "auras on <X>" and get an empty state, not a missing option.
     // (Mirrors how the damage/healing picker lists allies with zero activity.)
     // No equivalent fallback for enemies — we don't have a canonical enemy
     // roster outside the aura stream itself.
     for (const name of Object.keys(allies)) targets.add(name)
   }
   const result = { sources: [...sources].sort(), targets: [...targets].sort() }
-  sub.set(perspective, result)
+  sub.set(cacheKey, result)
   return result
 }
 
-// Ability (buff) universe for the buffs picker. Filters by Caster/Recipient
-// before tallying so the picker list reflects what's currently in view.
-export function computeBuffAbilityUniverse(
+// Ability (aura) universe for the aura-metric picker. Filters by
+// Caster/Recipient before tallying so the picker list reflects what's
+// currently in view.
+export function computeAuraAbilityUniverse(
   auras: AuraWindowWire[],
   filters: Pick<FilterState, 'Source' | 'Target'>,
   allies: Record<string, PlayerSnapshot>,
   perspective: Perspective,
+  kind: AuraKind,
 ): AbilityEntry[] {
   type Agg = { count: number; sources: Map<string, number> }
-  const byBuff = new Map<string, Agg>()
+  const byAura = new Map<string, Agg>()
 
   const srcFilter = filters.Source
   const tgtFilter = filters.Target
   const allySet = makeAllySet(allies)
 
   for (const w of auras) {
+    if (!matchesKind(w, kind)) continue
     if (perspective === 'allies' ? !allySet.has(w.d) : w.h !== 1) continue
     if (srcFilter && !srcFilter.includes(w.c)) continue
     if (tgtFilter && !tgtFilter.includes(w.d)) continue
-    let agg = byBuff.get(w.n)
+    let agg = byAura.get(w.n)
     if (!agg) {
       agg = { count: 0, sources: new Map() }
-      byBuff.set(w.n, agg)
+      byAura.set(w.n, agg)
     }
-    // Same refresh-aware count as computeBuffRows.
+    // Same refresh-aware count as computeAuraRows.
     const applications = 1 + (w.r ?? 0)
     agg.count += applications
     agg.sources.set(w.c, (agg.sources.get(w.c) ?? 0) + applications)
   }
 
   let grand = 0
-  for (const a of byBuff.values()) grand += a.count
+  for (const a of byAura.values()) grand += a.count
 
   const entries: AbilityEntry[] = []
-  for (const [name, agg] of byBuff) {
+  for (const [name, agg] of byAura) {
     const pct = grand > 0 ? (agg.count / grand) * 100 : 0
     const sortedSources = [...agg.sources.entries()].sort((a, c) => c[1] - a[1])
     entries.push({
@@ -681,28 +708,30 @@ export function computeBuffAbilityUniverse(
   return entries
 }
 
-// True when at least one aura window passes the current filter set — drives
-// the FilterEmptyState fallback for buffs the same way hasMatchingData does
-// for damage/healing.
-export function hasMatchingBuffData(
+// True when at least one aura window of the given kind passes the current
+// filter set — drives the FilterEmptyState fallback for aura metrics the
+// same way hasMatchingData does for damage/healing.
+export function hasMatchingAuraData(
   auras: AuraWindowWire[],
   filters: FilterState,
   t0Ms: number,
   tEndMs: number,
   allies: Record<string, PlayerSnapshot>,
   perspective: Perspective,
+  kind: AuraKind,
 ): boolean {
   const { effStart, effEnd } = resolveBuffScope(t0Ms, tEndMs, filters.TimeWindow)
   if (effEnd <= effStart) return false
   const casterFilter = filters.Source
   const recipientFilter = filters.Target
-  const buffFilter = filters.Ability
+  const auraFilter = filters.Ability
   const allySet = makeAllySet(allies)
   for (const w of auras) {
+    if (!matchesKind(w, kind)) continue
     if (perspective === 'allies' ? !allySet.has(w.d) : w.h !== 1) continue
     if (casterFilter && !casterFilter.includes(w.c)) continue
     if (recipientFilter && !recipientFilter.includes(w.d)) continue
-    if (buffFilter && !buffFilter.includes(w.n)) continue
+    if (auraFilter && !auraFilter.includes(w.n)) continue
     if (w.e <= effStart || w.s >= effEnd) continue
     return true
   }

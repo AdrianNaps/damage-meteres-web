@@ -148,7 +148,7 @@ export type BuffSection = 'personal' | 'raid' | 'external'
 // window represents a contiguous uptime interval for a (caster, target,
 // spellId) triple. SPELL_AURA_REFRESHes observed inside the window are
 // folded into `r` so the Count column reflects real reapplication activity;
-// uptime (s,e) stays contiguous across refreshes because the buff was up.
+// uptime (s,e) stays contiguous across refreshes because the aura was up.
 // `r` is omitted when zero to keep the common case small.
 export interface AuraWindowWire {
   id: string  // spellId
@@ -159,6 +159,7 @@ export interface AuraWindowWire {
   e: number   // end ms (absolute — clamped to segment end if still open)
   r?: number  // refresh count inside this window (undefined = 0)
   h?: 1       // target was hostile at event time — enemies-perspective filter signal. Omitted for friendly targets (allies, player pets, totems, guardians). Legacy snapshots (pre-hostile-flag) read as undefined → treated as friendly on the enemies view, which is safe (they simply won't appear).
+  k?: 1       // DEBUFF flag (game-engine classification). Omitted for BUFFs. Drives the Buffs vs Debuffs tab split. Legacy snapshots (pre-debuff-metric) ship only BUFFs so an absent flag correctly defaults to BUFF.
 }
 
 export interface SegmentSnapshot {

@@ -10,7 +10,7 @@ export interface BootInfoState {
 // reset helpers and the graph component share a single source of truth.
 export const GRAPH_GROUP_AVG_KEY = '__group_avg__'
 
-export type Metric = 'damage' | 'damageTaken' | 'healing' | 'deaths' | 'interrupts' | 'buffs'
+export type Metric = 'damage' | 'damageTaken' | 'healing' | 'deaths' | 'interrupts' | 'buffs' | 'debuffs'
 export type Mode = 'summary' | 'full'
 export type Perspective = 'allies' | 'enemies'
 // Healing lens. Effective = treat overheal as noise (column hidden, bar solid,
@@ -109,10 +109,11 @@ export interface SourceState {
   selectedBossSection: BossSectionSnapshot | null
   selectedPlayer: string | null
   selectedDeath: PlayerDeathRecord | null
-  // Spell-id of the buff currently drilled into. Mutually exclusive with
-  // selectedPlayer / selectedDeath — setting one clears the others. Drives
-  // the BuffBreakdownPanel in Full mode when metric === 'buffs'.
-  selectedBuff: string | null
+  // Spell-id of the aura (buff or debuff) currently drilled into. Mutually
+  // exclusive with selectedPlayer / selectedDeath — setting one clears the
+  // others. Drives the AuraBreakdownPanel in Full mode when metric is
+  // 'buffs' or 'debuffs'.
+  selectedAura: string | null
   metric: Metric
   drillMetric: Metric | null
   mode: Mode
@@ -155,7 +156,7 @@ function makeEmptySourceState(): SourceState {
     selectedBossSection: null,
     selectedPlayer: null,
     selectedDeath: null,
-    selectedBuff: null,
+    selectedAura: null,
     metric: 'damage',
     drillMetric: null,
     mode: 'summary',
@@ -187,7 +188,7 @@ interface AppState {
   selectedBossSection: BossSectionSnapshot | null
   selectedPlayer: string | null
   selectedDeath: PlayerDeathRecord | null
-  selectedBuff: string | null
+  selectedAura: string | null
   metric: Metric
   drillMetric: Metric | null
   mode: Mode
@@ -229,7 +230,7 @@ interface AppState {
   setSelectedBossSection: (s: BossSectionSnapshot | null, sourceId?: string) => void
   setSelectedPlayer: (name: string | null, drillMetric?: Metric) => void
   setSelectedDeath: (record: PlayerDeathRecord | null) => void
-  setSelectedBuff: (spellId: string | null) => void
+  setSelectedAura: (spellId: string | null) => void
   setMetric: (m: Metric) => void
   setMode: (m: Mode) => void
   setTargetDetail: (d: TargetDetail | null) => void
@@ -273,7 +274,7 @@ function flatFromSlice(slice: SourceState): Partial<AppState> {
     selectedBossSection: slice.selectedBossSection,
     selectedPlayer: slice.selectedPlayer,
     selectedDeath: slice.selectedDeath,
-    selectedBuff: slice.selectedBuff,
+    selectedAura: slice.selectedAura,
     metric: slice.metric,
     drillMetric: slice.drillMetric,
     mode: slice.mode,
@@ -439,7 +440,7 @@ export const useStore = create<AppState>((set) => ({
   selectedBossSection: null,
   selectedPlayer: null,
   selectedDeath: null,
-  selectedBuff: null,
+  selectedAura: null,
   metric: 'damage',
   drillMetric: null,
   mode: 'summary',
@@ -477,7 +478,7 @@ export const useStore = create<AppState>((set) => ({
       sliceUpdate.mode = 'summary'
       sliceUpdate.selectedPlayer = null
       sliceUpdate.selectedDeath = null
-      sliceUpdate.selectedBuff = null
+      sliceUpdate.selectedAura = null
       sliceUpdate.drillMetric = null
     }
     const out = applySliceUpdate(state, sid, sliceUpdate)
@@ -518,7 +519,7 @@ export const useStore = create<AppState>((set) => ({
       selectedSegment: nextSegment,
       selectedPlayer: null,
       selectedDeath: null,
-      selectedBuff: null,
+      selectedAura: null,
       drillMetric: null,
       selectedKeyRunId: null,
       selectedKeyRun: null,
@@ -556,7 +557,7 @@ export const useStore = create<AppState>((set) => ({
       selectedBossSection: null,
       selectedPlayer: null,
       selectedDeath: null,
-      selectedBuff: null,
+      selectedAura: null,
       drillMetric: null,
     }
     if (oldKey !== newKey) {
@@ -584,7 +585,7 @@ export const useStore = create<AppState>((set) => ({
       sliceUpdate.mode = 'summary'
       sliceUpdate.selectedPlayer = null
       sliceUpdate.selectedDeath = null
-      sliceUpdate.selectedBuff = null
+      sliceUpdate.selectedAura = null
       sliceUpdate.drillMetric = null
     }
     const out = applySliceUpdate(state, sid, sliceUpdate)
@@ -612,7 +613,7 @@ export const useStore = create<AppState>((set) => ({
       selectedKeyRun: null,
       selectedPlayer: null,
       selectedDeath: null,
-      selectedBuff: null,
+      selectedAura: null,
       drillMetric: null,
     }
     if (oldKey !== newKey) {
@@ -640,7 +641,7 @@ export const useStore = create<AppState>((set) => ({
       sliceUpdate.mode = 'summary'
       sliceUpdate.selectedPlayer = null
       sliceUpdate.selectedDeath = null
-      sliceUpdate.selectedBuff = null
+      sliceUpdate.selectedAura = null
       sliceUpdate.drillMetric = null
     }
     const out = applySliceUpdate(state, sid, sliceUpdate)
@@ -657,7 +658,7 @@ export const useStore = create<AppState>((set) => ({
     return applySliceUpdate(state, sid, {
       selectedPlayer: name,
       selectedDeath: null,
-      selectedBuff: null,
+      selectedAura: null,
       drillMetric: name ? (drillMetric ?? slice.metric) : null,
     })
   }),
@@ -665,54 +666,65 @@ export const useStore = create<AppState>((set) => ({
   setSelectedDeath: (record) => set(state => applySliceUpdate(state, state.activeSourceId, {
     selectedDeath: record,
     selectedPlayer: null,
-    selectedBuff: null,
+    selectedAura: null,
     drillMetric: record ? 'deaths' : null,
   })),
 
-  // Drill into a specific buff row. Mirrors setSelectedDeath's mutual-
-  // exclusion pattern. Passing null clears the drill.
-  setSelectedBuff: (spellId) => set(state => applySliceUpdate(state, state.activeSourceId, {
-    selectedBuff: spellId,
-    selectedPlayer: null,
-    selectedDeath: null,
-    drillMetric: spellId ? 'buffs' : null,
-  })),
+  // Drill into a specific aura row (buff or debuff). Mirrors setSelectedDeath's
+  // mutual-exclusion pattern. Passing null clears the drill. drillMetric picks
+  // up whichever aura tab is active so the pill stays attributed correctly.
+  setSelectedAura: (spellId) => set(state => {
+    const sid = state.activeSourceId
+    const slice = state.sources.get(sid) ?? makeEmptySourceState()
+    const drillMetric: Metric | null = spellId
+      ? (slice.metric === 'debuffs' ? 'debuffs' : 'buffs')
+      : null
+    return applySliceUpdate(state, sid, {
+      selectedAura: spellId,
+      selectedPlayer: null,
+      selectedDeath: null,
+      drillMetric,
+    })
+  }),
 
   // Changing the focused metric keeps the existing drill panel open as long
-  // as the drill's metric is still relevant. Switching to or away from 'buffs'
-  // crosses a drill-shape boundary — BuffBreakdownPanel isn't reachable from
-  // player-drill state and vice versa — so clear any drill state that's no
-  // longer valid for the destination metric.
+  // as the drill's metric is still relevant. The aura family (buffs/debuffs)
+  // is its own shape — AuraBreakdownPanel isn't reachable from player-drill
+  // state and vice versa. Crossing into or out of the aura family clears the
+  // drill; crossing buffs↔debuffs within the family also resets because the
+  // Ability filter namespace (buff names vs debuff names) doesn't overlap.
   setMetric: (m) => set(state => {
     const sid = state.activeSourceId
     const slice = state.sources.get(sid) ?? makeEmptySourceState()
     const patch: Partial<SourceState> = { metric: m }
-    const crossesBuffsBoundary = (slice.metric === 'buffs') !== (m === 'buffs')
-    if (crossesBuffsBoundary) {
+    const wasAura = slice.metric === 'buffs' || slice.metric === 'debuffs'
+    const isAura = m === 'buffs' || m === 'debuffs'
+    const crossesAuraBoundary = wasAura !== isAura || (wasAura && isAura && slice.metric !== m)
+    if (crossesAuraBoundary) {
       patch.selectedPlayer = null
       patch.selectedDeath = null
-      patch.selectedBuff = null
+      patch.selectedAura = null
       patch.drillMetric = null
       // Ability filter values are metric-specific names (damage/heal spell
-      // names vs buff names) with non-overlapping namespaces. Carrying a
-      // stale value across the boundary would present as an invisible
+      // names vs buff/debuff names) with non-overlapping namespaces. Carrying
+      // a stale value across the boundary would present as an invisible
       // always-empty filter, just with a renamed chip.
       if (slice.filters.Ability) {
         const next = { ...slice.filters }
         delete next.Ability
         patch.filters = Object.keys(next).length === 0 ? EMPTY_FILTERS : next
       }
-      // Strip any buffs-specific graph-focus keys (see GraphContainer.tsx —
-      // BUFFS_DAMAGE_KEY / BUFFS_HEALING_KEY) so a later buffs session
-      // starts with both lines visible again.
-      let anyBuffsFocus = false
+      // Strip aura-graph focus keys (see GraphContainer.tsx AURA_DAMAGE_KEY /
+      // AURA_HEALING_KEY) so a later aura session starts with both lines
+      // visible again.
+      let anyAuraFocus = false
       for (const k of slice.graphFocused) {
-        if (k.startsWith('__buffs_')) { anyBuffsFocus = true; break }
+        if (k.startsWith('__aura_')) { anyAuraFocus = true; break }
       }
-      if (anyBuffsFocus) {
+      if (anyAuraFocus) {
         const stripped = new Set<string>()
         for (const k of slice.graphFocused) {
-          if (!k.startsWith('__buffs_')) stripped.add(k)
+          if (!k.startsWith('__aura_')) stripped.add(k)
         }
         patch.graphFocused = stripped
       }
@@ -727,10 +739,10 @@ export const useStore = create<AppState>((set) => ({
     // when the loaded snapshot is in progress; allow it pre-load — the
     // snapshot setters will downgrade once data arrives if needed.
     if (m === 'full' && isActiveScopeInProgress(slice)) return {}
-    // Buffs and Damage Taken are Full-only metrics. Flipping back to Summary
-    // while on either would leave Summary with a category it can't render —
-    // snap to damage.
-    const isFullOnlyMetric = slice.metric === 'buffs' || slice.metric === 'damageTaken'
+    // Buffs, Debuffs, and Damage Taken are Full-only metrics. Flipping back to
+    // Summary while on any of them would leave Summary with a category it
+    // can't render — snap to damage.
+    const isFullOnlyMetric = slice.metric === 'buffs' || slice.metric === 'debuffs' || slice.metric === 'damageTaken'
     const nextMetric: Metric = m === 'summary' && isFullOnlyMetric
       ? 'damage'
       : slice.metric
@@ -739,7 +751,7 @@ export const useStore = create<AppState>((set) => ({
       metric: nextMetric,
       selectedPlayer: null,
       selectedDeath: null,
-      selectedBuff: null,
+      selectedAura: null,
       drillMetric: null,
     })
   }),

@@ -208,6 +208,7 @@ export function materializeAuras(segment: Segment, cutoffMs: number): AuraWindow
       stillOpen: true,
       refreshCount: open.refreshCount,
       targetHostile: open.targetHostile,
+      kind: open.kind,
     })
   }
   return out
@@ -223,6 +224,7 @@ export function auraWindowsToWire(windows: AuraWindow[]): AuraWindowWire[] {
     const wire: AuraWindowWire = { id: w.spellId, n: w.spellName, c: w.caster, d: w.target, s: w.start, e: w.end }
     if (w.refreshCount > 0) wire.r = w.refreshCount
     if (w.targetHostile) wire.h = 1
+    if (w.kind === 'DEBUFF') wire.k = 1
     out[i] = wire
   }
   return out
@@ -251,6 +253,11 @@ export function classifyAuras(windows: AuraWindow[], allyNames: Set<string>): Re
   const minFanout = Math.min(5, Math.max(3, allyNames.size - 1))
   const bySpell = new Map<string, AuraWindow[]>()
   for (const w of windows) {
+    // Debuffs don't fit the personal/raid/external taxonomy (no caster==target
+    // self-cast semantics, no fan-out to allies). Skip them so their spellIds
+    // don't collide with buff classifications under the same ID (can happen
+    // when a spell has both buff and debuff components).
+    if (w.kind === 'DEBUFF') continue
     let arr = bySpell.get(w.spellId)
     if (!arr) { arr = []; bySpell.set(w.spellId, arr) }
     arr.push(w)
