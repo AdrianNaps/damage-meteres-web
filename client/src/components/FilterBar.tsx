@@ -2,6 +2,7 @@ import { forwardRef, useDeferredValue, useMemo, useRef, useState } from 'react'
 import { useStore, selectCurrentView, type FilterAxis, type FilterState, type Metric, type Perspective, type TimeWindow, resolveSpecId } from '../store'
 import {
   computeAbilityUniverse,
+  computeInterruptedAbilityUniverse,
   computeUnitUniverse,
   computeAuraAbilityUniverse,
   computeAuraUnitUniverse,
@@ -48,12 +49,22 @@ function axisLabels(metric: Metric, axis: FilterAxis): AxisLabels {
       case 'Source':  return { label: 'Attacker', defaultLabel: 'Any attacker' }
       case 'Target':  return { label: 'Victim',   defaultLabel: 'Any victim' }
       case 'Ability': return { label: 'Ability',  defaultLabel: 'All abilities' }
+      case 'InterruptedAbility': return { label: 'Interrupted', defaultLabel: 'Any interrupted spell' }
+    }
+  }
+  if (metric === 'interrupts') {
+    switch (axis) {
+      case 'Source':  return { label: 'Source',             defaultLabel: 'Any source' }
+      case 'Target':  return { label: 'Target',             defaultLabel: 'Any target' }
+      case 'Ability': return { label: 'Interrupt Ability',  defaultLabel: 'Any interrupt ability' }
+      case 'InterruptedAbility': return { label: 'Interrupted Spell', defaultLabel: 'Any interrupted spell' }
     }
   }
   switch (axis) {
     case 'Source':  return { label: 'Source',   defaultLabel: 'Any source' }
     case 'Target':  return { label: 'Target',   defaultLabel: 'Any target' }
     case 'Ability': return { label: 'Ability',  defaultLabel: 'All Abilities' }
+    case 'InterruptedAbility': return { label: 'Interrupted', defaultLabel: 'Any interrupted spell' }
   }
 }
 
@@ -73,7 +84,12 @@ export function FilterBar() {
   const sourceRef = useRef<HTMLButtonElement>(null)
   const targetRef = useRef<HTMLButtonElement>(null)
   const abilityRef = useRef<HTMLButtonElement>(null)
-  const activeRef = open === 'Source' ? sourceRef : open === 'Target' ? targetRef : open === 'Ability' ? abilityRef : null
+  const interruptedAbilityRef = useRef<HTMLButtonElement>(null)
+  const activeRef = open === 'Source' ? sourceRef
+    : open === 'Target' ? targetRef
+    : open === 'Ability' ? abilityRef
+    : open === 'InterruptedAbility' ? interruptedAbilityRef
+    : null
 
   const events: ClientEvent[] = currentView?.events ?? EMPTY_EVENTS
   const allies: Record<string, PlayerSnapshot> = currentView?.players ?? EMPTY_PLAYERS
@@ -87,6 +103,8 @@ export function FilterBar() {
   const deferredMetric = useDeferredValue(metric)
   const deferredFilterSource = useDeferredValue(filters.Source)
   const deferredFilterTarget = useDeferredValue(filters.Target)
+  const deferredFilterAbility = useDeferredValue(filters.Ability)
+  const deferredFilterInterruptedAbility = useDeferredValue(filters.InterruptedAbility)
   const auraKind: 'BUFF' | 'DEBUFF' | null =
     deferredMetric === 'buffs' ? 'BUFF'
     : deferredMetric === 'debuffs' ? 'DEBUFF'
@@ -105,8 +123,26 @@ export function FilterBar() {
   const abilityUniverse = useMemo(
     () => auraKind
       ? computeAuraAbilityUniverse(auras, { Source: deferredFilterSource, Target: deferredFilterTarget }, allies, deferredPerspective, auraKind)
-      : computeAbilityUniverse(events, deferredPerspective, { Source: deferredFilterSource, Target: deferredFilterTarget }, deferredMetric, allies),
-    [auraKind, auras, events, deferredPerspective, deferredFilterSource, deferredFilterTarget, deferredMetric, allies]
+      : computeAbilityUniverse(events, deferredPerspective, {
+          Source: deferredFilterSource,
+          Target: deferredFilterTarget,
+          InterruptedAbility: deferredFilterInterruptedAbility,
+        }, deferredMetric, allies),
+    [auraKind, auras, events, deferredPerspective, deferredFilterSource, deferredFilterTarget, deferredFilterInterruptedAbility, deferredMetric, allies]
+  )
+  // Interrupts-only: universe for the "Interrupted Spell" picker. Buckets on
+  // the victim's cast; narrows on the companion filters so the picker reflects
+  // what's currently in view. Empty list on every other metric (the picker
+  // button isn't rendered there).
+  const interruptedAbilityUniverse = useMemo(
+    () => deferredMetric === 'interrupts'
+      ? computeInterruptedAbilityUniverse(events, deferredPerspective, {
+          Source: deferredFilterSource,
+          Target: deferredFilterTarget,
+          Ability: deferredFilterAbility,
+        }, allies)
+      : [],
+    [events, deferredPerspective, deferredFilterSource, deferredFilterTarget, deferredFilterAbility, deferredMetric, allies]
   )
 
   const sourceOptions = useMemo(
@@ -127,12 +163,25 @@ export function FilterBar() {
     })),
     [abilityUniverse]
   )
+  // Interrupted-spell options: "sources" here are the kicker abilities that
+  // cut this victim cast (Pummel × 3, Kick × 1, …), not players — the victim-
+  // spell picker's mirror of "who interrupted this the most?"
+  const interruptedAbilityOptions: PickerOption[] = useMemo(
+    () => interruptedAbilityUniverse.map(a => ({
+      name: a.name,
+      pct: a.pct,
+      subtitle: a.sourceCount === 1
+        ? `cut by ${a.sources[0]}`
+        : `cut by ${a.sourceCount} abilities · ${a.sources.slice(0, 2).join(', ')}${a.sourceCount > 2 ? '…' : ''}`,
+    })),
+    [interruptedAbilityUniverse]
+  )
 
   function togglePicker(axis: FilterAxis) {
     setOpen(prev => prev === axis ? null : axis)
   }
 
-  const hasAnyFilter = !!(filters.Source || filters.Target || filters.Ability || filters.TimeWindow)
+  const hasAnyFilter = !!(filters.Source || filters.Target || filters.Ability || filters.InterruptedAbility || filters.TimeWindow)
 
   return (
     <>
@@ -170,6 +219,15 @@ export function FilterBar() {
           open={open === 'Ability'}
           onClick={() => togglePicker('Ability')}
         />
+        {metric === 'interrupts' && (
+          <PickerButton
+            ref={interruptedAbilityRef}
+            {...axisLabels(metric, 'InterruptedAbility')}
+            values={filters.InterruptedAbility}
+            open={open === 'InterruptedAbility'}
+            onClick={() => togglePicker('InterruptedAbility')}
+          />
+        )}
         <div style={{ flex: 1 }} />
         <ActiveFilterChips
           metric={metric}
@@ -201,7 +259,12 @@ export function FilterBar() {
       {open && activeRef && (
         <FilterPicker
           anchorRef={activeRef}
-          options={open === 'Ability' ? abilityOptions : (open === 'Source' ? sourceOptions : targetOptions)}
+          options={
+            open === 'Ability' ? abilityOptions
+            : open === 'InterruptedAbility' ? interruptedAbilityOptions
+            : open === 'Source' ? sourceOptions
+            : targetOptions
+          }
           selected={filters[open] ?? []}
           onToggle={name => toggleFilterValue(open, name)}
           onClose={() => setOpen(null)}
@@ -372,7 +435,7 @@ function ActiveFilterChips({
   onClearTimeWindow: () => void
 }) {
   const chips: { axis: FilterAxis; values: string[] }[] = []
-  for (const axis of ['Source', 'Target', 'Ability'] as const) {
+  for (const axis of ['Source', 'Target', 'Ability', 'InterruptedAbility'] as const) {
     const values = filters[axis]
     if (values && values.length > 0) chips.push({ axis, values })
   }
@@ -407,26 +470,38 @@ function ActiveFilterChips({
 function buildPickerPlaceholder(metric: Metric, axis: FilterAxis): string {
   if (metric === 'buffs') {
     switch (axis) {
-      case 'Source':  return 'Search casters…'
-      case 'Target':  return 'Search targets…'
-      case 'Ability': return 'Search buffs…'
+      case 'Source':             return 'Search casters…'
+      case 'Target':             return 'Search targets…'
+      case 'Ability':            return 'Search buffs…'
+      case 'InterruptedAbility': return 'Search interrupted spells…'
     }
   }
   if (metric === 'debuffs') {
     switch (axis) {
-      case 'Source':  return 'Search casters…'
-      case 'Target':  return 'Search targets…'
-      case 'Ability': return 'Search debuffs…'
+      case 'Source':             return 'Search casters…'
+      case 'Target':             return 'Search targets…'
+      case 'Ability':            return 'Search debuffs…'
+      case 'InterruptedAbility': return 'Search interrupted spells…'
     }
   }
   if (metric === 'damageTaken') {
     switch (axis) {
-      case 'Source':  return 'Search attackers…'
-      case 'Target':  return 'Search victims…'
-      case 'Ability': return 'Search abilities…'
+      case 'Source':             return 'Search attackers…'
+      case 'Target':             return 'Search victims…'
+      case 'Ability':            return 'Search abilities…'
+      case 'InterruptedAbility': return 'Search interrupted spells…'
+    }
+  }
+  if (metric === 'interrupts') {
+    switch (axis) {
+      case 'Source':             return 'Search sources…'
+      case 'Target':             return 'Search targets…'
+      case 'Ability':            return 'Search interrupt abilities…'
+      case 'InterruptedAbility': return 'Search interrupted spells…'
     }
   }
   if (axis === 'Ability') return 'Search abilities…'
+  if (axis === 'InterruptedAbility') return 'Search interrupted spells…'
   return `Search ${axis.toLowerCase()}s…`
 }
 

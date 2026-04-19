@@ -652,6 +652,7 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
         dst: event.dest.name,
         ability: payload.spellName,
         spellId: payload.spellId,
+        extraAbility: payload.extraSpellName,
       })
       return
     }
@@ -705,6 +706,7 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
       dst: event.dest.name,
       ability: payload.spellName,
       spellId: payload.spellId,
+      extraAbility: payload.extraSpellName,
     })
   }
 

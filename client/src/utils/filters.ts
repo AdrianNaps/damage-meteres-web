@@ -107,6 +107,22 @@ function passesFilters(e: ClientEvent, filters: FilterState, t0: number): boolea
   if (filters.Source  && !filters.Source.includes(e.src)) return false
   if (filters.Target  && !filters.Target.includes(e.dst)) return false
   if (filters.Ability && !filters.Ability.includes(e.ability)) return false
+  if (filters.InterruptedAbility) {
+    // Only landed interrupts carry an interrupted-spell name. Drop 'interrupt'
+    // events whose extraAbility isn't in the allowed set, and drop every
+    // 'interruptAttempt' event whenever this filter is active — a press that
+    // didn't land can't be attributed to a specific interrupted spell, so
+    // including attempts would leak rows the user didn't ask for. For all
+    // non-interrupt event kinds the filter is a no-op: the chip is metric-
+    // specific (only rendered on the interrupts picker) but it can persist
+    // in state across metric switches, and those metrics' events have no
+    // extraAbility to match against.
+    if (e.kind === 'interrupt') {
+      if (!e.extraAbility || !filters.InterruptedAbility.includes(e.extraAbility)) return false
+    } else if (e.kind === 'interruptAttempt') {
+      return false
+    }
+  }
   if (filters.TimeWindow) {
     const elapsedSec = (e.t - t0) / 1000
     if (elapsedSec < filters.TimeWindow.startSec) return false
@@ -122,7 +138,7 @@ function passesPerspective(e: ClientEvent, category: Metric, perspective: Perspe
 }
 
 function hasAnyFilter(filters: FilterState): boolean {
-  return !!(filters.Source || filters.Target || filters.Ability || filters.TimeWindow)
+  return !!(filters.Source || filters.Target || filters.Ability || filters.InterruptedAbility || filters.TimeWindow)
 }
 
 // Scope-relative time basis for TimeWindow translation. events[0].t is the
@@ -142,6 +158,7 @@ function scopeT0(events: ClientEvent[]): number {
 const unitRowsCache = new WeakMap<ClientEvent[], Map<string, UnitRow[]>>()
 const deathRowsCache = new WeakMap<ClientEvent[], Map<string, DeathRow[]>>()
 const abilityUniverseCache = new WeakMap<ClientEvent[], Map<string, AbilityEntry[]>>()
+const interruptedAbilityUniverseCache = new WeakMap<ClientEvent[], Map<string, AbilityEntry[]>>()
 const unitUniverseCache = new WeakMap<ClientEvent[], Map<string, { sources: string[]; targets: string[] }>>()
 
 function getOrInit<K extends object, V>(cache: WeakMap<K, Map<string, V>>, key: K): Map<string, V> {
@@ -316,11 +333,11 @@ function computeDeathRowsImpl(
 export function computeAbilityUniverse(
   events: ClientEvent[],
   perspective: Perspective,
-  filters: Pick<FilterState, 'Source' | 'Target'>,
+  filters: Pick<FilterState, 'Source' | 'Target' | 'InterruptedAbility'>,
   category: Metric,
   allies: Record<string, PlayerSnapshot>,
 ): AbilityEntry[] {
-  if (!filters.Source && !filters.Target) {
+  if (!filters.Source && !filters.Target && !filters.InterruptedAbility) {
     const sub = getOrInit(abilityUniverseCache, events)
     const key = `${perspective}:${category}`
     const cached = sub.get(key)
@@ -335,7 +352,7 @@ export function computeAbilityUniverse(
 function computeAbilityUniverseImpl(
   events: ClientEvent[],
   perspective: Perspective,
-  filters: Pick<FilterState, 'Source' | 'Target'>,
+  filters: Pick<FilterState, 'Source' | 'Target' | 'InterruptedAbility'>,
   category: Metric,
   allies: Record<string, PlayerSnapshot>,
 ): AbilityEntry[] {
@@ -344,16 +361,21 @@ function computeAbilityUniverseImpl(
   type Agg = { total: number; count: number; sources: Map<string, number> }
   const byAbility = new Map<string, Agg>()
 
-  // Walk once, applying Source+Target filters but NOT the Ability filter (the
-  // picker must show options it would hide if self-applied).
+  // Walk once, applying Source+Target (and, for interrupts, the companion
+  // InterruptedAbility) filters but NOT the Ability filter — the picker must
+  // show options it would hide if self-applied.
   const sourceFilter = filters.Source
   const targetFilter = filters.Target
+  const interruptedAbilityFilter = category === 'interrupts' ? filters.InterruptedAbility : undefined
 
   for (const e of events) {
     if (e.kind !== kind) continue
     if (!passesPerspective(e, category, perspective, allySet)) continue
     if (sourceFilter && !sourceFilter.includes(e.src)) continue
     if (targetFilter && !targetFilter.includes(e.dst)) continue
+    if (interruptedAbilityFilter) {
+      if (!e.extraAbility || !interruptedAbilityFilter.includes(e.extraAbility)) continue
+    }
 
     let bucket = byAbility.get(e.ability)
     if (!bucket) {
@@ -389,6 +411,81 @@ function computeAbilityUniverseImpl(
       pct,
       sources: sortedSources.slice(0, 3).map(([n]) => n),
       sourceCount: b.sources.size,
+    })
+  }
+
+  entries.sort((a, b) => b.pct - a.pct)
+  return entries
+}
+
+// Interrupts-only: universe of spells that got interrupted (the victim's
+// cast). Mirrors computeAbilityUniverse but buckets on `extraAbility` instead
+// of `ability`, and only looks at landed interrupt events — a missed press
+// (`interruptAttempt`) has no extraAbility to attribute. Ranking is by land
+// count; "sources" list the kicker abilities (not the kicker players) that
+// cut this spell the most, which is the mirror of the kicker-ability picker
+// whose sources are players.
+export function computeInterruptedAbilityUniverse(
+  events: ClientEvent[],
+  perspective: Perspective,
+  filters: Pick<FilterState, 'Source' | 'Target' | 'Ability'>,
+  allies: Record<string, PlayerSnapshot>,
+): AbilityEntry[] {
+  if (!filters.Source && !filters.Target && !filters.Ability) {
+    const sub = getOrInit(interruptedAbilityUniverseCache, events)
+    const key = perspective
+    const cached = sub.get(key)
+    if (cached) return cached
+    const entries = computeInterruptedAbilityUniverseImpl(events, perspective, filters, allies)
+    sub.set(key, entries)
+    return entries
+  }
+  return computeInterruptedAbilityUniverseImpl(events, perspective, filters, allies)
+}
+
+function computeInterruptedAbilityUniverseImpl(
+  events: ClientEvent[],
+  perspective: Perspective,
+  filters: Pick<FilterState, 'Source' | 'Target' | 'Ability'>,
+  allies: Record<string, PlayerSnapshot>,
+): AbilityEntry[] {
+  const allySet = makeAllySet(allies)
+  type Agg = { count: number; kickerAbilities: Map<string, number> }
+  const byInterrupted = new Map<string, Agg>()
+
+  const sourceFilter = filters.Source
+  const targetFilter = filters.Target
+  const abilityFilter = filters.Ability
+
+  for (const e of events) {
+    if (e.kind !== 'interrupt') continue
+    if (!e.extraAbility) continue
+    if (!passesPerspective(e, 'interrupts', perspective, allySet)) continue
+    if (sourceFilter && !sourceFilter.includes(e.src)) continue
+    if (targetFilter && !targetFilter.includes(e.dst)) continue
+    if (abilityFilter && !abilityFilter.includes(e.ability)) continue
+
+    let bucket = byInterrupted.get(e.extraAbility)
+    if (!bucket) {
+      bucket = { count: 0, kickerAbilities: new Map() }
+      byInterrupted.set(e.extraAbility, bucket)
+    }
+    bucket.count += 1
+    bucket.kickerAbilities.set(e.ability, (bucket.kickerAbilities.get(e.ability) ?? 0) + 1)
+  }
+
+  let grand = 0
+  for (const b of byInterrupted.values()) grand += b.count
+
+  const entries: AbilityEntry[] = []
+  for (const [name, b] of byInterrupted) {
+    const pct = grand > 0 ? (b.count / grand) * 100 : 0
+    const sortedKickers = [...b.kickerAbilities.entries()].sort((a, c) => c[1] - a[1])
+    entries.push({
+      name,
+      pct,
+      sources: sortedKickers.slice(0, 3).map(([n]) => n),
+      sourceCount: b.kickerAbilities.size,
     })
   }
 
@@ -938,7 +1035,7 @@ function filterCacheKey(filters: FilterState): string {
   // `|` or `;`). Per-axis values are sorted for canonicality so chip order
   // doesn't churn the key. Cost is negligible — small object, microseconds.
   const canonical: Record<string, string[] | { startSec: number; endSec: number }> = {}
-  for (const axis of ['Source', 'Target', 'Ability'] as const) {
+  for (const axis of ['Source', 'Target', 'Ability', 'InterruptedAbility'] as const) {
     const v = filters[axis]
     if (!v || v.length === 0) continue
     canonical[axis] = [...v].sort()
@@ -1169,7 +1266,7 @@ export function mostRestrictiveFilter(
   // Order matters: check the narrower, more deliberately-set filters first.
   // TimeWindow is typically the most specific (drag-selected range), so it
   // leads. Falls back to chip filters otherwise.
-  const axes: (keyof FilterState)[] = ['TimeWindow', 'Ability', 'Target', 'Source']
+  const axes: (keyof FilterState)[] = ['TimeWindow', 'InterruptedAbility', 'Ability', 'Target', 'Source']
   for (const axis of axes) {
     if (!filters[axis]) continue
     const stripped: FilterState = { ...filters }
@@ -1179,7 +1276,8 @@ export function mostRestrictiveFilter(
         return { axis, label: 'Time window' }
       }
       const values = (filters[axis] as string[] | undefined) ?? []
-      const label = values.length === 1 ? `${axis}: ${values[0]}` : `${axis} filter`
+      const axisDisplay = axis === 'InterruptedAbility' ? 'Interrupted' : axis
+      const label = values.length === 1 ? `${axisDisplay}: ${values[0]}` : `${axisDisplay} filter`
       return { axis, label }
     }
   }

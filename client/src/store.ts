@@ -31,7 +31,7 @@ export type DamageTakenLens = 'incoming' | 'effective' | 'mitigated'
 // missed lighter, ranked by attempts — mirrors the healing-raw overheal
 // treatment.
 export type InterruptsLens = 'lands' | 'attempts'
-export type FilterAxis = 'Source' | 'Target' | 'Ability'
+export type FilterAxis = 'Source' | 'Target' | 'Ability' | 'InterruptedAbility'
 export type SourceKind = 'live' | 'archive'
 
 // Drag-selected segment on the line graph, stored in seconds-from-scope-start
@@ -46,6 +46,13 @@ export interface FilterState {
   Source?: string[]
   Target?: string[]
   Ability?: string[]
+  // Interrupts metric only: the spell that got interrupted (victim's cast).
+  // `Ability` on the interrupts metric means the kicker's ability (who did
+  // the interrupting); this axis picks the other side — what got cut. Only
+  // the interrupts FilterBar renders a picker for this axis; on other
+  // metrics the filter is a no-op (passesFilters skips it for non-interrupt
+  // kinds) but the chip stays so a user can see/remove a lingering value.
+  InterruptedAbility?: string[]
   TimeWindow?: TimeWindow
 }
 
@@ -781,10 +788,10 @@ export const useStore = create<AppState>((set) => ({
   }),
 
   // Flipping perspective inverts the source/target universes (allies ↔ enemies),
-  // so keeping the old Source/Target/Ability names would reference units that
-  // no longer exist on the active side. Spec says clear those three. TimeWindow
-  // is perspective-independent (a slice of the fight's timeline), so it rides
-  // through perspective swaps.
+  // so keeping the old Source/Target/Ability/InterruptedAbility names would
+  // reference units and spells that no longer exist on the active side. Clear
+  // every chip axis. TimeWindow is perspective-independent (a slice of the
+  // fight's timeline), so it rides through perspective swaps.
   setPerspective: (p) => set(state => {
     const sid = state.activeSourceId
     const slice = state.sources.get(sid) ?? makeEmptySourceState()

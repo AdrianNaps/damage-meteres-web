@@ -125,6 +125,10 @@ export interface ClientEvent {
   dst: string
   ability: string
   spellId?: string
+  // Interrupt-land only: name of the spell the kick cut. Enables the Full-
+  // mode filter bar to narrow by interrupted spell alongside the kicker's
+  // ability. Absent on 'interruptAttempt' and all non-interrupt kinds.
+  extraAbility?: string
   amount?: number
   overheal?: number
   // Damage-only mitigation fields. Omitted when zero (the common case) to

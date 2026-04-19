@@ -286,6 +286,12 @@ export interface ClientEvent {
   dst: string              // canonical dest name
   ability: string          // spell name; 'death' kind stores the killing-blow ability
   spellId?: string
+  // Interrupt kind only: name of the spell that got interrupted (from
+  // SPELL_INTERRUPT's extraSpellName). Lets the Full-mode filter bar
+  // narrow interrupts by the victim's spell in addition to the kicker's
+  // ability. Absent on 'interruptAttempt' (the press may not have landed
+  // on any specific spell) and on every other kind.
+  extraAbility?: string
   amount?: number          // damage/heal value (excludes overkill, matches meter totals)
   overheal?: number        // heal only
   absorbed?: number        // damage only; omitted when 0

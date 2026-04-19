@@ -124,8 +124,8 @@ export function BreakdownPanel() {
       if (!player) return null
       return (
         <>
-          <InterruptSpellTable spells={player.interrupts.byKicker} heading="Interrupt Ability" classColor={color} />
-          <InterruptSpellTable spells={player.interrupts.byKicked} heading="Spell Interrupted" classColor={color} />
+          <InterruptSpellTable spells={player.interrupts.byKicker} heading="Interrupt Ability" classColor={color} filterAxis="Ability" />
+          <InterruptSpellTable spells={player.interrupts.byKicked} heading="Spell Interrupted" classColor={color} filterAxis="InterruptedAbility" />
         </>
       )
     }

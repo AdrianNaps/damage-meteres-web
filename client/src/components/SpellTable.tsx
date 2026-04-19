@@ -355,25 +355,30 @@ export function FullHealSpellTable({ spells, classColor, duration, playerTotal }
 }
 
 // ——— Interrupt table (still on PlayerSnapshot) ———
-// ClientEvent doesn't carry the kicked-spell name, so byKicked can't be
-// reconstructed from events. Until the wire grows that field, interrupts
-// stay on the pre-aggregated path with an Ability-axis row hide for
-// consistency with the meter chips. Source filter is implicit (player drill).
-// Target filter doesn't apply here for the same wire-shape reason.
+// Interrupts stay on the pre-aggregated byKicker/byKicked buckets for the
+// drill panel (the segment-wide meter re-aggregates from events). The table
+// hides rows matching the relevant filter axis so it tracks the FilterBar
+// chips: `Ability` narrows the kicker-ability table; `InterruptedAbility`
+// narrows the victim-spell table. Source filter is implicit (player drill);
+// Target filter doesn't apply at this grain.
 
 interface InterruptProps {
   spells: Record<string, InterruptSpellStats>
   heading: string
   classColor: string
+  // Which filter axis this table reads. byKicker ↔ 'Ability' (the kicker's
+  // spell, i.e. the interrupting ability). byKicked ↔ 'InterruptedAbility'
+  // (the victim's cast that got cut).
+  filterAxis: 'Ability' | 'InterruptedAbility'
 }
 
-export function InterruptSpellTable({ spells, heading, classColor }: InterruptProps) {
-  const filterAbility = useStore(s => s.filters.Ability)
+export function InterruptSpellTable({ spells, heading, classColor, filterAxis }: InterruptProps) {
+  const filterValues = useStore(s => s.filters[filterAxis])
   const rows = useMemo(() => {
     const arr = Object.values(spells)
-    const visible = filterAbility ? arr.filter(s => filterAbility.includes(s.spellName)) : arr
+    const visible = filterValues ? arr.filter(s => filterValues.includes(s.spellName)) : arr
     return [...visible].sort((a, b) => b.count - a.count)
-  }, [spells, filterAbility])
+  }, [spells, filterValues])
   const total = rows.reduce((sum, s) => sum + s.count, 0)
   const topCount = rows[0]?.count ?? 1
 
