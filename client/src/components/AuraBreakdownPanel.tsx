@@ -62,10 +62,7 @@ export function AuraBreakdownPanel() {
     if (!currentView) return null
     const t0 = currentView.startTime
     const tEndRaw = currentView.endTime
-    const durationSec =
-      'duration' in currentView ? currentView.duration
-      : 'activeDurationSec' in currentView ? currentView.activeDurationSec
-      : 0
+    const durationSec = currentView.duration
     const tEnd = tEndRaw ?? (t0 + durationSec * 1000)
     return { t0, tEnd }
   }, [currentView])

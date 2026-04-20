@@ -206,10 +206,7 @@ export function FullMeterView() {
   const events = currentView.events ?? []
   const allies = currentView.players
 
-  const duration =
-    'duration' in currentView ? currentView.duration
-    : 'activeDurationSec' in currentView ? currentView.activeDurationSec
-    : 0
+  const duration = currentView.duration
 
   // Aura metrics (Buffs, Debuffs) take a separate path — their row shape is
   // per-aura, not per-player, and the aura windows live in a different field

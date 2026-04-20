@@ -75,10 +75,7 @@ function ContentPanel() {
   const drillWidth = hasDrill ? (mode === 'full' ? 720 : 420) : 0
 
   const players = currentView?.players ?? {}
-  const duration =
-    currentView && 'duration' in currentView ? currentView.duration
-    : currentView && 'activeDurationSec' in currentView ? currentView.activeDurationSec
-    : 0
+  const duration = currentView?.duration ?? 0
 
   const events = currentView?.events ?? EMPTY_EVENTS
 

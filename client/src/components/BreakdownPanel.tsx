@@ -82,12 +82,9 @@ export function BreakdownPanel() {
   const enemySubject = !player
   const specId = player ? resolveSpecId(playerSpecs, selectedPlayer, player.specId) : undefined
   const color = enemySubject ? 'var(--text-secondary)' : getClassColor(specId)
-  // All snapshots carry `duration` (wall-clock span, matches WCL's DPS divisor).
-  // `activeDurationSec` is still a fallback for legacy payloads without `duration`.
-  const duration =
-    'duration' in currentView ? currentView.duration
-    : 'activeDurationSec' in currentView ? currentView.activeDurationSec
-    : 0
+  // Wall-clock span of the scope — matches WCL's DPS divisor. Present on
+  // every snapshot variant (segment, key-run, boss-section).
+  const duration = currentView.duration
 
   // Pull the unified breakdown for damage/healing. selectPlayerBreakdown picks
   // the cheap pre-aggregated path when no filter is active, and walks events
