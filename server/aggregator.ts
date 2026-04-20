@@ -153,8 +153,17 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
       // BOTH overlay-style support (Ebon Might/Shifting Sands/Prescience — original spellId
       // is unrelated, so the legacy spellId-scrub never matched) AND standalone Aug spells
       // (Breath of Eons etc.) where the plain event is fully attributable to the supporter.
+      //
+      // Self-support (source == supporter — Scalecommander Evoker's Bombardments) is the
+      // ONE case where we skip precise-pair: the plain event sharing the spellId is either
+      // (a) scrubbed by scrubSupportOwnedSpell below on the first pair, or (b) dropped on
+      // arrival by the supportOwnedSpellIds check on every subsequent pair. There is never
+      // a legitimate plain credit to subtract against, but creditMap[source.guid] may still
+      // hold an unrelated same-timestamp/same-destName credit from a cross-spell tick (e.g.
+      // a trinket DoT), which the subtract would wrongly drain.
       const creditMap = getLastCreditMap(segment)
-      const prior = creditMap.get(event.source.guid)
+      const isSelfSupport = event.source.guid === dmg.supportSourceGuid
+      const prior = isSelfSupport ? undefined : creditMap.get(event.source.guid)
       if (prior
           && prior.timestamp === event.timestamp
           && prior.destName === event.dest.name) {
