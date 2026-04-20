@@ -225,19 +225,7 @@ const fullMonoSecondary: React.CSSProperties = {
   color: 'var(--text-secondary)',
 }
 
-const fullMonoMuted: React.CSSProperties = {
-  fontFamily: 'var(--font-mono)',
-  textAlign: 'right',
-  color: 'var(--text-muted)',
-}
-
-const fullMonoCrit: React.CSSProperties = {
-  fontFamily: 'var(--font-mono)',
-  textAlign: 'right',
-  color: 'var(--data-crit)',
-}
-
-const DAMAGE_FULL_COLUMNS = '1fr 64px 44px 44px 56px 44px 60px'
+const DAMAGE_FULL_COLUMNS = '1fr 64px 44px 44px 56px 44px 48px 60px'
 const HEAL_FULL_COLUMNS = '1fr 64px 44px 44px 56px 44px 60px'
 
 interface FullDamageProps {
@@ -266,6 +254,7 @@ export function FullDamageSpellTable({ spells, classColor, duration, playerTotal
         <span style={{ textAlign: 'right' }}>Hits</span>
         <span style={{ textAlign: 'right' }}>Avg Hit</span>
         <span style={{ textAlign: 'right' }}>Crit</span>
+        <span style={{ textAlign: 'right' }}>Max</span>
         <span style={{ textAlign: 'right' }}>{rateLabel}</span>
       </div>
       {spells.map(s => {
@@ -290,8 +279,9 @@ export function FullDamageSpellTable({ spells, classColor, duration, playerTotal
             <span style={fullMonoPrimary}>{formatNum(s.total)}</span>
             <span style={fullMonoSecondary}>{(share * 100).toFixed(0)}%</span>
             <span style={fullMonoSecondary}>{s.hitCount || '—'}</span>
-            <span style={fullMonoMuted}>{s.hitCount > 0 ? formatNum(avgHit) : '—'}</span>
-            <span style={fullMonoCrit}>{critPct === null ? '—' : `${critPct}%`}</span>
+            <span style={fullMonoSecondary}>{s.hitCount > 0 ? formatNum(avgHit) : '—'}</span>
+            <span style={fullMonoSecondary}>{critPct === null ? '—' : `${critPct}%`}</span>
+            <span style={fullMonoSecondary}>{s.maxHit === undefined ? '—' : formatNum(s.maxHit)}</span>
             <span style={fullMonoPrimary}>{formatNum(dps)}</span>
           </div>
         )
@@ -344,8 +334,8 @@ export function FullHealSpellTable({ spells, classColor, duration, playerTotal }
             <span style={fullMonoPrimary}>{formatNum(s.total)}</span>
             <span style={fullMonoSecondary}>{(share * 100).toFixed(0)}%</span>
             <span style={fullMonoSecondary}>{s.hitCount || '—'}</span>
-            <span style={fullMonoMuted}>{s.hitCount > 0 ? formatNum(avgHit) : '—'}</span>
-            <span style={fullMonoCrit}>{critPct === null ? '—' : `${critPct}%`}</span>
+            <span style={fullMonoSecondary}>{s.hitCount > 0 ? formatNum(avgHit) : '—'}</span>
+            <span style={fullMonoSecondary}>{critPct === null ? '—' : `${critPct}%`}</span>
             <span style={fullMonoPrimary}>{formatNum(hps)}</span>
           </div>
         )
