@@ -141,7 +141,7 @@ export function DamageSpellTable({ spells, classColor }: DamageProps) {
           <span style={{ ...primaryCol, width: 56 }}>{formatNum(s.total)}</span>
           <span style={{ ...secondaryCol, width: 36 }}>{s.hitCount}</span>
           <span style={{ ...secondaryCol, width: 44 }}>{s.critCount === undefined ? '—' : pct(s.critCount, s.hitCount)}</span>
-          <span style={{ ...secondaryCol, width: 48 }}>{s.normalMax === undefined ? '—' : formatNum(s.normalMax)}</span>
+          <span style={{ ...secondaryCol, width: 48 }}>{s.maxHit === undefined ? '—' : formatNum(s.maxHit)}</span>
         </div>
       ))}
     </div>

@@ -982,10 +982,10 @@ export function computeEnemyPlayers(
 // list, targets list, drill view) from one shape so they always agree under
 // any filter combination. Two paths produce that shape:
 //   - No filter active → project the server's pre-aggregated PlayerSnapshot,
-//     preserving critCount/normalMax that ClientEvent doesn't yet carry.
+//     preserving critCount/maxHit that ClientEvent doesn't yet carry.
 //   - Any filter active → walk events through `passesFilters`, lose those
 //     fields (until the wire enrichment lands).
-// The renderer treats critCount/normalMax as optional; absent values render
+// The renderer treats critCount/maxHit as optional; absent values render
 // "—" rather than 0.
 //
 // Path-divergence trade-off: snapshot.{damage,healing}.total is server-authored
@@ -1008,10 +1008,12 @@ export interface BreakdownSpellRow {
   spellName: string
   total: number
   hitCount: number
-  // critCount / normalMax: only populated on the snapshot (no-filter) path
+  // critCount / maxHit: only populated on the snapshot (no-filter) path
   // until ClientEvent grows a `crit` flag. Renderer shows "—" when absent.
+  // maxHit is the largest single hit regardless of crit status (max of the
+  // server's normalMax and critMax) so a 100%-crit spell still shows a value.
   critCount?: number
-  normalMax?: number
+  maxHit?: number
   // overheal: healing rows only. Populated on BOTH paths for heal kind (events
   // carry e.overheal); damage rows leave it undefined.
   overheal?: number
@@ -1083,7 +1085,7 @@ function projectSnapshot(
       total: s.total,
       hitCount: s.hitCount,
       critCount: s.critCount,
-      normalMax: s.normalMax,
+      maxHit: Math.max(s.normalMax, s.critMax),
     }))
     spells.sort((a, b) => b.total - a.total)
     const targets: BreakdownTargetRow[] = Object.values(snapshot.damage.targets).map(t => ({
