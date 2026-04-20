@@ -387,7 +387,8 @@ export interface BossSectionSnapshot {
   difficultyID: number
   startTime: number
   endTime: number | null
-  activeDurationSec: number
+  duration: number                   // wall-clock span (s) — DPS/HPS divisor, matches WCL
+  activeDurationSec: number          // sum of pull combat durations (excludes between-pull gaps)
   pullCount: number
   kills: number
   players: Record<string, PlayerSnapshot>
@@ -429,6 +430,7 @@ export interface KeyRunSnapshot {
   endTime: number | null
   success: boolean | null
   durationMs: number | null
+  duration: number                   // wall-clock span (s) — DPS/HPS divisor, matches WCL
   activeDurationSec: number          // sum of individual segment combat durations
   players: Record<string, PlayerSnapshot>
   spellIcons: Record<string, string> // spellId → Wowhead icon filename
@@ -622,6 +624,7 @@ export class SegmentStore {
       difficultyID: meta.difficultyID,
       startTime: meta.startTime,
       endTime: lastEnd,
+      duration: bossSectionSpanSec ?? activeDurationSec,
       activeDurationSec,
       pullCount: segs.length,
       kills: segs.filter(s => s.success === true).length,
@@ -882,6 +885,7 @@ export class SegmentStore {
     return {
       type: 'key_run',
       ...meta,
+      duration: keyRunSpanSec ?? activeDurationSec,
       activeDurationSec,
       players,
       spellIcons: this.iconResolver.getAll(),

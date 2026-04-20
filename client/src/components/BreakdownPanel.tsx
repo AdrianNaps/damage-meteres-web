@@ -80,9 +80,8 @@ export function BreakdownPanel() {
   const enemySubject = !player
   const specId = player ? resolveSpecId(playerSpecs, selectedPlayer, player.specId) : undefined
   const color = enemySubject ? 'var(--text-secondary)' : getClassColor(specId)
-  // Duration shape varies by view: segments carry `duration`, while key-run
-  // and boss-section aggregates carry `activeDurationSec`. Per-spell DPS/HPS
-  // cells come out as 0 on aggregate views if we don't handle both.
+  // All snapshots carry `duration` (wall-clock span, matches WCL's DPS divisor).
+  // `activeDurationSec` is still a fallback for legacy payloads without `duration`.
   const duration =
     'duration' in currentView ? currentView.duration
     : 'activeDurationSec' in currentView ? currentView.activeDurationSec

@@ -218,6 +218,7 @@ export interface KeyRunSnapshot {
   endTime: number | null
   success: boolean | null
   durationMs: number | null
+  duration: number
   activeDurationSec: number
   players: Record<string, PlayerSnapshot>
   spellIcons?: Record<string, string>
@@ -245,6 +246,7 @@ export interface BossSectionSnapshot {
   difficultyID: number
   startTime: number
   endTime: number | null
+  duration: number
   activeDurationSec: number
   pullCount: number
   kills: number
