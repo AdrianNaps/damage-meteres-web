@@ -41,6 +41,11 @@ export class EncounterStateMachine extends EventEmitter {
   // fights (boss ENCOUNTER_* doesn't clear it) so challenge_end can emit it to
   // listeners. Reset to null only at CHALLENGE_MODE_END.
   private activeTrashSegment: Segment | null = null
+  // Snapshot of activeTrashSegment immediately before the current pack opened.
+  // Used to revert when a pack is discarded (stray-event open with no real combat),
+  // so currentSegment / activeTrashSegment stay pointed at a real in-store pack
+  // for transit-event routing after boss/pack closes.
+  private priorActiveTrashSegment: Segment | null = null
   private dungeonName: string | null = null
   private packCount = 0                              // sequential pack number within the current key
   private currentKeyRunId: string | null = null
@@ -57,10 +62,15 @@ export class EncounterStateMachine extends EventEmitter {
   private currentPackHadKill = false
   // Most recent segment (trash OR boss) in the current key — seeds guidToSpec /
   // guidToName / petToOwner on the next trash pack. Decoupled from currentSegment
-  // because currentSegment goes null between packs (events are dropped in that
-  // window), but we still want the metadata chain to survive.
+  // because currentSegment may be a closed prior pack between pulls, and we want
+  // the metadata chain to follow segment-creation order.
   private carryoverSeg: Segment | null = null
-  currentSegment: Segment | null = null              // segment receiving events right now
+  // Segment receiving events right now. Between pulls inside an M+ key this points
+  // at the just-closed prior trash pack (endTime set) so transit events — heals,
+  // pre-pots, off-cooldown casts — accumulate against that pack instead of being
+  // silently dropped. _trackTrashMobs uses endTime !== null to detect "stale" and
+  // open a fresh pack on the next damage event.
+  currentSegment: Segment | null = null
 
   constructor(store: SegmentStore) {
     super()
@@ -114,10 +124,12 @@ export class EncounterStateMachine extends EventEmitter {
           this.emit('encounter_end', this.currentSegment)
         }
         if (this.activeTrashSegment) {
-          // Only finalize the trash segment if it's still open — i.e. currentSegment
-          // still points to it. If it was already closed at a prior UNIT_DIED, reset,
-          // or ENCOUNTER_START, its endTime is already set and we leave it alone.
-          if (this.currentSegment === this.activeTrashSegment) {
+          // Only finalize the trash segment if it's still live — i.e. it never got
+          // an endTime from a prior UNIT_DIED, reset, or ENCOUNTER_START. A closed
+          // pack may still be referenced by currentSegment (transit-events routing),
+          // but we don't want to bump its endTime out to CHALLENGE_MODE_END time —
+          // that would inflate its duration by all the post-kill / post-boss gap.
+          if (this.currentSegment === this.activeTrashSegment && this.activeTrashSegment.endTime === null) {
             this.activeTrashSegment.endTime = event.timestamp
             this.activeTrashSegment.success = p.success ?? false
             this._applyFinalPackName(this.activeTrashSegment)
@@ -161,7 +173,12 @@ export class EncounterStateMachine extends EventEmitter {
         // happens when e.g. a stray pre-pull tick opens a pack just before boss.
         // The initial Pack 1 from CHALLENGE_MODE_START (packCount===1) is always
         // kept as the placeholder.
-        if (this.activeTrashSegment && this.currentSegment === this.activeTrashSegment) {
+        // Only act on the trash pack if it's still live (no prior UNIT_DIED has
+        // closed it). A closed pack is still referenced by currentSegment for
+        // transit events, but we must not re-evaluate it here — currentPackHighestHpMob
+        // was already cleared at the prior close, so the discard branch would
+        // wrongly fire and erase a perfectly good named pack.
+        if (this.activeTrashSegment && this.currentSegment === this.activeTrashSegment && this.activeTrashSegment.endTime === null) {
           if (this.currentPackHighestHpMob || this.packCount === 1) {
             this.activeTrashSegment.endTime = event.timestamp
             this.activeTrashSegment.success = true
@@ -170,6 +187,8 @@ export class EncounterStateMachine extends EventEmitter {
             console.log(`[pack] DISCARD (unnamed, boss pull) — was "${this.activeTrashSegment.encounterName}"`)
             this.store.removeById(this.activeTrashSegment.id)
             this.packCount--
+            this.activeTrashSegment = this.priorActiveTrashSegment
+            this.priorActiveTrashSegment = null
           }
         }
         this.activeMobs.clear()
@@ -230,7 +249,11 @@ export class EncounterStateMachine extends EventEmitter {
         if (this.dungeonName) {
           // Spec/name/pet info from the boss fight seeds the NEXT trash pack when
           // the first hostile mob event opens it — see _openTrashPack.
-          this.currentSegment = null
+          // Route transit events (between boss-end and next pull) to the prior
+          // trash pack instead of dropping them. The pack stays closed (endTime
+          // already set); _trackTrashMobs detects the closed state to know when
+          // to open a new one.
+          this.currentSegment = this.activeTrashSegment
           this.activeMobs.clear()
           this.currentPackHighestHpMob = null
           this.mode = 'in_key'
@@ -264,16 +287,18 @@ export class EncounterStateMachine extends EventEmitter {
   // Only runs inside M+ keys (currentKeyRunId set). Raid trash is left as a single
   // blob under the boss section as before.
   //
-  // Invariant: activeMobs is empty whenever currentSegment is null. Violating this
-  // would cause reset detection to fire against stale pre-pack state. All paths
-  // that null currentSegment also clear activeMobs (or leave it already empty).
+  // Invariant: activeMobs is empty whenever currentSegment is null OR closed
+  // (endTime set). Violating this would cause reset detection to fire against
+  // stale pre-pack state. All paths that null/close currentSegment also clear
+  // activeMobs (or leave it already empty).
   private _trackTrashMobs(event: ParsedEvent): void {
     if (!this.currentKeyRunId) return
 
     // UNIT_DIED on a tracked hostile mob → remove from active set. If the set
     // empties, the pack is finished (kill). activeTrashSegment keeps pointing at
-    // the just-closed pack; currentSegment goes null so events between packs are
-    // dropped until the next hostile event opens a new pack.
+    // the just-closed pack and currentSegment stays pointed at it too — transit
+    // events accumulate against that pack until the next hostile event opens a
+    // new one (detected via endTime !== null in _openTrashPack's trigger below).
     if (event.type === 'UNIT_DIED') {
       if (!this.activeMobs.has(event.dest.guid)) return
       this.activeMobs.delete(event.dest.guid)
@@ -297,8 +322,10 @@ export class EncounterStateMachine extends EventEmitter {
           this.store.removeById(this.activeTrashSegment.id)
           this.packCount--
           this.emit('pack_changed', this.activeTrashSegment)
+          this.activeTrashSegment = this.priorActiveTrashSegment
+          this.priorActiveTrashSegment = null
+          this.currentSegment = this.activeTrashSegment
         }
-        this.currentSegment = null
         this.currentPackHighestHpMob = null
       }
       return
@@ -363,7 +390,6 @@ export class EncounterStateMachine extends EventEmitter {
           this.activeTrashSegment.success = false
           this._applyFinalPackName(this.activeTrashSegment)
           console.log(`[pack] CLOSE (reset) — ${this.activeTrashSegment.encounterName}`)
-          this.currentSegment = null
           this.currentPackHighestHpMob = null
           this.emit('pack_changed', this.activeTrashSegment)
         }
@@ -407,15 +433,28 @@ export class EncounterStateMachine extends EventEmitter {
         this.store.removeById(this.activeTrashSegment.id)
         this.packCount--
         this.emit('pack_changed', this.activeTrashSegment)
+        this.activeTrashSegment = this.priorActiveTrashSegment
+        this.priorActiveTrashSegment = null
+        this.currentSegment = this.activeTrashSegment
       }
-      this.currentSegment = null
       this.currentPackHighestHpMob = null
     }
 
     // If no pack is currently accepting events (post-reset, post-UNIT_DIED, or
     // post-ENCOUNTER_END), open a new one starting now. The activeTrashSegment
-    // reference gets overwritten to point at the new pack.
-    if (!this.currentSegment) {
+    // reference gets overwritten to point at the new pack. A non-null
+    // currentSegment with endTime set means we're routing transit events to a
+    // closed prior pack — that pack stays "live" only for accumulation, and a
+    // real pull replaces it here.
+    //
+    // Only open on evidence of real combat: a destination-side hostile mob hit
+    // with known maxHP. Source-side ticks (a boss DoT still pulsing on a player
+    // after ENCOUNTER_END, a wandering mob's auto-attack) carry no HP info and
+    // would otherwise open an orphan pack that gets discarded later — but any
+    // transit events caught in that orphan window are lost when the segment is
+    // removed from the store.
+    if ((!this.currentSegment || this.currentSegment.endTime !== null)
+        && destIsMob && maxHP !== null && maxHP > 0) {
       this._openTrashPack(event.timestamp)
     }
 
@@ -469,11 +508,13 @@ export class EncounterStateMachine extends EventEmitter {
   }
 
   private _openTrashPack(startTime: number): void {
+    this.priorActiveTrashSegment = this.activeTrashSegment
     this.packCount++
     const segment = this._makeSegment(this._packPlaceholderName(this.packCount), startTime)
     // Carry over spec/name/pet info from the most recent closed segment (prior pack
-    // or boss). Uses carryoverSeg rather than currentSegment since currentSegment
-    // is null between packs.
+    // or boss). Uses carryoverSeg rather than currentSegment since the latter may
+    // currently point at a closed prior pack receiving transit events, which is
+    // the same source we'd want anyway — but carryoverSeg is the explicit chain.
     if (this.carryoverSeg) {
       segment.guidToSpec = { ...this.carryoverSeg.guidToSpec }
       segment.guidToName = { ...this.carryoverSeg.guidToName }
