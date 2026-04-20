@@ -170,6 +170,14 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
       }
 
       applyDamage(segment, supporterName, dmg.supportSourceGuid, event.dest.name, dmg, event.timestamp)
+
+      // applyDamage wrote a LastCredit for the supporter as a generic side-effect, but a
+      // SUPPORT-sourced credit must never be re-paired with a future SUPPORT mirror —
+      // doing so causes a double-subtract when source == supporter (Scalecommander
+      // Bombardments) and consecutive plain events are dropped by the supportOwnedSpellIds
+      // skip, leaving this entry stale. Clear it so the next SUPPORT either finds the
+      // real plain credit (overwritten by a later plain event) or nothing at all.
+      creditMap.delete(dmg.supportSourceGuid)
       return
     }
 
