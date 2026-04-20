@@ -102,6 +102,24 @@ export interface InterruptData {
   records: PlayerInterruptRecord[]
 }
 
+export interface CastSpellStats {
+  spellId: string
+  spellName: string
+  count: number
+}
+
+// Per-player cast aggregate for the Casts metric. Counts the player's OWN
+// SPELL_CAST_SUCCESS events only — pet/guardian casts are excluded so the
+// Casts tab doesn't conflate a warlock's Shadow Bolts with their imp's
+// Firebolts. Interrupt presses are included (an interrupt IS a player cast).
+// Enemy casts are never folded in here — they live only on segment.events
+// so the client's Enemies perspective can re-aggregate without bloating
+// each ally's snapshot.
+export interface CastData {
+  total: number
+  bySpell: Record<string, CastSpellStats>
+}
+
 export interface PlayerData {
   name: string
   specId?: number
@@ -109,6 +127,7 @@ export interface PlayerData {
   healing: HealData
   deaths: PlayerDeathRecord[]
   interrupts: InterruptData
+  casts: CastData
   // Per-player "active time" bookkeeping — sum of damage/heal event intervals,
   // with gaps >10s excluded (matches WCL's view-specific activeTime byte-perfect
   // as empirically verified against fight dpyDWNGb84zFrn3H). Updated incrementally
@@ -311,6 +330,7 @@ function collectIconSpellIds(
     for (const sid of Object.keys(p.healing.spells)) ids.add(sid)
     for (const sid of Object.keys(p.interrupts.byKicker)) ids.add(sid)
     for (const sid of Object.keys(p.interrupts.byKicked)) ids.add(sid)
+    for (const sid of Object.keys(p.casts.bySpell)) ids.add(sid)
   }
   for (const w of auras) ids.add(w.spellId)
   for (const e of events) {
@@ -689,6 +709,12 @@ export class SegmentStore {
               ),
               records: [...player.interrupts.records],
             },
+            casts: {
+              total: player.casts.total,
+              bySpell: Object.fromEntries(
+                Object.entries(player.casts.bySpell).map(([k, v]) => [k, { ...v }])
+              ),
+            },
             damageActiveMs: player.damageActiveMs,
             healActiveMs: player.healActiveMs,
             firstDamageTime: player.firstDamageTime,
@@ -806,6 +832,13 @@ export class SegmentStore {
             else existing.count += s.count
           }
           mp.interrupts.records.push(...player.interrupts.records)
+
+          mp.casts.total += player.casts.total
+          for (const [sid, s] of Object.entries(player.casts.bySpell)) {
+            const existing = mp.casts.bySpell[sid]
+            if (!existing) mp.casts.bySpell[sid] = { ...s }
+            else existing.count += s.count
+          }
         }
       }
     }

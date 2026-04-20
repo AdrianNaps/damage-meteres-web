@@ -640,6 +640,54 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
       spellId: payload.spellId,
     })
     return
+  } else if (payload.type === 'cast') {
+    // Generic SPELL_CAST_SUCCESS for the Casts metric. Pet/guardian casts
+    // are excluded outright — the Casts tab only counts a player's OWN
+    // presses, matching how WCL's "Cast By Source" tab filters summons/pets
+    // out. Enemy NPC casts still land on segment.events so the Enemies
+    // perspective can re-aggregate.
+    const hasPetFlag = !!(event.source.flags & (PET_FLAG | GUARDIAN_FLAG))
+    const knownOwnedCreature = !isPlayerGuid(event.source.guid) && !hasPetFlag
+      && !!segment.petToOwner[event.source.guid]
+    if (hasPetFlag || knownOwnedCreature) return
+
+    if (!isPlayerGuid(event.source.guid)) {
+      // Enemy cast — push to events for the Enemies perspective. No per-enemy
+      // CastData is maintained; the client re-aggregates from events.
+      segment.events.push({
+        t: event.timestamp,
+        kind: 'cast',
+        src: event.source.name,
+        dst: event.dest.name,
+        ability: payload.spellName,
+        spellId: payload.spellId,
+      })
+      return
+    }
+
+    const player = getOrCreatePlayer(segment, event.source.name, event.source.guid)
+    if (!player) return
+    player.casts.total++
+    const spell = player.casts.bySpell[payload.spellId]
+    if (!spell) {
+      player.casts.bySpell[payload.spellId] = {
+        spellId: payload.spellId,
+        spellName: payload.spellName,
+        count: 1,
+      }
+    } else {
+      spell.count++
+    }
+
+    segment.events.push({
+      t: event.timestamp,
+      kind: 'cast',
+      src: event.source.name.normalize('NFC'),
+      dst: event.dest.name,
+      ability: payload.spellName,
+      spellId: payload.spellId,
+    })
+    return
   } else if (payload.type === 'interrupt') {
     // Resolve pet/guardian source back to owning player, same as damage/heal paths.
     let sourceName = event.source.name
@@ -746,6 +794,7 @@ function getOrCreatePlayer(segment: Segment, name: string, guid: string): Player
       healing: { total: 0, overheal: 0, spells: {}, targets: {} },
       deaths: [],
       interrupts: { total: 0, attempts: 0, byKicker: {}, byKicked: {}, records: [] },
+      casts: { total: 0, bySpell: {} },
       damageActiveMs: 0,
       healActiveMs: 0,
       firstDamageTime: null,

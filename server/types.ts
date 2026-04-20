@@ -144,6 +144,18 @@ export interface InterruptAttemptPayload {
   spellName: string
 }
 
+// Generic SPELL_CAST_SUCCESS for the Casts metric. Emitted for any cast the
+// parser couldn't classify as an interrupt attempt or a pet-summon bootstrap —
+// covers the full universe of ally, pet, and enemy casts. The aggregator
+// credits ally casts to the casting player's CastData and mirrors every cast
+// (ally and enemy) into `segment.events` so the client's Enemies perspective
+// can filter on them.
+export interface CastPayload {
+  type: 'cast'
+  spellId: string
+  spellName: string
+}
+
 // Aura application, refresh, or removal for the buffs metric. Emitted from
 // SPELL_AURA_APPLIED / SPELL_AURA_REFRESH / SPELL_AURA_REMOVED for BUFFs on
 // player destinations. Aggregator pairs APPLIED/REMOVED into AuraWindows and
@@ -157,7 +169,7 @@ export interface AuraPayload {
   auraKind: 'BUFF' | 'DEBUFF'
 }
 
-export type EventPayload = DamagePayload | HealPayload | EncounterPayload | DeathPayload | CombatantInfoPayload | ChallengeModePayload | SummonPayload | InterruptPayload | InterruptAttemptPayload | AuraPayload
+export type EventPayload = DamagePayload | HealPayload | EncounterPayload | DeathPayload | CombatantInfoPayload | ChallengeModePayload | SummonPayload | InterruptPayload | InterruptAttemptPayload | CastPayload | AuraPayload
 
 export interface ParsedEvent {
   timestamp: number
@@ -281,7 +293,11 @@ export interface ClientEvent {
   // interrupt produces BOTH events at the same timestamp; a missed one only
   // produces 'interruptAttempt'. The Interrupts lens in Full mode ranks on
   // whichever kind the lens selects.
-  kind: 'damage' | 'heal' | 'interrupt' | 'interruptAttempt' | 'death'
+  // 'cast' = every SPELL_CAST_SUCCESS that isn't an interrupt press. Includes
+  // ally, pet-remapped-to-owner, and enemy casts so the Full-mode Casts tab
+  // can rank on either perspective. Payload carries just ability name and
+  // spellId — no amount / overheal / mitigation.
+  kind: 'damage' | 'heal' | 'interrupt' | 'interruptAttempt' | 'cast' | 'death'
   src: string              // canonical source name (pets/support already resolved to owner)
   dst: string              // canonical dest name
   ability: string          // spell name; 'death' kind stores the killing-blow ability

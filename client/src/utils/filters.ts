@@ -75,6 +75,7 @@ function kindFor(category: Metric): ClientEvent['kind'] {
     case 'damageTaken': return 'damage'
     case 'healing':     return 'heal'
     case 'interrupts':  return 'interrupt'
+    case 'casts':       return 'cast'
     case 'deaths':      return 'death'
     case 'buffs':       throw new Error('kindFor(buffs) — aura metric has no ClientEvent kind')
     case 'debuffs':     throw new Error('kindFor(debuffs) — aura metric has no ClientEvent kind')
@@ -177,7 +178,7 @@ function getOrInit<K extends object, V>(cache: WeakMap<K, Map<string, V>>, key: 
   return sub
 }
 
-type UnitRowsCategory = 'damage' | 'damageTaken' | 'healing' | 'interrupts'
+type UnitRowsCategory = 'damage' | 'damageTaken' | 'healing' | 'interrupts' | 'casts'
 
 export function computeUnitRows(
   events: ClientEvent[],
@@ -250,6 +251,10 @@ function computeUnitRowsImpl(
     } else if (category === 'interrupts') {
       if (e.kind === 'interrupt') bucket.count += 1
       else /* interruptAttempt */ bucket.attempts += 1
+    } else if (category === 'casts') {
+      // Casts carry no amount; each event is a single press. row.value ends
+      // up as the raw count (like Interrupts Lands) with no duration scaling.
+      bucket.count += 1
     } else {
       bucket.total += e.amount ?? 0
       bucket.count += 1
@@ -268,19 +273,25 @@ function computeUnitRowsImpl(
     // on total.
     const shouldDrop =
       category === 'interrupts'  ? (bucket.count === 0 && bucket.attempts === 0)
+      : category === 'casts'     ? bucket.count === 0
       : category === 'damageTaken' ? (bucket.total === 0 && bucket.mitigated === 0)
       : bucket.total === 0
     if (shouldDrop) continue
 
     // value is the "default" ranking dimension a caller-provided lens falls
-    // back to. Interrupts default lens ranks by lands; the Attempts lens in
-    // FullMeterView re-ranks by row.attempts.
-    const value = category === 'interrupts'
-      ? bucket.count
-      : (durationSec > 0 ? bucket.total / durationSec : 0)
+    // back to. Interrupts and Casts rank on raw count (no duration scaling).
+    const value =
+      category === 'interrupts' || category === 'casts'
+        ? bucket.count
+        : (durationSec > 0 ? bucket.total / durationSec : 0)
 
     const specId = allies[name]?.specId
-    const row: UnitRow = { name, specId, value, total: bucket.total }
+    const row: UnitRow = {
+      name,
+      specId,
+      value,
+      total: category === 'casts' ? bucket.count : bucket.total,
+    }
     if (category === 'damage')      row.casts = bucket.count
     if (category === 'healing')     row.overheal = bucket.overheal
     if (category === 'interrupts')  row.attempts = bucket.attempts
@@ -897,6 +908,7 @@ export function computeEnemyPlayers(
   const allySet = makeAllySet(allies)
   type Acc = {
     damage: number; healing: number; overheal: number
+    casts: number
     deaths: PlayerSnapshot['deaths']
     interrupts: PlayerSnapshot['interrupts']['records']
   }
@@ -905,7 +917,7 @@ export function computeEnemyPlayers(
   const ensure = (name: string): Acc => {
     let a = agg.get(name)
     if (!a) {
-      a = { damage: 0, healing: 0, overheal: 0, deaths: [], interrupts: [] }
+      a = { damage: 0, healing: 0, overheal: 0, casts: 0, deaths: [], interrupts: [] }
       agg.set(name, a)
     }
     return a
@@ -921,6 +933,8 @@ export function computeEnemyPlayers(
       const a = ensure(src)
       a.healing += e.amount ?? 0
       a.overheal += e.overheal ?? 0
+    } else if (e.kind === 'cast' && !allySet.has(src)) {
+      ensure(src).casts += 1
     } else if (e.kind === 'death' && !allySet.has(dst)) { // attribute to victim (dst), not killer
       ensure(dst).deaths.push({
         playerName: dst,
@@ -967,6 +981,9 @@ export function computeEnemyPlayers(
         byKicked: {},
         records: a.interrupts,
       },
+      // Enemy pseudo-snapshot for the Casts graph line. bySpell stays empty —
+      // there's no per-spell breakdown on the enemy side today.
+      casts: { total: a.casts, bySpell: {} },
       // Enemy perspective doesn't render the Active column, but the field is
       // required by PlayerSnapshot — fill with 0.
       activeSec: 0,

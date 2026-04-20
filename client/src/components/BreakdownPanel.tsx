@@ -7,6 +7,7 @@ import {
   InterruptSpellTable,
   FullDamageSpellTable,
   FullHealSpellTable,
+  CastSpellTable,
 } from './SpellTable'
 import { TargetTable } from './TargetTable'
 import { SegmentedControl } from './SegmentedControl'
@@ -22,6 +23,7 @@ const METRIC_LABELS: Record<string, string> = {
   healing: 'Healing',
   deaths: 'Deaths',
   interrupts: 'Interrupts',
+  casts: 'Casts',
 }
 
 // Stable references when currentView lacks events/players, so the breakdown
@@ -103,8 +105,15 @@ export function BreakdownPanel() {
     ? selectPlayerBreakdown(events, selectedPlayer, breakdownCategory, deferredFilters, duration, player, allies)
     : null
 
-  const value = breakdown ? breakdown.rate : player?.interrupts.total ?? 0
-  const total = breakdown ? breakdown.total : player?.interrupts.total ?? 0
+  const castsTotal = player?.casts?.total ?? 0
+  const value = breakdown
+    ? breakdown.rate
+    : metric === 'casts' ? castsTotal
+    : player?.interrupts.total ?? 0
+  const total = breakdown
+    ? breakdown.total
+    : metric === 'casts' ? castsTotal
+    : player?.interrupts.total ?? 0
 
   function handleModeChange(nextViewMode: 'spells' | 'targets') {
     setViewMode(nextViewMode)
@@ -126,6 +135,22 @@ export function BreakdownPanel() {
           <InterruptSpellTable spells={player.interrupts.byKicker} heading="Interrupt Ability" classColor={color} filterAxis="Ability" />
           <InterruptSpellTable spells={player.interrupts.byKicked} heading="Spell Interrupted" classColor={color} filterAxis="InterruptedAbility" />
         </>
+      )
+    }
+    if (metric === 'casts') {
+      // Casts is ally-only in the drill panel — enemy pseudo-snapshots have
+      // no per-spell bySpell breakdown. The Full-mode Casts table still
+      // supports the Enemies perspective at the row level; drill-in just has
+      // nothing meaningful to show there.
+      if (!player) return null
+      const bySpell = player.casts?.bySpell ?? {}
+      return (
+        <CastSpellTable
+          spells={bySpell}
+          classColor={color}
+          duration={duration}
+          playerTotal={castsTotal}
+        />
       )
     }
     if (!breakdown) return null
@@ -211,6 +236,8 @@ export function BreakdownPanel() {
           <div style={{ fontSize: 12, fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', marginTop: 2 }}>
             {metric === 'interrupts'
               ? `${total} interrupts`
+              : metric === 'casts'
+              ? `${total} casts \u00b7 ${duration > 0 ? Math.round((castsTotal * 60) / duration) : 0} CPM`
               : `${formatNum(total)} total \u00b7 ${formatNum(value)} ${metric === 'damage' ? 'DPS' : metric === 'damageTaken' ? 'DTPS' : 'HPS'}`}
           </div>
         </div>

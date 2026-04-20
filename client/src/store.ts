@@ -10,7 +10,7 @@ export interface BootInfoState {
 // reset helpers and the graph component share a single source of truth.
 export const GRAPH_GROUP_AVG_KEY = '__group_avg__'
 
-export type Metric = 'damage' | 'damageTaken' | 'healing' | 'deaths' | 'interrupts' | 'buffs' | 'debuffs'
+export type Metric = 'damage' | 'damageTaken' | 'healing' | 'deaths' | 'interrupts' | 'buffs' | 'debuffs' | 'casts'
 export type Mode = 'summary' | 'full'
 export type Perspective = 'allies' | 'enemies'
 // Healing lens. Effective = treat overheal as noise (column hidden, bar solid,

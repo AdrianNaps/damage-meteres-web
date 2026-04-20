@@ -5,7 +5,7 @@ import { useStore, resolveSpecId, GRAPH_GROUP_AVG_KEY, selectGraphTimeOffset, se
 import { formatNum, shortName, formatTime } from '../utils/format'
 
 interface Props {
-  metric: 'damage' | 'damageTaken' | 'healing' | 'deaths' | 'interrupts' | 'buffs' | 'debuffs'
+  metric: 'damage' | 'damageTaken' | 'healing' | 'deaths' | 'interrupts' | 'buffs' | 'debuffs' | 'casts'
   players: Record<string, PlayerSnapshot>
   duration: number
   inactive?: boolean
@@ -358,9 +358,14 @@ export function GraphContainer({ metric, players, duration, inactive }: Props) {
       return { series, avgData: [], points, bucketSec, maxVal }
     }
 
+    // Casts CPM per player — legacy snapshots may not carry `casts` at all
+    // (see PlayerSnapshot type), so coalesce to 0.
+    const castsCpm = (p: PlayerSnapshot) =>
+      duration > 0 ? ((p.casts?.total ?? 0) * 60) / duration : 0
     const rateFn: (p: PlayerSnapshot) => number =
       metric === 'damage'      ? p => p.dps
       : metric === 'damageTaken' ? p => damageTakenPerSec.get(p.name) ?? 0
+      : metric === 'casts'     ? castsCpm
       : p => p.hps
     const sorted = [...playerList].sort((a, b) => rateFn(b) - rateFn(a)).slice(0, 5)
     if (sorted.length === 0 || rateFn(sorted[0]) === 0) return null
@@ -520,6 +525,7 @@ export function GraphContainer({ metric, players, duration, inactive }: Props) {
     : metric === 'damageTaken' ? 'Incoming DTPS Over Time'
     : metric === 'healing' ? 'HPS Over Time'
     : metric === 'deaths' ? 'Deaths Over Time'
+    : metric === 'casts' ? 'Casts per Minute Over Time'
     : metric === 'buffs' || metric === 'debuffs' ? 'Throughput Over Time'
     : 'Interrupts Over Time'
 
@@ -832,7 +838,7 @@ interface LegendEntry { key: string; label: string; color: string }
 function buildLegend(
   playerList: PlayerSnapshot[],
   playerSpecs: Record<string, number>,
-  metric: 'damage' | 'damageTaken' | 'healing' | 'deaths' | 'interrupts' | 'buffs' | 'debuffs',
+  metric: 'damage' | 'damageTaken' | 'healing' | 'deaths' | 'interrupts' | 'buffs' | 'debuffs' | 'casts',
   isBar: boolean,
   damageTakenPerSec: Map<string, number>,
 ): LegendEntry[] {
@@ -859,6 +865,7 @@ function buildLegend(
     const rateFn: (p: PlayerSnapshot) => number =
       metric === 'damage'      ? p => p.dps
       : metric === 'damageTaken' ? p => damageTakenPerSec.get(p.name) ?? 0
+      : metric === 'casts'     ? p => p.casts?.total ?? 0
       : p => p.hps
     const sorted = [...playerList].sort((a, b) => rateFn(b) - rateFn(a)).slice(0, 5)
     sorted.forEach(p => {

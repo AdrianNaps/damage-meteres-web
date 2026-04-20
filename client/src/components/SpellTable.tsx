@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import type { InterruptSpellStats } from '../types'
+import type { InterruptSpellStats, CastSpellStats } from '../types'
 import { useStore } from '../store'
 import type { BreakdownSpellRow } from '../utils/filters'
 import { spellIconUrl } from '../utils/icons'
@@ -398,6 +398,69 @@ export function InterruptSpellTable({ spells, heading, classColor, filterAxis }:
             <span style={{ ...secondaryCol, width: 44 }}>{pct(s.count, total)}</span>
           </div>
         ))
+      )}
+    </div>
+  )
+}
+
+// ——— Cast table (still on PlayerSnapshot) ———
+// Per-spell cast breakdown for the Casts drill panel. Columns: spell icon/name,
+// Casts (primary), %-of-player-total, CPM. Sorted by cast count descending.
+// Honors the Ability filter chip the same way InterruptSpellTable does so a
+// chip narrowing to one spell visually filters here too.
+
+const CAST_FULL_COLUMNS = '1fr 64px 44px 60px'
+
+interface CastProps {
+  spells: Record<string, CastSpellStats>
+  classColor: string
+  duration: number
+  playerTotal: number
+}
+
+export function CastSpellTable({ spells, classColor, duration, playerTotal }: CastProps) {
+  const filterValues = useStore(s => s.filters.Ability)
+  const rows = useMemo(() => {
+    const arr = Object.values(spells)
+    const visible = filterValues ? arr.filter(s => filterValues.includes(s.spellName)) : arr
+    return [...visible].sort((a, b) => b.count - a.count)
+  }, [spells, filterValues])
+  const totalForPct = playerTotal > 0 ? playerTotal : rows.reduce((s, r) => s + r.count, 0)
+  const topCount = rows[0]?.count ?? 1
+
+  return (
+    <div>
+      <div style={{ ...fullHeaderStyle, gridTemplateColumns: CAST_FULL_COLUMNS }}>
+        <span>Ability</span>
+        <span style={{ textAlign: 'right' }}>Casts</span>
+        <span style={{ textAlign: 'right' }}>%</span>
+        <span style={{ textAlign: 'right' }}>CPM</span>
+      </div>
+      {rows.length === 0 ? (
+        <div style={{ ...fullRowStyle, gridTemplateColumns: '1fr', justifyContent: 'center', color: 'var(--text-muted)' }}>None</div>
+      ) : (
+        rows.map(s => {
+          const barPct = topCount > 0 ? (s.count / topCount) * 100 : 0
+          const share = totalForPct > 0 ? s.count / totalForPct : 0
+          const cpm = duration > 0 ? Math.round((s.count * 60) / duration) : 0
+          return (
+            <div
+              key={s.spellId || s.spellName}
+              style={{ ...fullRowStyle, gridTemplateColumns: CAST_FULL_COLUMNS }}
+              onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-hover)' }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
+            >
+              <BarFill pct={barPct} color={classColor} />
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, position: 'relative', overflow: 'hidden', minWidth: 0 }}>
+                <SpellIcon spellId={s.spellId} />
+                <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.spellName}</span>
+              </div>
+              <span style={fullMonoPrimary}>{s.count}</span>
+              <span style={fullMonoSecondary}>{(share * 100).toFixed(0)}%</span>
+              <span style={fullMonoPrimary}>{cpm}</span>
+            </div>
+          )
+        })
       )}
     </div>
   )

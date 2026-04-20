@@ -101,6 +101,21 @@ export interface InterruptData {
   records: PlayerInterruptRecord[]
 }
 
+export interface CastSpellStats {
+  spellId: string
+  spellName: string
+  count: number
+}
+
+// Per-player cast aggregate for the Casts metric. Counts the player's OWN
+// SPELL_CAST_SUCCESS events only — pet/guardian casts are excluded. Interrupt
+// presses are included (an interrupt IS a player cast). Absent on legacy
+// snapshots (pre-Casts-tab); readers must coalesce to `{ total: 0, bySpell: {} }`.
+export interface CastData {
+  total: number
+  bySpell: Record<string, CastSpellStats>
+}
+
 export interface PlayerSnapshot {
   name: string
   specId?: number
@@ -110,6 +125,10 @@ export interface PlayerSnapshot {
   healing: { total: number; overheal: number; spells: Record<string, SpellHealStats>; targets: Record<string, TargetHealStats> }
   deaths: PlayerDeathRecord[]
   interrupts: InterruptData
+  // Optional for legacy snapshots that shipped before the Casts tab existed —
+  // the Full-mode Casts view coalesces undefined to `{ total: 0, bySpell: {} }`
+  // so those render as empty rather than crashing.
+  casts?: CastData
   activeSec: number
 }
 
@@ -120,7 +139,13 @@ export interface ClientEvent {
   // produces both at the same timestamp; a missed one only produces
   // 'interruptAttempt'. Attempts lens ranks on presses; Lands lens ranks on
   // landings only.
-  kind: 'damage' | 'heal' | 'interrupt' | 'interruptAttempt' | 'death'
+  // 'cast' = SPELL_CAST_SUCCESS from a player or an enemy NPC. Pet/guardian
+  // casts are dropped by the aggregator so the Casts metric doesn't conflate
+  // a player's presses with their pets' abilities. Interrupt presses also
+  // emit a companion 'cast' event at the same timestamp so the Casts metric
+  // and the Interrupts-Attempts lens stay consistent. No amount / overheal
+  // fields.
+  kind: 'damage' | 'heal' | 'interrupt' | 'interruptAttempt' | 'cast' | 'death'
   src: string
   dst: string
   ability: string

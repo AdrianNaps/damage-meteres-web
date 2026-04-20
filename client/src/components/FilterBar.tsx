@@ -63,6 +63,14 @@ function axisLabels(metric: Metric, axis: FilterAxis): AxisLabels {
       case 'InterruptedAbility': return { label: 'Interrupted Spell', defaultLabel: 'Any interrupted spell' }
     }
   }
+  if (metric === 'casts') {
+    switch (axis) {
+      case 'Source':  return { label: 'Caster', defaultLabel: 'Any caster' }
+      case 'Target':  return { label: 'Target', defaultLabel: 'Any target' }
+      case 'Ability': return { label: 'Spell',  defaultLabel: 'All spells' }
+      case 'InterruptedAbility': return { label: 'Interrupted', defaultLabel: 'Any interrupted spell' }
+    }
+  }
   switch (axis) {
     case 'Source':  return { label: 'Source',   defaultLabel: 'Any source' }
     case 'Target':  return { label: 'Target',   defaultLabel: 'Any target' }
@@ -500,6 +508,14 @@ function buildPickerPlaceholder(metric: Metric, axis: FilterAxis): string {
       case 'Source':             return 'Search sources…'
       case 'Target':             return 'Search targets…'
       case 'Ability':            return 'Search interrupt abilities…'
+      case 'InterruptedAbility': return 'Search interrupted spells…'
+    }
+  }
+  if (metric === 'casts') {
+    switch (axis) {
+      case 'Source':             return 'Search casters…'
+      case 'Target':             return 'Search targets…'
+      case 'Ability':            return 'Search spells…'
       case 'InterruptedAbility': return 'Search interrupted spells…'
     }
   }

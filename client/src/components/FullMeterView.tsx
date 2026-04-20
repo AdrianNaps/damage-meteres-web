@@ -38,6 +38,11 @@ type NumericStat = { label: string; value: number; format: StatFormat; bold?: bo
 interface AuxStats {
   overhealPerSec?: number    // healing-raw: effective + overheal = raw HPS
   mitigatedPerSec?: number   // damageTaken-mitigated: absorbed + blocked per second
+  // Fight duration in seconds — threaded through so the Casts config can
+  // compute CPM (casts * 60 / duration) inline without needing a second pass
+  // or a new MetricConfig signature. Optional because existing configs (damage,
+  // healing, damage-taken, interrupts) don't consume it.
+  durationSec?: number
 }
 
 interface MetricConfig {
@@ -147,6 +152,22 @@ const INTERRUPTS_ATTEMPTS_CONFIG: MetricConfig = {
   },
 }
 
+// Casts: primary is the raw press count (row.value is the count, not a
+// rate — see computeUnitRowsImpl). CPM is derived from the fight duration
+// threaded in via aux.durationSec and pre-rounded so the integer formatter
+// renders a whole number even when raw CPM is fractional (e.g. 0.25).
+const CASTS_CONFIG: MetricConfig = {
+  labels: ['Casts', 'CPM'],
+  stats: (r, aux) => {
+    const dur = aux.durationSec ?? 0
+    const cpm = dur > 0 ? Math.round((r.value * 60) / dur) : 0
+    return [
+      { label: 'Casts', value: r.value, format: 'integer', bold: true },
+      { label: 'CPM', value: cpm, format: 'integer' },
+    ]
+  },
+}
+
 function formatStat(stat: NumericStat): string {
   if (stat.format === 'integer') return stat.value > 0 ? stat.value.toLocaleString() : '—'
   return formatNum(stat.value)
@@ -249,7 +270,7 @@ function FilteredPlayerTable({
   events: Parameters<typeof computeUnitRows>[0]
   perspective: Parameters<typeof computeUnitRows>[1]
   filters: Parameters<typeof computeUnitRows>[2]
-  category: 'damage' | 'damageTaken' | 'healing' | 'interrupts'
+  category: 'damage' | 'damageTaken' | 'healing' | 'interrupts' | 'casts'
   allies: Record<string, PlayerSnapshot>
   duration: number
   selectedPlayer: string | null
@@ -281,6 +302,7 @@ function FilteredPlayerTable({
 
   const config =
     category === 'damage'                 ? DAMAGE_CONFIG
+    : category === 'casts'                ? CASTS_CONFIG
     : category === 'interrupts'           ? (lensMode === 'interruptsAttempts' ? INTERRUPTS_ATTEMPTS_CONFIG : INTERRUPTS_LANDS_CONFIG)
     : category === 'damageTaken'          ? (lensMode === 'damageTakenMitigated' ? DAMAGE_TAKEN_MITIGATED_CONFIG
                                             : lensMode === 'damageTakenIncoming' ? DAMAGE_TAKEN_INCOMING_CONFIG
@@ -456,6 +478,7 @@ function FilteredPlayerTable({
                 shareNumerator={shareNumerator}
                 overhealPerSec={overhealPerSec ? overhealPerSec[i] : 0}
                 mitigatedPerSec={mitigatedPerSec ? mitigatedPerSec[i] : 0}
+                durationSec={duration}
                 activePct={perspective === 'allies' ? computeActivePct(allies[row.name], duration) : null}
                 config={config}
                 specId={resolveSpecId(playerSpecs, row.name, row.specId)}
@@ -522,6 +545,7 @@ function FullPlayerRowImpl({
   shareNumerator,
   overhealPerSec,
   mitigatedPerSec,
+  durationSec,
   activePct,
   config,
   specId,
@@ -538,6 +562,7 @@ function FullPlayerRowImpl({
   shareNumerator: number    // numerator for the bar-cell share%
   overhealPerSec: number    // config.stats aux (healing-raw)
   mitigatedPerSec: number   // config.stats aux (damageTaken incoming/mitigated)
+  durationSec: number       // config.stats aux (casts → CPM denominator)
   activePct: number | null
   config: MetricConfig
   specId: number | undefined
@@ -551,7 +576,7 @@ function FullPlayerRowImpl({
   const fillPct = barScale > 0 ? (primaryPerSec / barScale) * 100 : 0
   const secondaryPct = barScale > 0 ? (secondaryPerSec / barScale) * 100 : 0
   const shareOfTotal = totalValue > 0 ? (shareNumerator / totalValue) * 100 : 0
-  const stats = config.stats(row, { overhealPerSec, mitigatedPerSec })
+  const stats = config.stats(row, { overhealPerSec, mitigatedPerSec, durationSec })
   const clickable = !!onClick
 
   return (

@@ -189,6 +189,7 @@ const FULL_CATEGORIES: { key: Metric; label: string }[] = [
   { key: 'deaths', label: 'Deaths' },
   { key: 'buffs', label: 'Buffs' },
   { key: 'debuffs', label: 'Debuffs' },
+  { key: 'casts', label: 'Casts' },
 ]
 
 function ToggleBar({

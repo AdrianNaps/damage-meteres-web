@@ -164,6 +164,7 @@ export function parseLine(raw: string): ParsedEvent | ParsedEvent[] | null {
 
     case 'SPELL_CAST_SUCCESS': {
       const spellId = fields[9]
+      const spellName = stripQuotes(fields[10])
       const isPlayerSrc = source.guid.startsWith('Player-')
       const isPetFlagSrc = !!(source.flags & (PET_FLAG | GUARDIAN_FLAG))
 
@@ -172,15 +173,24 @@ export function parseLine(raw: string): ParsedEvent | ParsedEvent[] | null {
       // independent of whether the paired SPELL_INTERRUPT lands. Checked
       // against the live set so the auto-add from SPELL_INTERRUPT covers
       // anything missing from the static list.
+      //
+      // An interrupt press from a player is ALSO a regular cast for Casts-tab
+      // purposes. Returning an array here emits both payloads so the aggregator
+      // credits the player's CastData and the Interrupts Attempts lens stays
+      // accurate. Pet interrupt presses still emit both — the aggregator's
+      // cast branch drops the cast side based on pet flags, so the Casts tab
+      // stays player-only while Interrupts Attempts keeps its ally+pet count.
       if ((isPlayerSrc || isPetFlagSrc) && INTERRUPT_SPELL_IDS.has(spellId)) {
-        return {
-          timestamp, type: eventType, source, dest,
-          payload: {
-            type: 'interruptAttempt',
-            spellId,
-            spellName: stripQuotes(fields[10]),
-          }
-        }
+        return [
+          {
+            timestamp, type: eventType, source, dest,
+            payload: { type: 'interruptAttempt', spellId, spellName },
+          },
+          {
+            timestamp, type: eventType, source, dest,
+            payload: { type: 'cast', spellId, spellName },
+          },
+        ]
       }
 
       // (b) Pet-summon bootstrap for clone-style summons that never emit
@@ -201,20 +211,29 @@ export function parseLine(raw: string): ParsedEvent | ParsedEvent[] | null {
       // handler is guarded to not overwrite guidToName with an empty string,
       // and by the time clones deal damage the owner's name is already
       // populated via earlier player events or COMBATANT_INFO.
-      if (!isPetFlagSrc) return null
-      if (source.guid.startsWith('Player-')) return null
-      // Full advanced-log block is 17 fields after the prefix; require the
-      // whole block to be present rather than just enough to read [13], so
-      // truncated rows can't feed garbage into the owner slot.
-      if (fields.length < 25) return null
-      const ownerGuid = fields[13]
-      if (!ownerGuid?.startsWith('Player-')) return null
+      //
+      // No companion `cast` payload here — clone casts are pet casts, which
+      // the Casts metric explicitly excludes.
+      if (isPetFlagSrc && !source.guid.startsWith('Player-') && fields.length >= 25) {
+        const ownerGuid = fields[13]
+        if (ownerGuid?.startsWith('Player-')) {
+          return {
+            timestamp,
+            type: 'SPELL_SUMMON',
+            source: { guid: ownerGuid, name: '', flags: PLAYER_FLAG },
+            dest: source,
+            payload: { type: 'summon' },
+          }
+        }
+      }
+
+      // (c) Generic cast: every remaining SPELL_CAST_SUCCESS. The aggregator
+      // gates on source flags — player casts credit CastData, enemy-NPC casts
+      // land on segment.events for the Enemies perspective, and pet/guardian
+      // casts are dropped entirely.
       return {
-        timestamp,
-        type: 'SPELL_SUMMON',
-        source: { guid: ownerGuid, name: '', flags: PLAYER_FLAG },
-        dest: source,
-        payload: { type: 'summon' }
+        timestamp, type: eventType, source, dest,
+        payload: { type: 'cast', spellId, spellName },
       }
     }
 
