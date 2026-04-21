@@ -749,10 +749,10 @@ export const useStore = create<AppState>((set) => ({
     // when the loaded snapshot is in progress; allow it pre-load — the
     // snapshot setters will downgrade once data arrives if needed.
     if (m === 'full' && isActiveScopeInProgress(slice)) return {}
-    // Buffs, Debuffs, and Damage Taken are Full-only metrics. Flipping back to
-    // Summary while on any of them would leave Summary with a category it
-    // can't render — snap to damage.
-    const isFullOnlyMetric = slice.metric === 'buffs' || slice.metric === 'debuffs' || slice.metric === 'damageTaken'
+    // Buffs, Debuffs, Damage Taken, and Casts are Full-only metrics. Flipping
+    // back to Summary while on any of them would leave Summary with a category
+    // it can't render — snap to damage.
+    const isFullOnlyMetric = slice.metric === 'buffs' || slice.metric === 'debuffs' || slice.metric === 'damageTaken' || slice.metric === 'casts'
     const nextMetric: Metric = m === 'summary' && isFullOnlyMetric
       ? 'damage'
       : slice.metric

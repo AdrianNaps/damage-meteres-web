@@ -63,11 +63,12 @@ export function SummaryView() {
     .flatMap(p => p.deaths)
     .sort((a, b) => a.timeOfDeath - b.timeOfDeath)
 
-  // Buffs and Debuffs are Full-only metrics, but defend against a stale metric
-  // value lingering when Summary mounts (e.g. during mode-flip state hydration).
-  const focused: ModuleKey = metric === 'buffs' || metric === 'debuffs'
-    ? 'damage'
-    : (metric as ModuleKey)
+  // Buffs, Debuffs, Damage Taken, and Casts are Full-only metrics, but defend
+  // against a stale metric value lingering when Summary mounts (e.g. during
+  // mode-flip state hydration).
+  const focused: ModuleKey = metric === 'damage' || metric === 'healing' || metric === 'deaths' || metric === 'interrupts'
+    ? metric
+    : 'damage'
   const sidebarKeys = MODULE_ORDER.filter(k => k !== focused)
 
   return (
