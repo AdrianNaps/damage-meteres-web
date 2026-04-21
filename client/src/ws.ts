@@ -143,13 +143,38 @@ export function connectWs() {
           // boss is being pulled, that's the view they want. Archives never
           // produce new live segments, so the gate on LIVE keeps this quiet
           // when the user is viewing a static log.
+          //
+          // Two carve-outs:
+          //   * Nothing selected yet (fresh source) → fall through to the
+          //     auto-select block so a live M+ key lands on its Overall
+          //     aggregate instead of the newest pull.
+          //   * User is on a key run's Overall and the new pull belongs to
+          //     that key run → leave the selection alone. M+ is a continuous
+          //     timeline, so Overall is "watch the whole run"; a new pull
+          //     shouldn't yank them off it. We still prefetch the segment so
+          //     clicking its sub-tab is instant.
           if (sourceId === LIVE_SOURCE_ID) {
-            const newLive = findNewlyAppearedLiveSegment(prevSegments, msg.segments as HistoryItem[])
-            if (newLive) {
-              const store = useStore.getState()
-              store.setSelectedSegmentId(newLive.id, sourceId)
-              send({ type: 'get_segment', sourceId, segmentId: newLive.id })
-              break
+            const liveSlice = state.sources.get(sourceId)
+            const hasSelection = !!liveSlice && (
+              liveSlice.selectedSegmentId !== null ||
+              liveSlice.selectedKeyRunId !== null ||
+              liveSlice.selectedBossSectionId !== null
+            )
+            if (hasSelection) {
+              const newLive = findNewlyAppearedLiveSegment(prevSegments, msg.segments as HistoryItem[])
+              if (newLive) {
+                const parentKeyRunId = findParentKeyRunId(msg.segments as HistoryItem[], newLive.id)
+                const onKeyRunOverall =
+                  liveSlice!.selectedSegmentId === null &&
+                  liveSlice!.selectedKeyRunId !== null &&
+                  parentKeyRunId !== null &&
+                  parentKeyRunId === liveSlice!.selectedKeyRunId
+                if (!onKeyRunOverall) {
+                  useStore.getState().setSelectedSegmentId(newLive.id, sourceId)
+                }
+                send({ type: 'get_segment', sourceId, segmentId: newLive.id })
+                break
+              }
             }
           }
 
@@ -320,6 +345,18 @@ function flattenSegments(items: HistoryItem[]): SegmentSummary[] {
 // keeps re-arriving on every list delivery during an ongoing fight. Latest
 // startTime wins when multiple live segments somehow appear at once (rare,
 // but keeps behaviour deterministic).
+// Find the key_run container that owns a given segment id, if any. Returns
+// the parent's keyRunId so the new-live-pull path can decide whether the
+// pull belongs to the key run the user is currently viewing.
+function findParentKeyRunId(items: HistoryItem[], segmentId: string): string | null {
+  for (const it of items) {
+    if (it.type === 'key_run' && it.segments.some(s => s.id === segmentId)) {
+      return it.keyRunId
+    }
+  }
+  return null
+}
+
 function findNewlyAppearedLiveSegment(prev: HistoryItem[], next: HistoryItem[]): SegmentSummary | null {
   const prevIds = new Set<string>()
   for (const s of flattenSegments(prev)) prevIds.add(s.id)
