@@ -1,5 +1,5 @@
 import type { ParsedEvent, DamagePayload, HealPayload, CombatantInfoPayload, DeathPayload, DeathRecapEvent, AuraPayload, ClientEvent } from './types.js'
-import { PET_FLAG, GUARDIAN_FLAG, REACTION_HOSTILE, REDISTRIBUTION_DAMAGE_SPELLS } from './types.js'
+import { PET_FLAG, GUARDIAN_FLAG, REACTION_HOSTILE, REDISTRIBUTION_DAMAGE_SPELLS, PASSIVE_PROC_CAST_SPELLS } from './types.js'
 
 import type { Segment, PlayerData, SpellDamageStats, SpellHealStats, TargetDamageStats, PlayerDeathRecord } from './store.js'
 import { ACTIVE_TIME_GAP_MS } from './store.js'
@@ -664,6 +664,15 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
       })
       return
     }
+
+    // Passive talent procs masquerading as casts — Blizzard emits
+    // SPELL_CAST_SUCCESS for the proc's self-aura or per-target debuff
+    // application. Drop the event for ally casts entirely: the Casts
+    // aggregate uses player.casts.bySpell, but the Full-mode filter bar
+    // re-aggregates from segment.events, so a push here would leak the
+    // denied spell back into filtered views. Enemy casts are unaffected —
+    // they're handled in the branch above and never reach this line.
+    if (PASSIVE_PROC_CAST_SPELLS.has(payload.spellId)) return
 
     const player = getOrCreatePlayer(segment, event.source.name, event.source.guid)
     if (!player) return

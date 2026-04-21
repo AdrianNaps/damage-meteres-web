@@ -11,6 +11,28 @@ export const REDISTRIBUTION_DAMAGE_SPELLS = new Set<string>([
   '469704', // Tempered in Battle (Prot Paladin hero talent)
 ])
 
+// Spells whose SPELL_CAST_SUCCESS events are passive talent procs, not player
+// keypresses. Blizzard registered the proc's aura-grant (or per-target debuff
+// application) as a self-cast, so the server emits SPELL_CAST_SUCCESS for an
+// action the player never took. WCL and Details filter these out; we do too.
+//
+// Filtered at the Casts aggregator only — the raw events still land on
+// segment.events so the Enemies perspective and replay/debug paths see them.
+//
+// TODO: this list has to be curated by hand per patch, which scales poorly.
+// Ideal replacement would identify proc shape structurally (e.g. cast_success
+// whose only same-ms side effect is a self-aura AND which co-occurs with a
+// separate real outward cast). A purely structural heuristic has false-
+// positive risk against legit self-buff macros (Trueshot+Aimed Shot, etc.)
+// so the deny-list is the pragmatic choice until someone designs a cleaner
+// signal. Remove this set and this TODO together.
+export const PASSIVE_PROC_CAST_SPELLS = new Set<string>([
+  '1223412', // Soul Fragment — Demon Hunter passive from Shear/Soul Cleave/Spirit Bomb/Fracture
+  '415388',  // Reclamation — Holy/Ret Paladin mana refund on Holy Power spenders
+  '370454',  // Charged Blast — Frost Mage stacking buff from Ice Lance into Frozen
+  '1244918', // Lake of Fire — Destruction Warlock, per-target debuff from Rain of Fire
+])
+
 export type EventType =
   | 'ENCOUNTER_START'
   | 'ENCOUNTER_END'
