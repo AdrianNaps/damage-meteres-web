@@ -13,7 +13,18 @@ async function resolveWsUrl(): Promise<string> {
   return `${proto}://${window.location.host}`
 }
 
+let connectStarted = false
+
 export function connectWs() {
+  // StrictMode double-invokes mount effects in dev. Without this guard a second
+  // socket would be created and overwrite `ws`, leaving the first socket's
+  // outbound sends pointing at a still-connecting peer (silently dropped) —
+  // which manifests as a stuck Overall tab on first launch. Checking `ws`
+  // alone is not enough: connect() awaits resolveWsUrl() before assigning
+  // `ws`, so both invocations would pass that check.
+  if (connectStarted) return
+  connectStarted = true
+
   const {
     setWsStatus,
     setSelectedSegment,
