@@ -423,10 +423,12 @@ export function CastSpellTable({ spells, classColor, duration, playerTotal }: Ca
   const rows = useMemo(() => {
     const arr = Object.values(spells)
     const visible = filterValues ? arr.filter(s => filterValues.includes(s.spellName)) : arr
-    return [...visible].sort((a, b) => b.count - a.count)
+    // Sort by total presses (count + cancelled). A spell that's mostly
+    // cancelled hardcasts still ranks high — that's actionable, not noise.
+    return [...visible].sort((a, b) => (b.count + (b.cancelled ?? 0)) - (a.count + (a.cancelled ?? 0)))
   }, [spells, filterValues])
   const totalForPct = playerTotal > 0 ? playerTotal : rows.reduce((s, r) => s + r.count, 0)
-  const topCount = rows[0]?.count ?? 1
+  const topCount = rows[0] ? (rows[0].count + (rows[0].cancelled ?? 0)) : 1
 
   return (
     <div>
@@ -440,9 +442,17 @@ export function CastSpellTable({ spells, classColor, duration, playerTotal }: Ca
         <div style={{ ...fullRowStyle, gridTemplateColumns: '1fr', justifyContent: 'center', color: 'var(--text-muted)' }}>None</div>
       ) : (
         rows.map(s => {
-          const barPct = topCount > 0 ? (s.count / topCount) * 100 : 0
+          const cancelled = s.cancelled ?? 0
+          const total = s.count + cancelled
+          const barPct = topCount > 0 ? (total / topCount) * 100 : 0
           const share = totalForPct > 0 ? s.count / totalForPct : 0
           const cpm = duration > 0 ? Math.round((s.count * 60) / duration) : 0
+          // Hover tooltip surfaces the breakdown so the bar list doesn't need
+          // a dedicated cancelled column. Average cast time is omitted —
+          // the timeline view carries that detail visually.
+          const countTitle = cancelled > 0
+            ? `${s.count} completed, ${cancelled} cancelled`
+            : `${s.count} casts`
           return (
             <div
               key={s.spellId || s.spellName}
@@ -455,7 +465,14 @@ export function CastSpellTable({ spells, classColor, duration, playerTotal }: Ca
                 <SpellIcon spellId={s.spellId} />
                 <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.spellName}</span>
               </div>
-              <span style={fullMonoPrimary}>{s.count}</span>
+              <span style={fullMonoPrimary} title={countTitle}>
+                {s.count}
+                {cancelled > 0 && (
+                  <span style={{ color: 'var(--text-muted)', marginLeft: 4, fontWeight: 400 }}>
+                    /{cancelled}
+                  </span>
+                )}
+              </span>
               <span style={fullMonoSecondary}>{(share * 100).toFixed(0)}%</span>
               <span style={fullMonoPrimary}>{cpm}</span>
             </div>

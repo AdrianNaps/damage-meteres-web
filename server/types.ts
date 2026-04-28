@@ -61,6 +61,8 @@ export type EventType =
   | 'SPELL_AURA_REFRESH'
   | 'SPELL_AURA_REMOVED'
   | 'SPELL_CAST_SUCCESS'
+  | 'SPELL_CAST_START'
+  | 'SPELL_CAST_FAILED'
   | 'SPELL_INTERRUPT'
   | 'UNIT_DIED'
 
@@ -178,6 +180,27 @@ export interface CastPayload {
   spellName: string
 }
 
+// SPELL_CAST_START — fires when a hardcast begins. Pairs with the next
+// SPELL_CAST_SUCCESS for the same (caster, spellId) to compute cast duration.
+// Channels do NOT emit this event (their SUCCESS is the channel start).
+export interface CastStartPayload {
+  type: 'castStart'
+  spellId: string
+  spellName: string
+}
+
+// SPELL_CAST_FAILED with a reason that indicates a real cancellation of a
+// cast that was already in flight. Pre-cast rejections (CD walls, target
+// invalid, resource shortfall, etc.) are dropped at the parser — the caller
+// never sees them. Reason mapping is English-only; non-English clients will
+// just not classify cancellations.
+export interface CastFailedPayload {
+  type: 'castFailed'
+  spellId: string
+  spellName: string
+  reason: 'interrupted' | 'movement' | 'stunned'
+}
+
 // Aura application, refresh, or removal for the buffs metric. Emitted from
 // SPELL_AURA_APPLIED / SPELL_AURA_REFRESH / SPELL_AURA_REMOVED for BUFFs on
 // player destinations. Aggregator pairs APPLIED/REMOVED into AuraWindows and
@@ -191,7 +214,7 @@ export interface AuraPayload {
   auraKind: 'BUFF' | 'DEBUFF'
 }
 
-export type EventPayload = DamagePayload | HealPayload | EncounterPayload | DeathPayload | CombatantInfoPayload | ChallengeModePayload | SummonPayload | InterruptPayload | InterruptAttemptPayload | CastPayload | AuraPayload
+export type EventPayload = DamagePayload | HealPayload | EncounterPayload | DeathPayload | CombatantInfoPayload | ChallengeModePayload | SummonPayload | InterruptPayload | InterruptAttemptPayload | CastPayload | CastStartPayload | CastFailedPayload | AuraPayload
 
 export interface ParsedEvent {
   timestamp: number
@@ -339,4 +362,14 @@ export interface ClientEvent {
   // heavy-shield partial absorbs from true full absorbs, which the Damage
   // Taken view can't do from `amount`/`absorbed` alone.
   fullAbsorb?: boolean
+  // Cast-quality fields (kind: 'cast' only). All optional so legacy snapshots
+  // without cast-quality data decode as plain instant casts. The aggregator
+  // pairs SPELL_CAST_START with SPELL_CAST_SUCCESS to populate `castMs`,
+  // and SPELL_AURA_REMOVED for known channel auras to close channel records.
+  // `castKind` is omitted for instant casts (single SUCCESS with no preceding
+  // START) — readers should treat undefined as 'instant'.
+  castKind?: 'instant' | 'hardcast' | 'channel'
+  castMs?: number
+  castResult?: 'completed' | 'cancelled'
+  cancelReason?: 'interrupted' | 'movement' | 'stunned'
 }

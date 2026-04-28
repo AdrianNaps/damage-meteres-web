@@ -104,7 +104,15 @@ export interface InterruptData {
 export interface CastSpellStats {
   spellId: string
   spellName: string
+  // Successful presses (completed hardcasts + completed channels + instants).
+  // Cancelled hardcasts are tracked separately in `cancelled`.
   count: number
+  // Cancelled hardcasts. Optional on the wire — legacy snapshots without
+  // cast-quality data decode as undefined; readers should coalesce to 0.
+  cancelled?: number
+  // Sum of measured cast/channel time. Average displayed as totalCastMs / count
+  // when > 0; for pure-instant spells this is omitted/zero.
+  totalCastMs?: number
 }
 
 // Per-player cast aggregate for the Casts metric. Counts the player's OWN
@@ -165,6 +173,14 @@ export interface ClientEvent {
   // from true full absorbs (both amount and absorbed equal the absorbed
   // amount). Without it, `absorbed >= amount` misclassifies the former.
   fullAbsorb?: boolean
+  // Cast-quality fields (kind: 'cast' only). All optional. `castKind` omitted
+  // means treat as 'instant'. Hardcasts and channels carry `castMs` (measured
+  // duration in ms). Cancelled hardcasts carry `castResult: 'cancelled'` plus
+  // a `cancelReason`; channels never report cancelled in v1 even when clipped.
+  castKind?: 'instant' | 'hardcast' | 'channel'
+  castMs?: number
+  castResult?: 'completed' | 'cancelled'
+  cancelReason?: 'interrupted' | 'movement' | 'stunned'
 }
 
 // Classification bucket for a buff on the Full-mode buffs table. Must match

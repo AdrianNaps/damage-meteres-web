@@ -9,6 +9,7 @@ import {
   FullHealSpellTable,
   CastSpellTable,
 } from './SpellTable'
+import { CastTimelineView } from './CastTimelineView'
 import { TargetTable } from './TargetTable'
 import { SegmentedControl } from './SegmentedControl'
 import { selectPlayerBreakdown } from '../utils/filters'
@@ -40,6 +41,10 @@ export function BreakdownPanel() {
   const filters = useStore(s => s.filters)
   const setFilter = useStore(s => s.setFilter)
   const [viewMode, setViewMode] = useState<'spells' | 'targets'>('spells')
+  // Casts drill has its own view toggle: list (per-spell bar table) vs
+  // timeline (per-spell lanes plotting each cast over time). Kept local to
+  // the panel — closing/reopening the drill resets to 'list'.
+  const [castView, setCastView] = useState<'list' | 'timeline'>('list')
   const playerSpecs = useStore(s => s.playerSpecs)
   // Defer the filter input so a chip toggle yields two renders (old rows stay
   // visible while new rows compute at lower priority). Mirrors FullMeterView.
@@ -140,6 +145,16 @@ export function BreakdownPanel() {
       // supports the Enemies perspective at the row level; drill-in just has
       // nothing meaningful to show there.
       if (!player) return null
+      if (castView === 'timeline') {
+        return (
+          <CastTimelineView
+            events={events}
+            playerName={player.name}
+            duration={duration}
+            classColor={color}
+          />
+        )
+      }
       const bySpell = player.casts?.bySpell ?? {}
       return (
         <CastSpellTable
@@ -269,6 +284,19 @@ export function BreakdownPanel() {
             ]}
             active={viewMode}
             onChange={handleModeChange}
+          />
+        </div>
+      )}
+      {/* Casts view toggle — List (bars) vs Timeline (per-spell lanes). */}
+      {metric === 'casts' && (
+        <div className="px-4 pt-2.5">
+          <SegmentedControl
+            options={[
+              { key: 'list', label: 'List' },
+              { key: 'timeline', label: 'Timeline' },
+            ]}
+            active={castView}
+            onChange={setCastView}
           />
         </div>
       )}

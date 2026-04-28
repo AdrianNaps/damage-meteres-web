@@ -55,6 +55,19 @@ const REPLAY_HEAL_SPELLS = new Set<string>([
   '410355', // Chronowarden Evoker - Stretch Time
 ])
 
+// SPELL_CAST_FAILED reason → cast-quality cancellation classification. Only
+// reasons that mean a cast was actually in flight and got cut short are
+// surfaced; pre-cast rejections (CD walls, invalid target, resource
+// shortfall, etc.) are dropped at parse time. English-only by design — the
+// existing parser is also English-only for spell names. See
+// references/cast-quality.md "Cancellation reason classification" for the
+// full set of observed reasons that fall through.
+const CAST_FAILED_CANCELLATION_REASONS: Record<string, 'interrupted' | 'movement' | 'stunned'> = {
+  'Interrupted': 'interrupted',
+  "Can't do that while moving": 'movement',
+  "Can't do that while stunned": 'stunned',
+}
+
 // Placeholder used for events that have no source/dest (ENCOUNTER_*, CHALLENGE_MODE_*)
 const NULL_UNIT: UnitRef = Object.freeze({ guid: '', name: '', flags: 0 })
 
@@ -664,6 +677,47 @@ export function parseLine(raw: string): ParsedEvent | ParsedEvent[] | null {
       if (emitted.length === 0) return null
       if (emitted.length === 1) return emitted[0]
       return emitted
+    }
+
+    // Hardcast begin. Channels do NOT emit this event — channel SUCCESS is the
+    // start. The aggregator pairs START with the next SUCCESS (same caster +
+    // spellId) to compute cast duration. Pet/guardian sources are dropped:
+    // their casts already aren't counted by the Casts metric.
+    case 'SPELL_CAST_START': {
+      if (fields.length < 11) return null
+      if (!(source.flags & PLAYER_FLAG)) return null
+      return {
+        timestamp, type: eventType, source, dest,
+        payload: {
+          type: 'castStart',
+          spellId: fields[9],
+          spellName: stripQuotes(fields[10]),
+        },
+      }
+    }
+
+    // Cast failure. Most reasons are pre-cast rejections (CD walls, target
+    // invalid, resource shortfall) which we drop entirely. Only the three
+    // reasons indicating a cast in flight that got cut short are surfaced —
+    // those become 'cancelled' results on the matching in-flight hardcast.
+    // English-only; non-English clients won't classify cancellations.
+    //
+    // Field layout: [9]=spellId [10]=spellName [11]=spellSchool [12]=reason.
+    case 'SPELL_CAST_FAILED': {
+      if (fields.length < 13) return null
+      if (!(source.flags & PLAYER_FLAG)) return null
+      const reasonRaw = stripQuotes(fields[12])
+      const reason = CAST_FAILED_CANCELLATION_REASONS[reasonRaw]
+      if (!reason) return null
+      return {
+        timestamp, type: eventType, source, dest,
+        payload: {
+          type: 'castFailed',
+          spellId: fields[9],
+          spellName: stripQuotes(fields[10]),
+          reason,
+        },
+      }
     }
 
     case 'SPELL_INTERRUPT': {

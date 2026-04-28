@@ -105,7 +105,18 @@ export interface InterruptData {
 export interface CastSpellStats {
   spellId: string
   spellName: string
+  // Total successful presses (completed hardcasts + completed channels +
+  // instants). Cancelled hardcasts do NOT contribute to count.
   count: number
+  // Cancelled hardcasts (cut short by movement / CC / interrupt). Channels
+  // never cancel — clipped channels report measured duration as completed.
+  // Optional on the wire so legacy snapshots without cast quality decode as 0.
+  cancelled?: number
+  // Sum of measured cast time across all completed hardcasts and channels for
+  // this spell. Average = totalCastMs / (count - instants), but instants
+  // aren't broken out separately so the client renders the average over count
+  // when castMs > 0. Omitted (or 0) for spells that are pure instants.
+  totalCastMs?: number
 }
 
 // Per-player cast aggregate for the Casts metric. Counts the player's OWN
@@ -188,6 +199,44 @@ export interface Segment {
   // snapshot time are materialized with `end = segEnd`. Implicit REFRESHes
   // (APPLIED when already open) are dropped in v1.
   openAuras: Map<string, AuraOpen>
+  // In-flight hardcast lifecycle. Keyed by `${casterGuid}|${spellId}`. A
+  // SPELL_CAST_START opens an entry; the next SPELL_CAST_SUCCESS for the same
+  // key closes it as a completed hardcast (castMs = success - start). A
+  // SPELL_CAST_FAILED with a cancellation reason closes it as cancelled.
+  // Stale entries (15s+) are dropped lazily — see CAST_LIFECYCLE_WATCHDOG_MS
+  // in the aggregator. Stripped at snapshot time; transient state only.
+  inFlightCasts: Map<string, CastInFlight>
+  // In-flight channel lifecycle. Keyed by `${casterGuid}|${auraSpellId}`. A
+  // SPELL_CAST_SUCCESS for a press spellId in CHANNEL_SPELLS opens an entry;
+  // SPELL_AURA_REMOVED for the matching aura key closes it (castMs = removed
+  // - start). Stripped at snapshot time.
+  inFlightChannels: Map<string, ChannelInFlight>
+}
+
+// In-flight hardcast — one entry per (caster, spellId) until paired with
+// SUCCESS or cancelled by a real FAILED reason.
+export interface CastInFlight {
+  spellId: string
+  spellName: string
+  startMs: number
+}
+
+// In-flight channel. `pressSpellId` is what gets credited on bySpell when the
+// channel closes — matters for channels where the aura spellId differs from
+// the press (e.g. potential future entries). Today press == aura for every
+// spell in CHANNEL_SPELLS but the structure stays explicit for clarity.
+export interface ChannelInFlight {
+  pressSpellId: string
+  spellName: string
+  startMs: number
+  // Captured at open time so the close hook doesn't have to re-resolve. The
+  // SPELL_AURA_REMOVED event has the same caster, but its `dest` is the
+  // caster (self-buff) — useless for "channelled at X" attribution.
+  casterName: string
+  // The actual channel target captured from the press SUCCESS's dest. The
+  // aura-removed close event would otherwise overwrite this with the caster
+  // (channel auras are self-buffs), losing the boss/enemy attribution.
+  targetName: string
 }
 
 // Derived values computed at read time, not stored.
@@ -348,7 +397,7 @@ export function segmentActiveSec(sp: PlayerData, segStartMs: number, segDurSec: 
   return Math.max(0, Math.min(segDurSec, lastDeathElapsed))
 }
 
-export interface SegmentSnapshot extends Omit<Segment, 'players' | 'supportOwnedSpellIds' | 'bossHpTracker' | 'auraWindows' | 'openAuras'> {
+export interface SegmentSnapshot extends Omit<Segment, 'players' | 'supportOwnedSpellIds' | 'bossHpTracker' | 'auraWindows' | 'openAuras' | 'inFlightCasts' | 'inFlightChannels'> {
   type: 'segment'
   duration: number
   players: Record<string, PlayerSnapshot>
@@ -836,8 +885,13 @@ export class SegmentStore {
           mp.casts.total += player.casts.total
           for (const [sid, s] of Object.entries(player.casts.bySpell)) {
             const existing = mp.casts.bySpell[sid]
-            if (!existing) mp.casts.bySpell[sid] = { ...s }
-            else existing.count += s.count
+            if (!existing) {
+              mp.casts.bySpell[sid] = { ...s }
+            } else {
+              existing.count += s.count
+              existing.cancelled = (existing.cancelled ?? 0) + (s.cancelled ?? 0)
+              existing.totalCastMs = (existing.totalCastMs ?? 0) + (s.totalCastMs ?? 0)
+            }
           }
         }
       }
@@ -969,6 +1023,8 @@ export class SegmentStore {
       bossHpTracker: _bossHp,
       auraWindows: _auraWindows,
       openAuras: _openAuras,
+      inFlightCasts: _inFlightCasts,
+      inFlightChannels: _inFlightChannels,
       ...segmentRest
     } = segment
     return {

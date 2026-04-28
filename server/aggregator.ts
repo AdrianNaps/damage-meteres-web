@@ -1,11 +1,19 @@
-import type { ParsedEvent, DamagePayload, HealPayload, CombatantInfoPayload, DeathPayload, DeathRecapEvent, AuraPayload, ClientEvent } from './types.js'
+import type { ParsedEvent, DamagePayload, HealPayload, CombatantInfoPayload, DeathPayload, DeathRecapEvent, AuraPayload, ClientEvent, CastStartPayload, CastFailedPayload } from './types.js'
 import { PET_FLAG, GUARDIAN_FLAG, REACTION_HOSTILE, REDISTRIBUTION_DAMAGE_SPELLS, PASSIVE_PROC_CAST_SPELLS } from './types.js'
+import { CHANNEL_SPELLS, CHANNEL_TICK_SPELL_IDS } from './data/channel-spells.js'
 
 import type { Segment, PlayerData, SpellDamageStats, SpellHealStats, TargetDamageStats, PlayerDeathRecord } from './store.js'
 import { ACTIVE_TIME_GAP_MS } from './store.js'
 
 // Rolling window of recent damage/heal events per player GUID — not persisted to snapshot
 const recentEvents = new Map<string, DeathRecapEvent[]>()
+
+// Maximum age for an in-flight hardcast or channel before it's considered
+// stale and dropped at next-event lookup. No real cast (non-empower) takes
+// longer than 15 seconds. This catches cases where a START fires but the
+// matching SUCCESS / AURA_REMOVED is missing from the log (truncation, log
+// rotation) so the entry would otherwise leak forever.
+const CAST_LIFECYCLE_WATCHDOG_MS = 15_000
 
 // Per-segment, per-source-guid record of the most recent damage credit. Used to subtract
 // the support amount from the original caster when an Augmentation Evoker SUPPORT mirror
@@ -470,6 +478,66 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
   } else if (payload.type === 'aura') {
     const aura = payload as AuraPayload
 
+    // Channel-close hook. Before the standard aura-window plumbing runs, check
+    // whether this REMOVED matches an in-flight channel for the caster. If
+    // so, compute the measured channel duration, close the entry, and emit a
+    // 'cast' wire event with channel kind. The aura-window logic below still
+    // runs (the buffs metric needs every BUFF removal) — channel-close is
+    // additive bookkeeping, not a replacement.
+    //
+    // v1 limitation: first-REMOVED-wins. Some channels (Disintegrate during
+    // Mass Disintegrate buff) emit a REMOVED→APPLIED chain mid-channel that
+    // looks like an early close. Affected casts measure shorter than reality;
+    // see references/cast-quality.md aura-refresh edge case.
+    if (aura.direction === 'removed' && isPlayerGuid(event.source.guid)) {
+      const channelKey = `${event.source.guid}|${aura.spellId}`
+      const inFlightCh = segment.inFlightChannels.get(channelKey)
+      if (inFlightCh) {
+        segment.inFlightChannels.delete(channelKey)
+        const elapsed = event.timestamp - inFlightCh.startMs
+        // Mirror the hardcast watchdog: drop entries older than the threshold
+        // entirely rather than emit a clamped duration. A 30s-stale channel
+        // almost certainly belongs to an earlier press the parser missed —
+        // crediting it as a 15s channel would be misleading.
+        if (elapsed >= 0 && elapsed <= CAST_LIFECYCLE_WATCHDOG_MS) {
+          const channelPlayer = getOrCreatePlayer(segment, event.source.name, event.source.guid)
+          if (channelPlayer) {
+            channelPlayer.casts.total++
+            const spell = channelPlayer.casts.bySpell[inFlightCh.pressSpellId]
+            if (!spell) {
+              channelPlayer.casts.bySpell[inFlightCh.pressSpellId] = {
+                spellId: inFlightCh.pressSpellId,
+                spellName: inFlightCh.spellName,
+                count: 1,
+                cancelled: 0,
+                totalCastMs: elapsed,
+              }
+            } else {
+              spell.count++
+              spell.totalCastMs = (spell.totalCastMs ?? 0) + elapsed
+            }
+
+            // Use the TARGET captured at press time (event.dest of the SUCCESS),
+            // not event.dest here — the AURA_REMOVED dest is the caster (self-
+            // buff aura), which would lose the channel's actual target.
+            segment.events.push({
+              t: inFlightCh.startMs,
+              kind: 'cast',
+              src: inFlightCh.casterName,
+              dst: inFlightCh.targetName,
+              ability: inFlightCh.spellName,
+              spellId: inFlightCh.pressSpellId,
+              castKind: 'channel',
+              castMs: elapsed,
+              castResult: 'completed',
+            })
+          }
+        }
+      }
+      // Fall through to the standard aura-window logic — every BUFF removal
+      // still feeds the buffs metric regardless of whether it was a channel.
+    }
+
     // Resolve caster. Player and player-owned (pet/guardian) sources get their
     // pet→owner resolution as before so ally auras stay attributed to the
     // summoner. Non-player casters (enemy mobs self-buffing, boss empowerments,
@@ -673,9 +741,61 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
     // denied spell back into filtered views. Enemy casts are unaffected —
     // they're handled in the branch above and never reach this line.
     if (PASSIVE_PROC_CAST_SPELLS.has(payload.spellId)) return
+    // Channel tick effects emitted as SPELL_CAST_SUCCESS (e.g. Tranquility's
+    // 157982 fires once per ~750ms tick — would inflate the press count by
+    // ~7x without this guard). The press itself uses a different spellId and
+    // opens the channel lifecycle below.
+    if (CHANNEL_TICK_SPELL_IDS.has(payload.spellId)) return
 
     const player = getOrCreatePlayer(segment, event.source.name, event.source.guid)
     if (!player) return
+
+    // Channel-press path. The press SUCCESS opens an in-flight channel keyed
+    // on (caster, auraSpellId); the matching SPELL_AURA_REMOVED in the aura
+    // branch closes it with measured castMs. We do NOT increment count or
+    // emit a wire event here — both happen on close. Without this gate, a
+    // channel that never closes (segment ends mid-channel) would inflate the
+    // press count and ship a misleading event.
+    const channelMeta = CHANNEL_SPELLS[payload.spellId]
+    if (channelMeta) {
+      const channelKey = `${event.source.guid}|${channelMeta.auraSpellId}`
+      // If a prior channel for the same key never closed (no REMOVED before
+      // this press — should be impossible since channels are mutually
+      // exclusive on a caster, but guard for log oddities), drop the stale
+      // entry silently. The new press wins.
+      // Capture the channel TARGET (event.dest) here — at close time the
+      // SPELL_AURA_REMOVED event's dest is the caster (channel auras are
+      // self-buffs), which would lose the actual boss/enemy attribution.
+      segment.inFlightChannels.set(channelKey, {
+        pressSpellId: payload.spellId,
+        spellName: payload.spellName,
+        startMs: event.timestamp,
+        casterName: event.source.name.normalize('NFC'),
+        targetName: event.dest.name,
+      })
+      return
+    }
+
+    // Hardcast or instant. Look up an in-flight hardcast (opened by a prior
+    // SPELL_CAST_START); if found, this SUCCESS pairs and reports a measured
+    // hardcast duration. If not found, treat as instant.
+    const castKey = `${event.source.guid}|${payload.spellId}`
+    const inFlight = segment.inFlightCasts.get(castKey)
+    let castKind: 'instant' | 'hardcast' = 'instant'
+    let castMs = 0
+    if (inFlight) {
+      // Watchdog: drop stale entries (>15s old) — the START was never
+      // genuinely paired with this SUCCESS, the player did something else
+      // and this press came much later. Treat as instant rather than report
+      // an absurd cast time.
+      const elapsed = event.timestamp - inFlight.startMs
+      if (elapsed >= 0 && elapsed <= CAST_LIFECYCLE_WATCHDOG_MS) {
+        castKind = 'hardcast'
+        castMs = elapsed
+      }
+      segment.inFlightCasts.delete(castKey)
+    }
+
     player.casts.total++
     const spell = player.casts.bySpell[payload.spellId]
     if (!spell) {
@@ -683,9 +803,74 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
         spellId: payload.spellId,
         spellName: payload.spellName,
         count: 1,
+        cancelled: 0,
+        totalCastMs: castMs,
       }
     } else {
       spell.count++
+      spell.totalCastMs = (spell.totalCastMs ?? 0) + castMs
+    }
+
+    const wireEvent: ClientEvent = {
+      t: event.timestamp,
+      kind: 'cast',
+      src: event.source.name.normalize('NFC'),
+      dst: event.dest.name,
+      ability: payload.spellName,
+      spellId: payload.spellId,
+    }
+    if (castKind === 'hardcast') {
+      wireEvent.castKind = 'hardcast'
+      wireEvent.castMs = castMs
+      wireEvent.castResult = 'completed'
+    }
+    segment.events.push(wireEvent)
+    return
+  } else if (payload.type === 'castStart') {
+    // Hardcast begin. Open an in-flight entry; the next SPELL_CAST_SUCCESS
+    // for the same (caster, spellId) pairs and produces a completed hardcast,
+    // or a SPELL_CAST_FAILED with a cancellation reason produces a cancelled
+    // record. Re-opening (player re-presses while a stale entry exists) just
+    // overwrites — the older START is implicitly abandoned.
+    if (!isPlayerGuid(event.source.guid)) return
+    const castKey = `${event.source.guid}|${payload.spellId}`
+    segment.inFlightCasts.set(castKey, {
+      spellId: payload.spellId,
+      spellName: payload.spellName,
+      startMs: event.timestamp,
+    })
+    return
+  } else if (payload.type === 'castFailed') {
+    // Cancellation of an in-flight hardcast. Parser only surfaces real
+    // cancellation reasons (Interrupted, movement, stunned); pre-cast
+    // rejections are dropped at parse time. Without a matching in-flight
+    // entry we drop silently — the cancellation reason was emitted but no
+    // START was ever observed (rare; possibly a press the parser missed).
+    if (!isPlayerGuid(event.source.guid)) return
+    const castKey = `${event.source.guid}|${payload.spellId}`
+    const inFlight = segment.inFlightCasts.get(castKey)
+    if (!inFlight) return
+    segment.inFlightCasts.delete(castKey)
+
+    const player = getOrCreatePlayer(segment, event.source.name, event.source.guid)
+    if (!player) return
+
+    const castMs = Math.max(0, event.timestamp - inFlight.startMs)
+    const spell = player.casts.bySpell[payload.spellId]
+    if (!spell) {
+      // Cancelled cast for a spell that's never landed — seed an entry with
+      // count=0 so the bar list shows the cancellation. count stays at 0
+      // because cancelled hardcasts didn't produce a press effect.
+      player.casts.bySpell[payload.spellId] = {
+        spellId: payload.spellId,
+        spellName: payload.spellName,
+        count: 0,
+        cancelled: 1,
+        totalCastMs: castMs,
+      }
+    } else {
+      spell.cancelled = (spell.cancelled ?? 0) + 1
+      spell.totalCastMs = (spell.totalCastMs ?? 0) + castMs
     }
 
     segment.events.push({
@@ -695,6 +880,10 @@ export function applyEvent(segment: Segment, event: ParsedEvent) {
       dst: event.dest.name,
       ability: payload.spellName,
       spellId: payload.spellId,
+      castKind: 'hardcast',
+      castMs,
+      castResult: 'cancelled',
+      cancelReason: payload.reason,
     })
     return
   } else if (payload.type === 'interrupt') {

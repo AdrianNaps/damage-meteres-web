@@ -569,6 +569,8 @@ export class EncounterStateMachine extends EventEmitter {
       events: [],
       auraWindows: [],
       openAuras: new Map(),
+      inFlightCasts: new Map(),
+      inFlightChannels: new Map(),
     }
   }
 }

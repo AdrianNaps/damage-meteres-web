@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { EncounterStateMachine } from './stateMachine.js'
 import { SegmentStore } from './store.js'
 import { parseLine } from './parser.js'
-import type { ParsedEvent, ChallengeModePayload, EncounterPayload, CombatantInfoPayload, DamagePayload, DeathPayload, UnitRef, AuraPayload } from './types.js'
+import type { ParsedEvent, ChallengeModePayload, EncounterPayload, CombatantInfoPayload, DamagePayload, DeathPayload, UnitRef, AuraPayload, CastPayload, CastStartPayload, CastFailedPayload } from './types.js'
 
 const NULL_UNIT: UnitRef = { guid: '', name: '', flags: 0 }
 const BASE_TS = 1_000_000
@@ -678,4 +678,368 @@ test('aura: parser accepts SPELL_AURA_APPLIED and builds aura payload', () => {
     assert.equal(parsed.payload.spellId, '32182')
     assert.equal(parsed.payload.spellName, 'Heroism')
   }
+})
+
+// --- Cast quality: parser ---
+
+test('cast quality: parser SPELL_CAST_START builds castStart payload', () => {
+  const raw = '4/19/2026 19:56:19.310-7  SPELL_CAST_START,Player-76-0B9E1F45,"Adrianw-Sargeras-US",0x511,0x80000000,0000000000000000,nil,0x80000000,0x80000000,29722,"Incinerate",0x4'
+  const parsed = parseLine(raw) as ParsedEvent
+  assert.equal(parsed.type, 'SPELL_CAST_START')
+  assert.equal(parsed.payload.type, 'castStart')
+  const p = parsed.payload as CastStartPayload
+  assert.equal(p.spellId, '29722')
+  assert.equal(p.spellName, 'Incinerate')
+})
+
+test('cast quality: parser SPELL_CAST_FAILED with cancellation reason builds castFailed payload', () => {
+  const raw = '4/19/2026 19:56:23.252-7  SPELL_CAST_FAILED,Player-76-0B9E1F45,"Adrianw-Sargeras-US",0x511,0x80000000,0000000000000000,nil,0x80000000,0x80000000,29722,"Incinerate",0x4,"Interrupted"'
+  const parsed = parseLine(raw) as ParsedEvent
+  assert.equal(parsed.type, 'SPELL_CAST_FAILED')
+  const p = parsed.payload as CastFailedPayload
+  assert.equal(p.type, 'castFailed')
+  assert.equal(p.spellId, '29722')
+  assert.equal(p.reason, 'interrupted')
+})
+
+test('cast quality: parser drops SPELL_CAST_FAILED rejection reasons (no cast was in flight)', () => {
+  // "Not yet recovered" = CD wall; "Another action is in progress" = button mash.
+  // Real-world frequency in a fight is high; these MUST not surface as cancellations.
+  for (const reason of ['Not yet recovered', 'Another action is in progress', 'Out of range', 'No target', 'Item is not ready yet']) {
+    const raw = `4/19/2026 19:56:23.252-7  SPELL_CAST_FAILED,Player-76-0B9E1F45,"Adrianw-Sargeras-US",0x511,0x80000000,0000000000000000,nil,0x80000000,0x80000000,29722,"Incinerate",0x4,"${reason}"`
+    assert.equal(parseLine(raw), null, `expected null for reason "${reason}"`)
+  }
+})
+
+test('cast quality: parser maps movement and stunned reasons', () => {
+  for (const [raw, expected] of [
+    ["Can't do that while moving", 'movement'],
+    ["Can't do that while stunned", 'stunned'],
+  ] as const) {
+    const line = `4/19/2026 19:56:23.252-7  SPELL_CAST_FAILED,Player-76-0B9E1F45,"Adrianw",0x511,0x80000000,0000000000000000,nil,0x80000000,0x80000000,29722,"Incinerate",0x4,"${raw}"`
+    const p = (parseLine(line) as ParsedEvent).payload as CastFailedPayload
+    assert.equal(p.reason, expected)
+  }
+})
+
+test('cast quality: parser drops SPELL_CAST_START / FAILED from non-player sources', () => {
+  // Boss casts (creature source, no PLAYER_FLAG) shouldn't pollute the
+  // hardcast lifecycle — only player casts get cast quality treatment in v1.
+  const startRaw = '4/19/2026 19:56:08.961-7  SPELL_CAST_START,Creature-0-4209-1753-127412-229227-00006595C3,"Xal\'atath",0xa48,0x80000000,0000000000000000,nil,0x80000000,0x80000000,461870,"Xal\'atath\'s Bargain",0x20'
+  assert.equal(parseLine(startRaw), null)
+})
+
+// --- Cast quality: parser test helpers for aggregator scenarios ---
+
+function castSuccess(player: UnitRef, spellId: string, spellName: string, offset = 0, target: UnitRef = NULL_UNIT): ParsedEvent {
+  return {
+    timestamp: t(offset), type: 'SPELL_CAST_SUCCESS', source: player, dest: target,
+    payload: { type: 'cast', spellId, spellName } satisfies CastPayload,
+  }
+}
+function castStart(player: UnitRef, spellId: string, spellName: string, offset = 0): ParsedEvent {
+  return {
+    timestamp: t(offset), type: 'SPELL_CAST_START', source: player, dest: NULL_UNIT,
+    payload: { type: 'castStart', spellId, spellName } satisfies CastStartPayload,
+  }
+}
+function castFailed(player: UnitRef, spellId: string, spellName: string, reason: 'interrupted' | 'movement' | 'stunned', offset = 0): ParsedEvent {
+  return {
+    timestamp: t(offset), type: 'SPELL_CAST_FAILED', source: player, dest: NULL_UNIT,
+    payload: { type: 'castFailed', spellId, spellName, reason } satisfies CastFailedPayload,
+  }
+}
+
+// --- Cast quality: aggregator hardcast lifecycle ---
+
+test('cast quality: hardcast START + SUCCESS produces a completed hardcast with measured castMs', () => {
+  const { sm, store } = makeSm()
+  const player = makePlayer('Player-1', 'Adrianw')
+
+  sm.handle(challengeStart('Ara-Kara', 0))
+  sm.handle(encounterStart('Test Boss', 100))
+  sm.handle(mobDamage(makeMob('Creature-X', 'X'), 900_000, 1_000_000, 150, player))
+  // Starfire-style hardcast: START at 200ms, SUCCESS at 1500ms = 1.3s cast.
+  sm.handle(castStart(player, '197628', 'Starfire', 200))
+  sm.handle(castSuccess(player, '197628', 'Starfire', 1500))
+  sm.handle(encounterEnd('Test Boss', true, 5000))
+  sm.handle(challengeEnd(true, 5100))
+
+  const boss = store.getAll().find(s => s.encounterName === 'Test Boss')!
+  const player1 = boss.players['Adrianw']
+  assert.ok(player1, 'player should exist')
+  assert.equal(player1.casts.total, 1)
+  assert.equal(player1.casts.bySpell['197628'].count, 1)
+  assert.equal(player1.casts.bySpell['197628'].cancelled, 0)
+  assert.equal(player1.casts.bySpell['197628'].totalCastMs, 1300)
+
+  // Wire event carries castKind / castMs / castResult.
+  const castEvent = boss.events.find(e => e.kind === 'cast' && e.spellId === '197628')!
+  assert.ok(castEvent)
+  assert.equal(castEvent.castKind, 'hardcast')
+  assert.equal(castEvent.castMs, 1300)
+  assert.equal(castEvent.castResult, 'completed')
+})
+
+test('cast quality: SUCCESS with no preceding START is treated as instant', () => {
+  const { sm, store } = makeSm()
+  const player = makePlayer('Player-1', 'Adrianw')
+
+  sm.handle(challengeStart('Ara-Kara', 0))
+  sm.handle(encounterStart('Test Boss', 100))
+  sm.handle(mobDamage(makeMob('Creature-X', 'X'), 900_000, 1_000_000, 150, player))
+  // Wild Imp summon, Hand of Gul'dan, etc. — instant cast, no START fires.
+  sm.handle(castSuccess(player, '105174', "Hand of Gul'dan", 200))
+  sm.handle(encounterEnd('Test Boss', true, 5000))
+  sm.handle(challengeEnd(true, 5100))
+
+  const boss = store.getAll().find(s => s.encounterName === 'Test Boss')!
+  const player1 = boss.players['Adrianw']
+  assert.equal(player1.casts.total, 1)
+  assert.equal(player1.casts.bySpell['105174'].totalCastMs, 0)
+
+  // Wire event omits castKind/castMs entirely (instant is the implicit default).
+  const castEvent = boss.events.find(e => e.kind === 'cast' && e.spellId === '105174')!
+  assert.equal(castEvent.castKind, undefined)
+  assert.equal(castEvent.castMs, undefined)
+})
+
+test('cast quality: cancelled hardcast emits a wire event with castResult=cancelled and bumps cancelled', () => {
+  const { sm, store } = makeSm()
+  const player = makePlayer('Player-1', 'Adrianw')
+
+  sm.handle(challengeStart('Ara-Kara', 0))
+  sm.handle(encounterStart('Test Boss', 100))
+  sm.handle(mobDamage(makeMob('Creature-X', 'X'), 900_000, 1_000_000, 150, player))
+  // Starfire interrupted at 800ms after START at 200ms = 600ms in flight.
+  sm.handle(castStart(player, '197628', 'Starfire', 200))
+  sm.handle(castFailed(player, '197628', 'Starfire', 'interrupted', 800))
+  sm.handle(encounterEnd('Test Boss', true, 5000))
+  sm.handle(challengeEnd(true, 5100))
+
+  const boss = store.getAll().find(s => s.encounterName === 'Test Boss')!
+  const player1 = boss.players['Adrianw']
+  // Cancelled cast does NOT bump count (no successful press happened).
+  assert.equal(player1.casts.bySpell['197628'].count, 0)
+  assert.equal(player1.casts.bySpell['197628'].cancelled, 1)
+  assert.equal(player1.casts.bySpell['197628'].totalCastMs, 600)
+
+  const castEvent = boss.events.find(e => e.kind === 'cast' && e.spellId === '197628')!
+  assert.equal(castEvent.castKind, 'hardcast')
+  assert.equal(castEvent.castMs, 600)
+  assert.equal(castEvent.castResult, 'cancelled')
+  assert.equal(castEvent.cancelReason, 'interrupted')
+})
+
+test('cast quality: stale in-flight (>15s) is treated as instant on next SUCCESS', () => {
+  const { sm, store } = makeSm()
+  const player = makePlayer('Player-1', 'Adrianw')
+
+  sm.handle(challengeStart('Ara-Kara', 0))
+  sm.handle(encounterStart('Test Boss', 100))
+  sm.handle(mobDamage(makeMob('Creature-X', 'X'), 900_000, 1_000_000, 150, player))
+  // START at 200ms, SUCCESS 16 seconds later — too long to be a real pair.
+  // Fall back to instant rather than report a 16s cast time.
+  sm.handle(castStart(player, '197628', 'Starfire', 200))
+  sm.handle(castSuccess(player, '197628', 'Starfire', 16_500))
+  sm.handle(encounterEnd('Test Boss', true, 20_000))
+  sm.handle(challengeEnd(true, 20_100))
+
+  const boss = store.getAll().find(s => s.encounterName === 'Test Boss')!
+  const player1 = boss.players['Adrianw']
+  assert.equal(player1.casts.bySpell['197628'].count, 1)
+  assert.equal(player1.casts.bySpell['197628'].totalCastMs, 0)
+
+  const castEvent = boss.events.find(e => e.kind === 'cast' && e.spellId === '197628')!
+  assert.equal(castEvent.castKind, undefined, 'stale pair should fall back to instant')
+})
+
+// --- Cast quality: aggregator channel lifecycle ---
+
+test('cast quality: channel SUCCESS + matching AURA_REMOVED produces a channel cast with measured castMs', () => {
+  const { sm, store } = makeSm()
+  const monk = makePlayer('Player-WW', 'Grzzchi')
+  const boss = makeMob('Creature-Boss', 'Test Boss')
+
+  sm.handle(challengeStart('Ara-Kara', 0))
+  sm.handle(encounterStart('Test Boss', 100))
+  sm.handle(mobDamage(boss, 900_000, 1_000_000, 150, monk))
+  // Fists of Fury: APPLIED on caster (self-buff aura) + press SUCCESS at the
+  // boss target, then REMOVED 3.1s later. The press carries the real target
+  // (boss); the AURA_REMOVED's dest is the caster (self-buff). The wire
+  // event must use the press-time target, not the aura-remove caster.
+  sm.handle(auraApplied(monk, monk, '113656', 'Fists of Fury', 200))
+  sm.handle(castSuccess(monk, '113656', 'Fists of Fury', 200, boss))
+  sm.handle(auraRemoved(monk, monk, '113656', 'Fists of Fury', 3300))
+  sm.handle(encounterEnd('Test Boss', true, 5000))
+  sm.handle(challengeEnd(true, 5100))
+
+  const segment = store.getAll().find(s => s.encounterName === 'Test Boss')!
+  const player = segment.players['Grzzchi']
+  assert.equal(player.casts.total, 1, 'channel counts once at close, not at press')
+  assert.equal(player.casts.bySpell['113656'].count, 1)
+  assert.equal(player.casts.bySpell['113656'].totalCastMs, 3100)
+
+  const castEvent = segment.events.find(e => e.kind === 'cast' && e.spellId === '113656')!
+  assert.equal(castEvent.castKind, 'channel')
+  assert.equal(castEvent.castMs, 3100)
+  assert.equal(castEvent.castResult, 'completed')
+  // Wire t is the START time, not the close time, so the timeline plots the
+  // channel beginning at the press timestamp.
+  assert.equal(castEvent.t, BASE_TS + 200)
+  // dst MUST be the channel target captured at press, not the caster from
+  // AURA_REMOVED's dest (which would be 'Grzzchi' for this self-buff aura).
+  assert.equal(castEvent.dst, 'Test Boss', 'channel dst should be the press target, not the aura caster')
+})
+
+test('cast quality: channel that never closes (segment ends mid-channel) is dropped, not counted', () => {
+  const { sm, store } = makeSm()
+  const monk = makePlayer('Player-WW', 'Grzzchi')
+
+  sm.handle(challengeStart('Ara-Kara', 0))
+  sm.handle(encounterStart('Test Boss', 100))
+  sm.handle(mobDamage(makeMob('Creature-X', 'X'), 900_000, 1_000_000, 150, monk))
+  // Channel opens but the encounter ends before AURA_REMOVED — the boss died
+  // mid-channel. Better to undercount one cast than emit a fake duration.
+  sm.handle(auraApplied(monk, monk, '113656', 'Fists of Fury', 200))
+  sm.handle(castSuccess(monk, '113656', 'Fists of Fury', 200))
+  sm.handle(encounterEnd('Test Boss', true, 1000))
+  sm.handle(challengeEnd(true, 1100))
+
+  const boss = store.getAll().find(s => s.encounterName === 'Test Boss')!
+  const player = boss.players['Grzzchi']
+  assert.equal(player?.casts.total ?? 0, 0, 'unclosed channel should not count')
+  assert.equal(boss.events.filter(e => e.kind === 'cast').length, 0)
+})
+
+test('cast quality: Tranquility tick spellId is dropped (pre-existing overcount fix)', () => {
+  const { sm, store } = makeSm()
+  const druid = makePlayer('Player-D', 'Adrianb')
+
+  sm.handle(challengeStart('Ara-Kara', 0))
+  sm.handle(encounterStart('Test Boss', 100))
+  sm.handle(mobDamage(makeMob('Creature-X', 'X'), 900_000, 1_000_000, 150, druid))
+  // One Tranquility press: aura opens, press SUCCESS for 740, then 7 tick
+  // SUCCESSes for 157982, then aura removed.
+  sm.handle(auraApplied(druid, druid, '740', 'Tranquility', 200))
+  sm.handle(castSuccess(druid, '157982', 'Tranquility', 200))  // tick-id SUCCESS at instant 0
+  sm.handle(castSuccess(druid, '740', 'Tranquility', 200))     // press SUCCESS
+  sm.handle(castSuccess(druid, '157982', 'Tranquility', 950))  // tick 1
+  sm.handle(castSuccess(druid, '157982', 'Tranquility', 1700)) // tick 2
+  sm.handle(castSuccess(druid, '157982', 'Tranquility', 2450)) // tick 3
+  sm.handle(castSuccess(druid, '157982', 'Tranquility', 3200)) // tick 4
+  sm.handle(castSuccess(druid, '157982', 'Tranquility', 3950)) // tick 5
+  sm.handle(castSuccess(druid, '157982', 'Tranquility', 4700)) // tick 6
+  sm.handle(auraRemoved(druid, druid, '740', 'Tranquility', 4750))
+  sm.handle(encounterEnd('Test Boss', true, 8000))
+  sm.handle(challengeEnd(true, 8100))
+
+  const boss = store.getAll().find(s => s.encounterName === 'Test Boss')!
+  const player = boss.players['Adrianb']
+  // ONE channel cast, not 8 (would have been 1 press + 7 ticks pre-fix).
+  assert.equal(player.casts.total, 1, 'channel ticks must not inflate the cast count')
+  assert.equal(player.casts.bySpell['740'].count, 1)
+  assert.equal(player.casts.bySpell['740'].totalCastMs, 4550)
+  // No bySpell entry for the tick spellId — those events are dropped entirely.
+  assert.equal(player.casts.bySpell['157982'], undefined)
+})
+
+test('cast quality: stale channel (>15s old REMOVED) is dropped, not credited at clamp', () => {
+  // A SPELL_AURA_REMOVED that arrives 30s after the press almost certainly
+  // belongs to a press the parser missed (or a log oddity). Match the
+  // hardcast watchdog: drop the entry rather than emit a clamped 15s
+  // "channel" that would mislead the user.
+  const { sm, store } = makeSm()
+  const monk = makePlayer('Player-WW', 'Grzzchi')
+  const boss = makeMob('Creature-Boss', 'Test Boss')
+
+  sm.handle(challengeStart('Ara-Kara', 0))
+  sm.handle(encounterStart('Test Boss', 100))
+  sm.handle(mobDamage(boss, 900_000, 1_000_000, 150, monk))
+  sm.handle(auraApplied(monk, monk, '113656', 'Fists of Fury', 200))
+  sm.handle(castSuccess(monk, '113656', 'Fists of Fury', 200, boss))
+  // REMOVED 30 seconds later — way past the 15s watchdog.
+  sm.handle(auraRemoved(monk, monk, '113656', 'Fists of Fury', 30_500))
+  sm.handle(encounterEnd('Test Boss', true, 35_000))
+  sm.handle(challengeEnd(true, 35_100))
+
+  const segment = store.getAll().find(s => s.encounterName === 'Test Boss')!
+  const player = segment.players['Grzzchi']
+  assert.equal(player?.casts.total ?? 0, 0, 'stale channel must be dropped, not clamped')
+  assert.equal(segment.events.filter(e => e.kind === 'cast').length, 0)
+})
+
+test('cast quality: re-press while in-flight hardcast exists overwrites the abandoned START', () => {
+  // The doc says "Re-opening (player re-presses while a stale entry exists)
+  // just overwrites — the older START is implicitly abandoned." This
+  // exercises that contract: two STARTs without a SUCCESS between them, then
+  // one SUCCESS — the SUCCESS pairs with the more recent START.
+  const { sm, store } = makeSm()
+  const player = makePlayer('Player-1', 'Adrianw')
+  const target = makeMob('Creature-X', 'X')
+
+  sm.handle(challengeStart('Ara-Kara', 0))
+  sm.handle(encounterStart('Test Boss', 100))
+  sm.handle(mobDamage(target, 900_000, 1_000_000, 150, player))
+  // First START at 200ms (abandoned — no SUCCESS or FAILED follows).
+  sm.handle(castStart(player, '197628', 'Starfire', 200))
+  // Second START at 1000ms — implicitly abandons the first.
+  sm.handle(castStart(player, '197628', 'Starfire', 1000))
+  // SUCCESS at 2300ms — pairs with the 1000ms START = 1.3s cast, NOT 2.1s.
+  sm.handle(castSuccess(player, '197628', 'Starfire', 2300, target))
+  sm.handle(encounterEnd('Test Boss', true, 5000))
+  sm.handle(challengeEnd(true, 5100))
+
+  const segment = store.getAll().find(s => s.encounterName === 'Test Boss')!
+  const p = segment.players['Adrianw']
+  assert.equal(p.casts.bySpell['197628'].count, 1)
+  assert.equal(p.casts.bySpell['197628'].totalCastMs, 1300, 'castMs must pair with the recent START, not the abandoned one')
+  const castEvent = segment.events.find(e => e.kind === 'cast' && e.spellId === '197628')!
+  assert.equal(castEvent.castMs, 1300)
+})
+
+test('cast quality: castFailed cancellation reasons movement and stunned each propagate to the wire', () => {
+  // Coverage for the per-reason CSS variants on the client — a typo in the
+  // mapping table would silently render the wrong shape without this guard.
+  for (const reason of ['movement', 'stunned'] as const) {
+    const { sm, store } = makeSm()
+    const player = makePlayer('Player-1', 'Adrianw')
+    const target = makeMob('Creature-X', 'X')
+
+    sm.handle(challengeStart('Ara-Kara', 0))
+    sm.handle(encounterStart('Test Boss', 100))
+    sm.handle(mobDamage(target, 900_000, 1_000_000, 150, player))
+    sm.handle(castStart(player, '197628', 'Starfire', 200))
+    sm.handle(castFailed(player, '197628', 'Starfire', reason, 800))
+    sm.handle(encounterEnd('Test Boss', true, 5000))
+    sm.handle(challengeEnd(true, 5100))
+
+    const segment = store.getAll().find(s => s.encounterName === 'Test Boss')!
+    const castEvent = segment.events.find(e => e.kind === 'cast' && e.spellId === '197628')!
+    assert.equal(castEvent.castResult, 'cancelled', `reason ${reason}`)
+    assert.equal(castEvent.cancelReason, reason)
+  }
+})
+
+test('cast quality: castFailed with no preceding START is dropped silently', () => {
+  // The aggregator only credits cancellations against an in-flight entry.
+  // A FAILED that arrives with no matching START (rare; could be a press
+  // the parser missed entirely, or a reason classification edge case)
+  // should drop on the floor rather than seed a phantom cancellation.
+  const { sm, store } = makeSm()
+  const player = makePlayer('Player-1', 'Adrianw')
+  const target = makeMob('Creature-X', 'X')
+
+  sm.handle(challengeStart('Ara-Kara', 0))
+  sm.handle(encounterStart('Test Boss', 100))
+  sm.handle(mobDamage(target, 900_000, 1_000_000, 150, player))
+  // No castStart — just a bare castFailed.
+  sm.handle(castFailed(player, '197628', 'Starfire', 'interrupted', 800))
+  sm.handle(encounterEnd('Test Boss', true, 5000))
+  sm.handle(challengeEnd(true, 5100))
+
+  const segment = store.getAll().find(s => s.encounterName === 'Test Boss')!
+  const p = segment.players['Adrianw']
+  assert.equal(p?.casts.bySpell['197628'], undefined, 'unmatched FAILED should not seed a bySpell entry')
+  assert.equal(segment.events.filter(e => e.kind === 'cast').length, 0)
 })

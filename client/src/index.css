@@ -149,3 +149,239 @@ body::before {
 .animate-pulse-dot {
   animation: pulse-dot 2s ease-in-out infinite;
 }
+
+/* ===== Cast timeline ===== */
+/* Horizontal per-spell timeline used in the Casts drilldown as an alternative
+   to the bar list. One lane per spell, dots plotted at scope-relative cast
+   times. Colors/accents come from --cast-timeline-accent (set per-mount to
+   the player's class color). */
+.cast-timeline {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+.cast-timeline-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  max-width: 100%;
+  border: 1px solid var(--border-subtle);
+  border-radius: 2px;
+  background: var(--bg-root);
+}
+
+.cast-timeline-scale {
+  position: relative;
+}
+
+.cast-timeline-axis {
+  display: grid;
+  height: 22px;
+  background: var(--bg-root);
+  border-bottom: 1px solid var(--border-default);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+
+.cast-timeline-axis-gutter {
+  position: sticky;
+  left: 0;
+  background: var(--bg-root);
+  border-right: 1px solid var(--border-subtle);
+  z-index: 6;
+}
+
+.cast-timeline-axis-track { position: relative; }
+
+.cast-timeline-axis-tick {
+  position: absolute;
+  top: 14px;
+  bottom: 0;
+  width: 1px;
+  background: var(--border-subtle);
+  pointer-events: none;
+}
+.cast-timeline-axis-tick.major {
+  top: 10px;
+  background: var(--border-default);
+}
+
+.cast-timeline-axis-label {
+  position: absolute;
+  top: 3px;
+  font-size: 9px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  transform: translateX(-50%);
+  white-space: nowrap;
+  letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+.cast-timeline-lane {
+  display: grid;
+  border-bottom: 1px solid var(--border-subtle);
+  position: relative;
+  transition: background 0.15s;
+}
+.cast-timeline-lane:last-child { border-bottom: none; }
+.cast-timeline-lane:hover { background: var(--bg-hover); }
+
+.cast-timeline-lane-gutter {
+  position: sticky;
+  left: 0;
+  background: var(--bg-root);
+  border-right: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 6px;
+  /* Must outrank dots (incl. hovered/scaled dots at z-index 3) so the sticky
+     left column always clips them when the track is scrolled under it. */
+  z-index: 4;
+  transition: background 0.15s;
+}
+.cast-timeline-lane:hover .cast-timeline-lane-gutter { background: var(--bg-elevated); }
+
+.cast-timeline-icon {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  border: 1px solid rgba(0, 0, 0, 0.7);
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.04);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: box-shadow 0.15s, filter 0.15s;
+}
+.cast-timeline-icon img { display: block; }
+.cast-timeline-lane:hover .cast-timeline-icon {
+  filter: brightness(1.2);
+  box-shadow: 0 0 0 1px var(--cast-timeline-accent, var(--text-secondary));
+}
+
+.cast-timeline-count {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  transition: color 0.15s;
+}
+.cast-timeline-lane:hover .cast-timeline-count { color: var(--text-primary); }
+
+.cast-timeline-lane-track {
+  position: relative;
+}
+/* Subtle centerline guide — gets the class accent on hover so the active row
+   reads as a connected path of dots rather than scattered points. */
+.cast-timeline-lane-track::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--border-subtle);
+  transform: translateY(-50%);
+  pointer-events: none;
+  transition: background 0.15s, opacity 0.15s;
+}
+.cast-timeline-lane:hover .cast-timeline-lane-track::before {
+  background: var(--cast-timeline-accent, var(--text-secondary));
+  opacity: 0.35;
+}
+
+/* Cast marks. Base class handles vertical centering, border, hover. Variants
+   add the kind-specific shape (instant dot vs hardcast/channel capsule) and
+   result-specific decorations (cancelled = strikethrough or dashed border;
+   channel = diagonal stripe overlay). */
+.cast-timeline-mark {
+  position: absolute;
+  top: 50%;
+  height: 14px;
+  border-radius: 3px;
+  transform: translateY(-50%);
+  border: 1px solid rgba(0, 0, 0, 0.7);
+  box-sizing: border-box;
+  cursor: default;
+  z-index: 1;
+  overflow: hidden;
+  transition: transform 0.12s, box-shadow 0.12s, filter 0.12s;
+}
+.cast-timeline-mark:hover {
+  z-index: 3;
+  filter: brightness(1.2);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.2);
+}
+
+/* Instant — centered circle, no width extension. Anchored at its time
+   center (left + translateX(-50%)) so the dot visually sits exactly on the
+   tick. Smaller than hardcast capsules so the eye can tell them apart. */
+.cast-timeline-mark-instant {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+}
+.cast-timeline-mark-instant:hover {
+  transform: translate(-50%, -50%) scale(1.35);
+}
+
+/* Completed hardcast — solid capsule, width = castMs * px/sec. Anchored at
+   the START time (left edge of the capsule sits on the tick). */
+.cast-timeline-mark-hardcast {
+  /* base styles cover it */
+}
+
+/* Channel — capsule with diagonal stripes overlaid to distinguish from a
+   solid hardcast at a glance. Uses the cast's class color as the fill;
+   stripes are dark so they read on any color. */
+.cast-timeline-mark-channel::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: repeating-linear-gradient(
+    -45deg,
+    rgba(0, 0, 0, 0.45) 0 3px,
+    transparent 3px 6px
+  );
+  pointer-events: none;
+}
+
+/* Cancelled hardcast — base capsule plus result-specific decoration.
+   - interrupted: dashed border + reduced opacity (signals "got cut by
+     enemy", visually distinct from completed)
+   - movement / stunned: solid border + diagonal red strike line (signals
+     "self-broken", strike is the universal "wasted" mark) */
+.cast-timeline-mark-cancelled {
+  opacity: 0.55;
+}
+.cast-timeline-mark-cancelled-interrupted {
+  border-style: dashed;
+  border-color: rgba(255, 255, 255, 0.4);
+}
+.cast-timeline-mark-cancelled-movement::after,
+.cast-timeline-mark-cancelled-stunned::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 2px;
+  background: rgba(239, 68, 68, 0.85);
+  transform: translateY(-50%) rotate(-8deg);
+  transform-origin: center;
+  pointer-events: none;
+}
+
+.cast-timeline-empty {
+  padding: 28px 16px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 12px;
+}
