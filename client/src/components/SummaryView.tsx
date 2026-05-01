@@ -3,7 +3,14 @@ import { useStore, selectCurrentView, selectIsLoading, resolveSpecId } from '../
 import { getClassColor } from './PlayerRow'
 import { formatNum, shortName } from '../utils/format'
 import { specIconUrl } from '../utils/icons'
-import type { PlayerSnapshot, PlayerDeathRecord } from '../types'
+import type {
+  PlayerSnapshot,
+  PlayerDeathRecord,
+  HistoryItem,
+  SegmentSnapshot,
+  KeyRunSnapshot,
+  BossSectionSnapshot,
+} from '../types'
 
 function SpecIcon({ specId }: { specId: number | undefined }) {
   const src = specIconUrl(specId)
@@ -46,6 +53,7 @@ export function SummaryView() {
   const metric = useStore(s => s.metric)
   const setMetric = useStore(s => s.setMetric)
   const playerSpecs = useStore(s => s.playerSpecs)
+  const segmentHistory = useStore(s => s.segmentHistory)
 
   if (!currentView) {
     if (isLoading) return <SummaryLoadingSkeleton />
@@ -62,6 +70,7 @@ export function SummaryView() {
   const allDeaths: PlayerDeathRecord[] = playerList
     .flatMap(p => p.deaths)
     .sort((a, b) => a.timeOfDeath - b.timeOfDeath)
+  const deathSegmentLabels = buildDeathSegmentLabels(allDeaths, currentView, segmentHistory)
 
   // Buffs, Debuffs, Damage Taken, and Casts are Full-only metrics, but defend
   // against a stale metric value lingering when Summary mounts (e.g. during
@@ -81,6 +90,7 @@ export function SummaryView() {
           isActive
           playerList={playerList}
           allDeaths={allDeaths}
+          deathSegmentLabels={deathSegmentLabels}
           playerSpecs={playerSpecs}
           onSelect={undefined}
         />
@@ -96,6 +106,7 @@ export function SummaryView() {
             isActive={false}
             playerList={playerList}
             allDeaths={allDeaths}
+            deathSegmentLabels={deathSegmentLabels}
             playerSpecs={playerSpecs}
             onSelect={() => setMetric(key)}
           />
@@ -111,6 +122,7 @@ function OverviewModule({
   isActive,
   playerList,
   allDeaths,
+  deathSegmentLabels,
   playerSpecs,
   onSelect,
 }: {
@@ -119,6 +131,7 @@ function OverviewModule({
   isActive: boolean
   playerList: PlayerSnapshot[]
   allDeaths: PlayerDeathRecord[]
+  deathSegmentLabels: Map<PlayerDeathRecord, string>
   playerSpecs: Record<string, number>
   onSelect: (() => void) | undefined
 }) {
@@ -183,6 +196,7 @@ function OverviewModule({
             deaths={allDeaths}
             playerSpecs={playerSpecs}
             playerList={playerList}
+            deathSegmentLabels={deathSegmentLabels}
             onDeathClick={onDeathClick}
             isFocused={isFocused}
           />
@@ -375,12 +389,14 @@ function DeathsModuleBody({
   deaths,
   playerSpecs,
   playerList,
+  deathSegmentLabels,
   onDeathClick,
   isFocused,
 }: {
   deaths: PlayerDeathRecord[]
   playerSpecs: Record<string, number>
   playerList: PlayerSnapshot[]
+  deathSegmentLabels: Map<PlayerDeathRecord, string>
   onDeathClick: (record: PlayerDeathRecord) => void
   isFocused: boolean
 }) {
@@ -405,6 +421,7 @@ function DeathsModuleBody({
             key={`${d.playerGuid}-${d.timeOfDeath}-${i}`}
             death={d}
             specId={specId}
+            segmentLabel={deathSegmentLabels.get(d) ?? null}
             isFocused={isFocused}
             onClick={onDeathClick}
           />
@@ -422,11 +439,13 @@ const DeathModuleRow = memo(DeathModuleRowImpl)
 function DeathModuleRowImpl({
   death,
   specId,
+  segmentLabel,
   isFocused,
   onClick,
 }: {
   death: PlayerDeathRecord
   specId: number | undefined
+  segmentLabel: string | null
   isFocused: boolean
   onClick: (record: PlayerDeathRecord) => void
 }) {
@@ -452,6 +471,11 @@ function DeathModuleRowImpl({
         <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--status-wipe)', fontSize: 11 }}>
           {elapsed}
         </span>
+        {segmentLabel && (
+          <span style={{ color: 'var(--text-muted)', fontSize: 11, whiteSpace: 'nowrap' }}>
+            · {segmentLabel}
+          </span>
+        )}
         <SpecIcon specId={specId} />
         <span style={{ fontWeight: 500, color }}>
           {shortName(death.playerName)}
@@ -462,6 +486,46 @@ function DeathModuleRowImpl({
       </div>
     </div>
   )
+}
+
+// Map each death (in an Overall view) to a short segment label like "Pack 8"
+// or "Pull 14" so the per-segment elapsed time still carries context. Returns
+// an empty map for individual-segment views, where the time is unambiguous.
+function buildDeathSegmentLabels(
+  deaths: PlayerDeathRecord[],
+  view: SegmentSnapshot | KeyRunSnapshot | BossSectionSnapshot,
+  segmentHistory: HistoryItem[],
+): Map<PlayerDeathRecord, string> {
+  const labels = new Map<PlayerDeathRecord, string>()
+  if (view.type === 'segment' || deaths.length === 0) return labels
+
+  const summary = segmentHistory.find(item => {
+    if (item.type === 'key_run' && view.type === 'key_run') return item.keyRunId === view.keyRunId
+    if (item.type === 'boss_section' && view.type === 'boss_section') return item.bossSectionId === view.bossSectionId
+    return false
+  })
+  if (!summary || summary.type === 'segment') return labels
+
+  const isRaid = summary.type === 'boss_section'
+  for (const death of deaths) {
+    for (let i = 0; i < summary.segments.length; i++) {
+      const seg = summary.segments[i]
+      if (death.timeOfDeath < seg.startTime) continue
+      if (seg.endTime !== null && death.timeOfDeath > seg.endTime) continue
+      if (isRaid) {
+        labels.set(death, `Pull ${i + 1}`)
+      } else {
+        // M+ pack segments are named "Pack N: <mob>"; bosses are just the boss
+        // name. Trim any colon trailer so packs render compact ("Pack 8") and
+        // boss labels pass through unchanged ("Gemellus").
+        const name = seg.encounterName
+        const colon = name.indexOf(':')
+        labels.set(death, colon === -1 ? name : name.slice(0, colon).trim())
+      }
+      break
+    }
+  }
+  return labels
 }
 
 // Placeholder rendered while an aggregate snapshot is in flight. Mirrors the
